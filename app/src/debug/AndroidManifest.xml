@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Debug-build-only manifest overlay. This merges on top of the main manifest
+    for debug builds only. It swaps in a network security config that permits
+    cleartext traffic broadly, so local development against arbitrary hosts
+    (LAN IPs, test servers, etc.) is not blocked by the release network
+    security policy. Never applied to release builds.
+
+    Note: android:usesCleartextTraffic is ignored on API 24+ whenever a
+    networkSecurityConfig is present (which it always is here, minSdk 29), so
+    overriding networkSecurityConfig itself is the correct way to relax this
+    for debug builds.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:networkSecurityConfig="@xml/network_security_config_debug"
+        tools:replace="android:networkSecurityConfig" />
+
+</manifest>

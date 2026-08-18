@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Debug-build-only network security config. Cleartext HTTP is permitted for
+    all hosts here so local development against arbitrary servers (LAN IPs,
+    test devices, etc.) is not blocked. Never packaged into release builds.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

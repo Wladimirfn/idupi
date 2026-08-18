@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Backup rules. android:allowBackup is currently false, so this file is not
+    active, but it is kept correct in case backup is ever re-enabled: the
+    connection preferences file holds the (now-encrypted) server auth token
+    and must never be exported.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="idupi_connection_prefs.xml"/>
+</full-backup-content>

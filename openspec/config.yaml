@@ -1,0 +1,55 @@
+# openspec/config.yaml
+schema: spec-driven
+
+context: |
+  Two coupled components, one repo, zero commits (all untracked at init).
+  1) app/: Kotlin + Jetpack Compose + Ktor client (CIO) + kotlinx.serialization,
+     Gradle Kotlin DSL, AGP 9.3.1 / Kotlin 2.0.21. Unit tests via JUnit4 + kotlinx-coroutines-test.
+  2) idupi-server/, server-auth.mjs, server-bridge/: plain ESM Node, zero npm deps
+     by design (no package.json). Shells out to claude/opencode/pi CLIs.
+  No automated Node test runner exists; scratch/ holds manual smoke scripts only.
+
+strict_tdd: true   # Android has a real, verified JUnit runner and 83 passing tests.
+                    # Node server has NO test runner — Strict TDD is NOT enforceable there (see testing block).
+
+testing:
+  android:
+    strict_tdd: true
+    test_command: "./gradlew :app:testDebugUnitTest"
+    build_command: "./gradlew :app:assembleDebug"
+    framework: "JUnit4 + kotlinx-coroutines-test"
+    verified: true
+    verified_result: "BUILD SUCCESSFUL, 112 test cases across 12 test files (verified via test-results XML on 2026-08-18, session-listing-accuracy-perf PR4-PR6)"
+  node_server:
+    strict_tdd: false
+    test_command: "node --test idupi-server/test/sessions.test.mjs; node --test idupi-server/test/sessions-runtime.test.mjs"
+    syntax_check_command: "node --check <file>.mjs"
+    framework: "node:test (built-in, zero new dependencies)"
+    verified: true
+    verified_result: "sessions.test.mjs -> tests 59, pass 59, fail 0; sessions-runtime.test.mjs -> tests 6, pass 6, fail 0 (both re-verified independently on 2026-08-18, session-listing-accuracy-perf archived; sessions-runtime.test.mjs must run from repo root, not idupi-server/). node --check passes on index.mjs, chat-events.mjs, server-auth.mjs, server-bridge/index.mjs, lib/sessions.mjs. scratch/test-*.mjs remain manual smoke scripts, not part of this assertion-based suite."
+
+rules:
+  proposal:
+    - Treat app/ and idupi-server/+server-bridge/ as separate change surfaces; state which component(s) a change touches
+    - Include rollback plan for risky changes
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Include sequence diagrams for complex flows (esp. SSE/chat-events and CLI process spawning)
+    - Document architecture decisions with rationale
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+    - Node-server tasks MUST NOT assume an existing automated test suite; propose one explicitly if needed
+  apply:
+    guidelines:
+      - Follow existing code patterns (Kotlin: MVVM + Compose; Node: plain ESM, no new deps without explicit approval)
+    tdd: true            # applies to app/ only; false in effect for idupi-server/ until a test runner exists
+    test_command: "./gradlew :app:testDebugUnitTest"
+  verify:
+    test_command: "./gradlew :app:testDebugUnitTest"
+    build_command: "./gradlew :app:assembleDebug"
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas

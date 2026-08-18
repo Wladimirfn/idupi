@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Data extraction rules. android:allowBackup is currently false, so this
+    file is not active, but it is kept correct in case backup/transfer is
+    ever re-enabled: the connection preferences file holds the (now-encrypted)
+    server auth token and must never be exported via cloud backup or device
+    transfer.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="idupi_connection_prefs.xml"/>
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="idupi_connection_prefs.xml"/>
+    </device-transfer>
+</data-extraction-rules>

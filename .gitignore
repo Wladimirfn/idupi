@@ -1,0 +1,26 @@
+*.iml
+.gradle
+/local.properties
+/.idea/caches
+/.idea/libraries
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+# Local Pi runtime state
+.atl/
+# Generated bearer token for the local bridge servers
+.idupi-token
+# Runtime projects database
+idupi-server/projects.json
+# Local Pi CLI agent runtime state
+.pi/
+# Build/debug artifacts that shouldn't live in git
+*.apk
+*.stackdump
