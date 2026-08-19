@@ -1924,6 +1924,26 @@ class PiRpcManager {
     }
 }
 
+/**
+ * Text of a Claude `tool_result`, whose `content` arrives in two real shapes:
+ * a plain string, or an array of blocks (only `text` blocks carry prose --
+ * `tool_reference` and friends do not). Both were observed in real captures,
+ * so handle each rather than assuming one.
+ */
+function extractToolResultText(content) {
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) {
+        return content
+            .map((block) => {
+                if (typeof block === "string") return block;
+                return block?.type === "text" && typeof block.text === "string" ? block.text : "";
+            })
+            .filter(Boolean)
+            .join("\n");
+    }
+    return "";
+}
+
 /** Short human-readable summary of a tool call, for the chat timeline. */
 function describeToolInput(event) {
     const input = event.input || event.args || event.parameters;
@@ -3135,6 +3155,7 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
         let fullOutput = "";
         let buffer = "";
         let activeSubagentId = null;
+        let activeSubagentName = null;
         let settled = false;
         let timedOut = false;
 
@@ -3188,10 +3209,13 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
                                 const toolId = item.id || `tool-${Date.now()}`;
                                 if (isSubagent) {
                                     activeSubagentId = toolId;
+                                    // The Task tool is always literally named "Task"; the agent
+                                    // the user actually picked lives in subagent_type.
+                                    activeSubagentName = item.input?.subagent_type || toolName;
                                     const taskDesc = item.input?.task || item.input?.prompt || item.input?.description || `Ejecutando subagente ${toolName}...`;
                                     publishChatEvent(CHAT_EVENTS.SUBAGENT_START, {
                                         id: toolId,
-                                        name: toolName,
+                                        name: activeSubagentName,
                                         task: taskDesc
                                     });
                                 } else {
@@ -3214,13 +3238,19 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
                             if (item.type === "tool_result") {
                                 const toolId = item.tool_use_id;
                                 if (toolId === activeSubagentId) {
+                                    // The subagent's real answer is in item.content; discarding
+                                    // it left the card reading "Subagente completó la tarea"
+                                    // no matter what the subagent actually reported. Pi and
+                                    // OpenCode already surface their result the same way.
+                                    const resultText = extractToolResultText(item.content).trim();
                                     publishChatEvent(CHAT_EVENTS.SUBAGENT_END, {
                                         id: toolId,
-                                        name: "Subagent",
-                                        summary: "Subagente completó la tarea",
+                                        name: activeSubagentName || "Subagent",
+                                        summary: resultText ? resultText.slice(0, 300) : "Subagente completó la tarea",
                                         ok: !item.is_error
                                     });
                                     activeSubagentId = null;
+                                    activeSubagentName = null;
                                 } else if (toolId) {
                                     publishChatEvent(CHAT_EVENTS.TOOL_END, {
                                         id: toolId,
@@ -3293,8 +3323,8 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
             if (activeSubagentId) {
                 publishChatEvent(CHAT_EVENTS.SUBAGENT_END, {
                     id: activeSubagentId,
-                    name: "Subagent",
-                    summary: "Subagente finalizó",
+                    name: activeSubagentName || "Subagent",
+                    summary: "Subagente finalizó sin devolver un resultado",
                     ok: code === 0
                 });
             }
