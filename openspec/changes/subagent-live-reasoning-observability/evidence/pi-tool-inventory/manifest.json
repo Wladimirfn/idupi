@@ -1,0 +1,28 @@
+{
+  "pid": 16164,
+  "argv": [
+    "C:\\Program Files\\nodejs\\node.exe",
+    "C:\\Users\\dev\\AppData\\Roaming\\npm\\node_modules\\@earendil-works\\pi-coding-agent\\dist\\cli.js",
+    "--mode",
+    "rpc"
+  ],
+  "cwd": "C:\\Users\\dev\\AndroidStudioProjects\\IDUPI",
+  "startTime": "2026-08-19T22:09:16.615Z",
+  "durationMs": 39768,
+  "stdout": {
+    "lines": 1306,
+    "bytes": 407101,
+    "sha256": "66e6abe1ab4c4569cf6ff7b14bf6fa9b86145abf84a66d3d2cfbcf5521345960",
+    "trailingNewline": true
+  },
+  "stderr": {
+    "lines": 2,
+    "bytes": 424,
+    "sha256": "cc62b168a028af1954cd7f236971693f39bbfad6992b4271c75ef8919fd09990",
+    "trailingNewline": true
+  },
+  "prompts": [],
+  "toolInventory": null,
+  "processExited": true,
+  "exitCode": null
+}
