@@ -1636,6 +1636,7 @@ class PiRpcManager {
         this.currentModelId = null;
         this.currentProvider = null;
         this.thinkingAnnounced = false;
+        this.pendingTimeoutTimer = null;
     }
 
     setModel(modelId, provider = null) {
@@ -1688,6 +1689,8 @@ class PiRpcManager {
             console.log(`[IDUPI Pi RPC] Proceso cerrado con código ${code}`);
             this.child = null;
             if (this.pendingReject) {
+                clearTimeout(this.pendingTimeoutTimer);
+                this.pendingTimeoutTimer = null;
                 this.pendingReject(new Error(`Pi RPC se cerró con código ${code}`));
                 this.pendingResolve = null;
                 this.pendingReject = null;
@@ -1819,8 +1822,10 @@ class PiRpcManager {
 
             if (event.type === "agent_end" && this.pendingResolve) {
                 console.log("\n[IDUPI Pi RPC] Respuesta completada.");
+                clearTimeout(this.pendingTimeoutTimer);
+                this.pendingTimeoutTimer = null;
                 const resultText = this.currentOutput.trim() || "Respuesta procesada correctamente por Pi CLI.";
-                
+
                 activeTask.status = "completed";
                 activeTask.output = resultText;
 
@@ -1856,6 +1861,32 @@ class PiRpcManager {
             this.pendingResolve = resolve;
             this.pendingReject = reject;
 
+            // Pi CLI is a persistent RPC subprocess, not spawned per-message,
+            // so a stuck request never closes on its own the way a one-shot
+            // CLI would. If no 'agent_end' arrives in time, force a restart
+            // (see AGENT_CLI_TIMEOUT_MS) rather than leave the chat -- and
+            // every future message, since sendPrompt() rejects new requests
+            // while one is pending -- hung indefinitely.
+            this.pendingTimeoutTimer = setTimeout(() => {
+                if (!this.pendingResolve) return;
+                const stuckPid = this.child?.pid;
+                console.warn(`[IDUPI Pi RPC Timeout] Sin 'agent_end' tras ${AGENT_CLI_TIMEOUT_MS}ms, terminando el proceso Pi CLI (PID ${stuckPid}).`);
+                const settleResolve = this.pendingResolve;
+                this.pendingResolve = null;
+                this.pendingReject = null;
+                this.pendingTimeoutTimer = null;
+                if (stuckPid) {
+                    execFile("taskkill", ["/F", "/T", "/PID", String(stuckPid)], () => {});
+                }
+                this.child = null;
+                this.thinkingAnnounced = false;
+                publishChatEvent(CHAT_EVENTS.THINKING, { active: false });
+                const timeoutMsg = `⚠️ Pi CLI no respondió dentro de ${AGENT_CLI_TIMEOUT_MS / 1000}s y fue detenido.`;
+                activeTask.output = timeoutMsg;
+                publishChatEvent(CHAT_EVENTS.MESSAGE_END, { text: timeoutMsg });
+                settleResolve(timeoutMsg);
+            }, AGENT_CLI_TIMEOUT_MS);
+
             const promptCmd = JSON.stringify({
                 id: `idupi-${Date.now()}`,
                 type: "prompt",
@@ -1864,13 +1895,31 @@ class PiRpcManager {
             }) + "\n";
 
             console.log(`\n[IDUPI App -> Pi RPC] Mensaje enviado: "${message}"`);
-            this.child.stdin.write(promptCmd, (err) => {
-                if (err) {
-                    this.pendingResolve = null;
-                    this.pendingReject = null;
-                    reject(err);
-                }
-            });
+
+            // Both failure paths must clear the same state. A write to a
+            // destroyed/ended stdin throws SYNCHRONOUSLY (ERR_STREAM_DESTROYED)
+            // and never invokes the callback: without this catch the pending
+            // timer would survive and later taskkill a PID this request no
+            // longer owns, and pendingResolve would stay set, making every
+            // later sendPrompt reject with "Ya hay una consulta procesándose"
+            // until the server restarts.
+            const failPending = (err) => {
+                clearTimeout(this.pendingTimeoutTimer);
+                this.pendingTimeoutTimer = null;
+                this.pendingResolve = null;
+                this.pendingReject = null;
+                this.thinkingAnnounced = false;
+                publishChatEvent(CHAT_EVENTS.THINKING, { active: false });
+                reject(err);
+            };
+
+            try {
+                this.child.stdin.write(promptCmd, (err) => {
+                    if (err) failPending(err);
+                });
+            } catch (err) {
+                failPending(err);
+            }
         });
     }
 }
@@ -3086,6 +3135,8 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
         let fullOutput = "";
         let buffer = "";
         let activeSubagentId = null;
+        let settled = false;
+        let timedOut = false;
 
         const child = spawn(cmdLine, {
             cwd: projPath,
@@ -3094,6 +3145,16 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
             stdio: ["ignore", "pipe", "pipe"],
             env: process.env
         });
+
+        // See AGENT_CLI_TIMEOUT_MS above runOpenCodeCli: `shell: true` makes
+        // `child` the cmd.exe wrapper, so a tree-kill (not child.kill()) is
+        // required to reach Claude CLI itself and any MCP servers it spawns.
+        const timeoutTimer = setTimeout(() => {
+            if (settled) return;
+            timedOut = true;
+            console.warn(`[Claude CLI Timeout] Sin cierre tras ${AGENT_CLI_TIMEOUT_MS}ms, terminando el árbol de procesos (PID ${child.pid}).`);
+            execFile("taskkill", ["/F", "/T", "/PID", String(child.pid)], () => {});
+        }, AGENT_CLI_TIMEOUT_MS);
 
         const processJsonLine = (line) => {
             const trimmed = line.trim();
@@ -3213,11 +3274,17 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
         });
 
         child.on("error", (err) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutTimer);
             publishChatEvent(CHAT_EVENTS.THINKING, { active: false });
             reject(err);
         });
 
         child.on("close", (code) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutTimer);
             if (buffer.trim()) {
                 processJsonLine(buffer);
             }
@@ -3232,7 +3299,11 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
                 });
             }
 
-            const cleanResult = fullOutput.trim() || (code === 0 ? "Completado por Claude CLI." : `Claude CLI finalizó con código ${code}`);
+            const cleanResult = fullOutput.trim() || (
+                timedOut
+                    ? `⚠️ Claude CLI no respondió dentro de ${AGENT_CLI_TIMEOUT_MS / 1000}s y fue detenido.`
+                    : (code === 0 ? "Completado por Claude CLI." : `Claude CLI finalizó con código ${code}`)
+            );
             activeTask.output = cleanResult;
             publishChatEvent(CHAT_EVENTS.MESSAGE_END, { text: cleanResult });
             resolve(cleanResult);
@@ -3241,6 +3312,13 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
 }
 
 // Ejecución Asíncrona en Streaming para OpenCode
+// Shared by runClaudeCli, runOpenCodeCli and PiRpcManager.sendPrompt -- if the
+// underlying agent CLI (or an MCP server it spawns) never closes/replies, the
+// request must not hang the chat forever (observed live: a hung
+// `npx @playwright/mcp` left an OpenCode chat stuck on "Pensando..." for 9+
+// minutes with no recovery).
+const AGENT_CLI_TIMEOUT_MS = 5 * 60 * 1000;
+
 function runOpenCodeCli(projPath, sessionId, message) {
     return new Promise((resolve, reject) => {
         publishChatEvent(CHAT_EVENTS.THINKING, { active: true });
@@ -3252,6 +3330,8 @@ function runOpenCodeCli(projPath, sessionId, message) {
 
         let fullOutput = "";
         let buffer = "";
+        let settled = false;
+        let timedOut = false;
 
         const child = spawn(cmdLine, {
             cwd: projPath,
@@ -3260,6 +3340,19 @@ function runOpenCodeCli(projPath, sessionId, message) {
             stdio: ["ignore", "pipe", "pipe"],
             env: process.env
         });
+
+        // `shell: true` on Windows makes `child` the cmd.exe wrapper, not
+        // `opencode` itself -- child.kill() only terminates that wrapper and
+        // orphans opencode.exe plus any MCP servers it spawns (observed live:
+        // a hung `npx @playwright/mcp` left running 9+ minutes after the
+        // wrapper alone would have been killed). `taskkill /T` walks the real
+        // process tree by PID instead, so every descendant actually dies.
+        const timeoutTimer = setTimeout(() => {
+            if (settled) return;
+            timedOut = true;
+            console.warn(`[OpenCode CLI Timeout] Sin cierre tras ${AGENT_CLI_TIMEOUT_MS}ms, terminando el árbol de procesos (PID ${child.pid}).`);
+            execFile("taskkill", ["/F", "/T", "/PID", String(child.pid)], () => {});
+        }, AGENT_CLI_TIMEOUT_MS);
 
         const processJsonLine = (line) => {
             const trimmed = line.trim();
@@ -3329,16 +3422,26 @@ function runOpenCodeCli(projPath, sessionId, message) {
         });
 
         child.on("error", (err) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutTimer);
             publishChatEvent(CHAT_EVENTS.THINKING, { active: false });
             reject(err);
         });
 
         child.on("close", (code) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeoutTimer);
             if (buffer.trim()) {
                 processJsonLine(buffer);
             }
             publishChatEvent(CHAT_EVENTS.THINKING, { active: false });
-            const cleanResult = fullOutput.trim() || (code === 0 ? "Completado por OpenCode." : `OpenCode finalizó con código ${code}`);
+            const cleanResult = fullOutput.trim() || (
+                timedOut
+                    ? `⚠️ OpenCode no respondió dentro de ${AGENT_CLI_TIMEOUT_MS / 1000}s y fue detenido.`
+                    : (code === 0 ? "Completado por OpenCode." : `OpenCode finalizó con código ${code}`)
+            );
             activeTask.output = cleanResult;
             publishChatEvent(CHAT_EVENTS.MESSAGE_END, { text: cleanResult });
             resolve(cleanResult);
