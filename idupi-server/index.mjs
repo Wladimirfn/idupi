@@ -1643,6 +1643,34 @@ function getProjectFilesTree(dirPath, relativeTo = dirPath) {
 // threw ReferenceError and returned 500.
 const AGENT_CLI_TIMEOUT_MS = 5 * 60 * 1000;
 
+/**
+ * Prose out of a Pi `tool_execution_end` result. The previous code did
+ * `String(event.result)`, which renders a plain object as the literal string
+ * "[object Object]" -- the chat then showed that instead of what the subagent
+ * actually reported.
+ *
+ * Pi's exact result shape for a subagent is not yet captured from a real run,
+ * so this handles the shapes we have seen elsewhere and returns null for
+ * anything else rather than inventing text. The caller logs the unknown keys
+ * so the next real run tells us the field instead of us guessing.
+ */
+function extractPiResultText(result) {
+    if (typeof result === "string") return result;
+    if (Array.isArray(result)) {
+        return result.map((r) => extractPiResultText(r)).filter(Boolean).join("\n") || null;
+    }
+    if (!result || typeof result !== "object") return null;
+    for (const key of ["text", "output", "summary", "message", "content"]) {
+        const v = result[key];
+        if (typeof v === "string" && v.trim()) return v;
+        if (Array.isArray(v)) {
+            const joined = extractPiResultText(v);
+            if (joined) return joined;
+        }
+    }
+    return null;
+}
+
 class PiRpcManager {
     constructor() {
         this.child = null;
@@ -1847,10 +1875,18 @@ class PiRpcManager {
                                    tName === "explore" || tName === "plan";
 
                 if (isSubagent) {
+                    const piSummary = extractPiResultText(event.result);
+                    if (!piSummary && event.result && typeof event.result === "object") {
+                        // Unknown shape: say so in the log with the real keys, so the
+                        // next live run identifies the field instead of us guessing.
+                        console.warn(
+                            `[IDUPI Subagente] Forma de 'result' no reconocida para '${tName}'. Claves: ${Object.keys(event.result).join(", ")}`,
+                        );
+                    }
                     publishChatEvent(CHAT_EVENTS.SUBAGENT_END, {
                         id: tId,
                         name: tName,
-                        summary: event.result ? String(event.result).slice(0, 300) : "Subagente completó la tarea",
+                        summary: piSummary ? piSummary.slice(0, 300) : "Subagente completó la tarea",
                         ok: event.isError !== true
                     });
                 }

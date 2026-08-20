@@ -24,3 +24,5 @@ idupi-server/projects.json
 # Build/debug artifacts that shouldn't live in git
 *.apk
 *.stackdump
+# Pi subagent run artifacts (transcripts, cost meta) -- runtime state, not source
+.pi-subagents/
