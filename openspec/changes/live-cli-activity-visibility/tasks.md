@@ -38,7 +38,7 @@ Orchestrator must collect chain strategy (stacked-to-main | feature-branch-chain
 ## Phase 3: Engine wiring + harness (files 2,6)
 
 - [ ] 3.1 RED `test/harness-unknown-mcp.mjs`: zero detection-code edits; pre/post SHA-256 of `~/.pi/agent/{settings,auth,mcp}.json`+`index.mjs`/`chat-events.mjs` identical; temp+marker removed; tree killed.
-- [ ] 3.2 Modify `index.mjs`: replace raw `console.log/error` at runClaude/runOpenCode/PiRpcManager.handleRpcLine with `redactActivity`/bounded stderr; Pi `statusKey=mcp`+additive `result.details.server` end; context bind after `requireAuth`.
+- [x] 3.2 Modify `index.mjs`: replace raw `console.log/error` at runClaude/runOpenCode/PiRpcManager.handleRpcLine with `redactActivity`/bounded stderr; Pi `statusKey=mcp`+additive `result.details.server` end; context bind after `requireAuth`.
 - [ ] 3.3 Implement `harness-unknown-mcp.mjs`: `mkdtemp <X>/agent`; new MCP name/tool; generated `IDUPI_TOKEN`+free `PORT`; SSE token client; provider-auth preflight abort if Pi credential absent; isolation `PI_CODING_AGENT_DIR=<X>/agent` ONLY; pre/post hashes; `try/finally`+`SIGINT` removes `<X>`, kills tree, deletes marker; SSE proves start/update+terminal.
 
 ## Phase 4: Android model + parser (files 7,8,11)

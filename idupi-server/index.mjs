@@ -25,6 +25,12 @@ import {
     resolveOpenCodeExePath
 } from "./lib/sessions.mjs";
 
+import {
+    ActivityRegistry,
+    classifyMcp,
+    redactActivity,
+} from "./lib/activity.mjs";
+
 const PORT = process.env.PORT || 8788;
 const requireAuth = createAuthGuard(loadToken());
 const PI_CLI_JS = join(
@@ -1682,7 +1688,7 @@ class PiRpcManager {
         this.child.stdout.on("data", (chunk) => this.onStdout(chunk));
         this.child.stderr.on("data", (chunk) => {
             const errStr = chunk.trim();
-            if (errStr) console.error("[IDUPI Pi RPC stderr]", errStr);
+            if (errStr) console.error("[IDUPI Pi RPC stderr]", redactActivity(errStr));
         });
 
         this.child.on("close", (code) => {
@@ -1780,6 +1786,23 @@ class PiRpcManager {
                                    tName === "gentle-orchestrator" || tName === "build" || 
                                    tName === "explore" || tName === "plan";
 
+                // Activity visibility (Change A): one stable id across the
+                // lifecycle. Pi MCP is detected structurally via statusKey=mcp
+                // (see extension_ui_request below); the start stays generic
+                // until the end enriches `server` additively.
+                this._currentActivityId = tId;
+                this._activityMcp = false;
+                const mcpStart = detectMcp("pi-cli", { toolName: tName });
+                activityRegistry.start(tId, {
+                    engine: "pi-cli",
+                    project: activeProjectId,
+                    sessionId: currentActivitySession("pi-cli"),
+                    kind: mcpStart.isMcp ? "mcp" : "tool",
+                    name: mcpStart.name,
+                    detail: tDetail,
+                    server: mcpStart.isMcp ? mcpStart.server : undefined,
+                });
+
                 if (isSubagent) {
                     publishChatEvent(CHAT_EVENTS.SUBAGENT_START, {
                         id: tId,
@@ -1798,6 +1821,13 @@ class PiRpcManager {
             if (event.type === "tool_execution_end") {
                 const tName = event.toolName || "herramienta";
                 const tId = event.toolCallId || event.id || "";
+                // Activity visibility (Change A): additive server enrichment
+                // (never replaces the name/id), then single terminal.
+                const mcpEnd = detectMcp("pi-cli", { toolName: tName, server: event.result?.details?.server });
+                activityRegistry.update(tId, { server: mcpEnd.server });
+                activityRegistry.terminalize(tId, { ok: event.isError !== true });
+                this._currentActivityId = null;
+                this._activityMcp = false;
                 const isSubagent = tName.startsWith("sdd-") || tName.startsWith("review-") || 
                                    tName.startsWith("jd-") || tName === "invoke_subagent" || 
                                    tName === "delegate" || tName === "subagent" || 
@@ -1820,7 +1850,23 @@ class PiRpcManager {
                 });
             }
 
+            // Pi MCP status signal (Change A): a generic MCP start. The active
+            // operation is marked MCP; `result.details.server` at the end adds
+            // the server name without replacing the name/id.
+            if (event.type === "extension_ui_request" && event.method === "setStatus" && event.statusKey === "mcp") {
+                if (this._currentActivityId) {
+                    this._activityMcp = true;
+                    activityRegistry.update(this._currentActivityId, { kind: "mcp" });
+                }
+            }
+
             if (event.type === "agent_end" && this.pendingResolve) {
+                // Terminalize any still-open Pi activity (Change A).
+                if (this._currentActivityId) {
+                    activityRegistry.terminalize(this._currentActivityId, { ok: true });
+                    this._currentActivityId = null;
+                    this._activityMcp = false;
+                }
                 console.log("\n[IDUPI Pi RPC] Respuesta completada.");
                 clearTimeout(this.pendingTimeoutTimer);
                 this.pendingTimeoutTimer = null;
@@ -1974,6 +2020,39 @@ function noteUnmappedRpcEvent(type) {
 
 const piRpc = new PiRpcManager();
 
+// ---------------------------------------------------------------------------
+// Activity visibility wiring (Change A: live-cli-activity-visibility).
+// A single registry instance, published through the existing SSE hub so
+// chat-events.mjs keeps owning transport, per-subscriber queues, and context
+// filtering. The 15s operation heartbeat lives here and is stopped solely by
+// terminalize(id); a subscriber disconnect never touches it.
+// ---------------------------------------------------------------------------
+const activityRegistry = new ActivityRegistry({
+    publish: (type, data) => publishChatEvent(type, data),
+});
+
+// Stable identity for the active operation, per engine. Falls back to a
+// deterministic synthetic id when no session is bound yet, so the SSE
+// subscriber (bound to the same expression) always matches.
+function currentActivitySession(engine) {
+    if (engine === "claude") return activeClaudeSessionId || ("claude:" + activeProjectId);
+    if (engine === "opencode") return activeOpenCodeSessionId || ("opencode:" + activeProjectId);
+    return piRpc.currentSessionPath || ("pi:" + activeProjectId);
+}
+
+// Structural, zero-allowlist MCP classification per active engine label.
+// (classifyMcp uses canonical labels claude/opencode/pi; pi-cli maps to pi.)
+function detectMcp(engineLabel, ev) {
+    const norm = engineLabel === "pi-cli" ? "pi" : engineLabel;
+    return classifyMcp({
+        engine: norm,
+        toolName: ev.toolName,
+        name: ev.name,
+        statusKey: ev.statusKey,
+        server: ev.server,
+    });
+}
+
 const server = http.createServer(async (req, res) => {
     // Every endpoint below can read files or spawn shells, so nothing is
     // reachable before the bearer token is verified.
@@ -1985,7 +2064,13 @@ const server = http.createServer(async (req, res) => {
 
     // 0. Stream de eventos del chat (SSE). Long-lived: no responde y sigue abierto.
     if (pathname === "/api/v1/chat/stream" && req.method === "GET") {
-        subscribeChatStream(req, res);
+        // Context is server-derived (never client query) so activity frames are
+        // filtered to the subscriber's engine/project/session — Change A (D4).
+        subscribeChatStream(req, res, {
+            engine: currentStatus.activeEngine,
+            project: activeProjectId,
+            sessionId: currentActivitySession(currentStatus.activeEngine),
+        });
         return;
     }
 
@@ -3219,6 +3304,16 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
                                         task: taskDesc
                                     });
                                 } else {
+                                    const mcp = detectMcp("claude", { toolName });
+                                    activityRegistry.start(toolId, {
+                                        engine: "claude",
+                                        project: activeProjectId,
+                                        sessionId: currentActivitySession("claude"),
+                                        kind: mcp.isMcp ? "mcp" : "tool",
+                                        name: mcp.name,
+                                        detail: describeToolInput(item) || `Ejecutando ${toolName}...`,
+                                        server: mcp.isMcp ? mcp.server : undefined,
+                                    });
                                     publishChatEvent(CHAT_EVENTS.TOOL_START, {
                                         id: toolId,
                                         name: toolName,
@@ -3252,6 +3347,7 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
                                     activeSubagentId = null;
                                     activeSubagentName = null;
                                 } else if (toolId) {
+                                    activityRegistry.terminalize(toolId, { ok: !item.is_error });
                                     publishChatEvent(CHAT_EVENTS.TOOL_END, {
                                         id: toolId,
                                         name: "Tool",
@@ -3300,7 +3396,7 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
 
         child.stderr.on("data", (chunk) => {
             const str = chunk.toString("utf8");
-            console.log(`[Claude CLI Stderr] ${str.trim()}`);
+            console.log(`[Claude CLI Stderr] ${redactActivity(str.trim())}`);
         });
 
         child.on("error", (err) => {
@@ -3418,15 +3514,31 @@ function runOpenCodeCli(projPath, sessionId, message) {
                             ok: event.part.state?.status !== "error"
                         });
                     } else {
+                        // OpenCode delivers start+end together; server is
+                        // additive (may be unknown until the end event).
+                        const mcp = detectMcp("opencode", { toolName, server: event.part?.state?.server });
+                        const ocDetail = describeToolInput({ input }) || `Ejecutando ${toolName}...`;
+                        activityRegistry.start(callId, {
+                            engine: "opencode",
+                            project: activeProjectId,
+                            sessionId: currentActivitySession("opencode"),
+                            kind: mcp.isMcp ? "mcp" : "tool",
+                            name: mcp.name,
+                            detail: ocDetail,
+                            server: mcp.server,
+                        });
+                        const ocOk = event.part.state?.status !== "error";
+                        if (!ocOk) activityRegistry.terminalize(callId, { ok: false, errorClass: "tool" });
+                        else activityRegistry.terminalize(callId, { ok: true });
                         publishChatEvent(CHAT_EVENTS.TOOL_START, {
                             id: callId,
                             name: toolName,
-                            message: describeToolInput({ input }) || `Ejecutando ${toolName}...`
+                            message: ocDetail
                         });
                         publishChatEvent(CHAT_EVENTS.TOOL_END, {
                             id: callId,
                             name: toolName,
-                            ok: event.part.state?.status !== "error"
+                            ok: ocOk
                         });
                     }
                 }
@@ -3448,7 +3560,7 @@ function runOpenCodeCli(projPath, sessionId, message) {
 
         child.stderr.on("data", (chunk) => {
             const str = chunk.toString("utf8");
-            console.log(`[OpenCode CLI Stderr] ${str.trim()}`);
+            console.log(`[OpenCode CLI Stderr] ${redactActivity(str.trim())}`);
         });
 
         child.on("error", (err) => {
