@@ -8,7 +8,17 @@
 // SSE rather than WebSocket on purpose: Node ships no WebSocket server, and
 // this server intentionally has zero dependencies. SSE is plain res.write()
 // over the HTTP that already carries the Bearer auth check.
+//
+// Change A (live-cli-activity-visibility) extends this hub with:
+//   - activity_* event types, filtered per subscriber context (no broadcast),
+//   - per-subscriber bounded queue (drop-oldest backpressure),
+//   - isolated replay of recent activity for the bound context,
+//   - a close handler that clears ONLY subscriber-owned resources and the
+//     SSE keepalive. The operation-owned ActivityRegistry 15s heartbeat
+//     (lib/activity.mjs) is NEVER touched here.
 // ============================================================================
+
+import { ACTIVITY_TYPES } from "./lib/activity.mjs";
 
 /** Every event type the app is allowed to receive. Keep in sync with ChatEvent.kt. */
 export const CHAT_EVENTS = Object.freeze({
@@ -25,9 +35,15 @@ export const CHAT_EVENTS = Object.freeze({
 });
 
 const HEARTBEAT_MS = 20000;
+const RECENT_CAP = 64;          // per-context replay ring buffer
+const QUEUE_CAP = 256;          // per-subscriber bounded queue
+const ACTIVITY_FRAME_TYPES = new Set(Object.values(ACTIVITY_TYPES));
 
-/** Open SSE responses. */
-const subscribers = new Set();
+/** Open SSE responses mapped to their per-subscriber state. */
+const subscribers = new Map();
+
+/** Per-context ring buffer of recent activity frames, for isolated replay. */
+const recentActivity = new Map();
 
 let heartbeat = null;
 
@@ -36,7 +52,7 @@ function startHeartbeatIfNeeded() {
     // A comment line keeps idle connections alive through proxies and Tailscale
     // without the app having to interpret anything.
     heartbeat = setInterval(() => {
-        for (const res of subscribers) {
+        for (const res of subscribers.keys()) {
             try { res.write(": ping\n\n"); } catch { drop(res); }
         }
     }, HEARTBEAT_MS);
@@ -51,15 +67,67 @@ function stopHeartbeatIfIdle() {
 
 function drop(res) {
     subscribers.delete(res);
-    try { res.end(); } catch { /* already closed */ }
     stopHeartbeatIfIdle();
 }
 
 /**
- * Attaches an HTTP response as an SSE subscriber. Call only after the request
- * has passed the auth guard.
+ * Pure, deterministic bounded enqueue: returns a NEW queue with `item` appended,
+ * dropping the OLDEST entries when over `cap`. Preserves newest + order.
+ * Used for per-subscriber backpressure and the per-context ring buffer.
  */
-export function subscribe(req, res) {
+export function enqueueBounded(queue, item, cap = QUEUE_CAP) {
+    const next = queue.concat([item]);
+    while (next.length > cap) next.shift();
+    return next;
+}
+
+/**
+ * Derives the opaque, server-side context key from the subscriber identity.
+ * Returns null when any required field is missing (such a subscriber receives
+ * no activity). NEVER derived from req.query — the server supplies it after
+ * requireAuth.
+ */
+function contextKeyOf(context) {
+    if (!context) return null;
+    const { engine, project, sessionId } = context;
+    if (!engine || !project || !sessionId) return null;
+    return `${engine} ${project} ${sessionId}`;
+}
+
+/** Deliver a frame, queueing on genuine backpressure (res.write === false). */
+function deliver(res, sub, frame) {
+    let ok = true;
+    try { ok = res.write(frame); } catch { ok = false; }
+    if (ok === false) {
+        sub.queue = enqueueBounded(sub.queue, frame, QUEUE_CAP);
+        if (!sub.drainHandler) {
+            sub.drainHandler = () => flush(res, sub);
+            res.once("drain", sub.drainHandler);
+        }
+    }
+}
+
+/** Flush a backpressured subscriber queue once the socket drains. */
+function flush(res, sub) {
+    while (sub.queue.length > 0) {
+        const frame = sub.queue[0];
+        let ok = true;
+        try { ok = res.write(frame); } catch { ok = false; }
+        if (ok === false) return; // still backpressured; 'drain' will fire again
+        sub.queue.shift();
+    }
+    if (sub.drainHandler) {
+        res.removeListener?.("drain", sub.drainHandler);
+        sub.drainHandler = null;
+    }
+}
+
+/**
+ * Attaches an HTTP response as an SSE subscriber. Call only after the request
+ * has passed the auth guard. `context` (engine/project/sessionId) is the
+ * server-derived identity — never client-supplied query params.
+ */
+export function subscribe(req, res, context) {
     res.writeHead(200, {
         "Content-Type": "text/event-stream; charset=utf-8",
         "Cache-Control": "no-cache, no-transform",
@@ -71,24 +139,42 @@ export function subscribe(req, res) {
     // even before the first event arrives.
     res.write(": connected\n\n");
 
-    subscribers.add(res);
+    const key = contextKeyOf(context);
+    const sub = { contextKey: key, queue: [], drainHandler: null };
+    subscribers.set(res, sub);
     startHeartbeatIfNeeded();
     console.log(`[chat-stream] Cliente conectado (${subscribers.size} activo(s))`);
 
+    // Isolated replay: deliver only this context's recent activity, in order.
+    for (const frame of (recentActivity.get(key) || [])) {
+        deliver(res, sub, frame);
+    }
+
     req.on("close", () => {
+        // Clear ONLY subscriber-owned resources: the queue and the drain
+        // listener. The operation-owned ActivityRegistry 15s heartbeat lives in
+        // lib/activity.mjs and ends solely via terminalize(id); a subscriber
+        // disconnect must never stop it. stopHeartbeatIfIdle() here clears only
+        // the SSE keepalive, which is chat-events-owned.
         subscribers.delete(res);
+        sub.queue = [];
+        if (sub.drainHandler) {
+            res.removeListener?.("drain", sub.drainHandler);
+            sub.drainHandler = null;
+        }
         stopHeartbeatIfIdle();
         console.log(`[chat-stream] Cliente desconectado (${subscribers.size} activo(s))`);
     });
 }
 
 /**
- * Broadcasts one event to every connected app. Never throws: a chat stream
- * failing must not take down the request that produced the event.
+ * Broadcasts one event. Non-activity events go to every subscriber (existing
+ * behavior). Activity events are filtered by context: only subscribers bound to
+ * the matching engine/project/sessionId receive them, and the frame is recorded
+ * in that context's ring buffer for later isolated replay. An activity event
+ * without a full identity reaches NOBODY (never broadcast).
  */
 export function publish(type, data = {}) {
-    if (subscribers.size === 0) return;
-
     let frame;
     try {
         frame = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
@@ -97,9 +183,19 @@ export function publish(type, data = {}) {
         return;
     }
 
-    for (const res of subscribers) {
-        try { res.write(frame); } catch { drop(res); }
+    if (ACTIVITY_FRAME_TYPES.has(type)) {
+        if (!data || !data.engine || !data.project || !data.sessionId) return;
+        const key = contextKeyOf({ engine: data.engine, project: data.project, sessionId: data.sessionId });
+        const buf = enqueueBounded(recentActivity.get(key) || [], frame, RECENT_CAP);
+        recentActivity.set(key, buf);
+        for (const [res, sub] of subscribers) {
+            if (sub.contextKey === key) deliver(res, sub, frame);
+        }
+        return;
     }
+
+    if (subscribers.size === 0) return;
+    for (const [res, sub] of subscribers) deliver(res, sub, frame);
 }
 
 export function subscriberCount() {

@@ -27,13 +27,13 @@ Orchestrator must collect chain strategy (stacked-to-main | feature-branch-chain
 
 ## Phase 1: Server lib + RED encode (files 1,4)
 
-- [ ] 1.1 RED `test/activity-encode.test.mjs`: secrets/`Authorization`/URL-query/paths stripped; UTF-8 `Buffer.byteLength<=cap`, malformed dropped, <=4096B; Claude `mcp__s__t` MCP, `ToolSearch` generic; OpenCode `toolName`+additive `server`; Pi `statusKey=mcp` generic+additive; injectable 15s heartbeat `inflight:true` only; terminal stops it.
-- [ ] 1.2 Create `lib/activity.mjs`: `ActivityRegistry`(per-op `id`, per-inv `streamId`); operation-owned 15000ms heartbeat(`inflight` only); `encodeActivity`; `redactActivity`(bearer→key/token/secret→paths→URL-query, UTF-8 cap); structural MCP classify; idempotent `terminalize(id)`(terminal=true, clearInterval ONCE, ONE frame, tombstone+120000ms, delete).
+- [x] 1.1 RED `test/activity-encode.test.mjs`: secrets/`Authorization`/URL-query/paths stripped; UTF-8 `Buffer.byteLength<=cap`, malformed dropped, <=4096B; Claude `mcp__s__t` MCP, `ToolSearch` generic; OpenCode `toolName`+additive `server`; Pi `statusKey=mcp` generic+additive; injectable 15s heartbeat `inflight:true` only; terminal stops it.
+- [x] 1.2 Create `lib/activity.mjs`: `ActivityRegistry`(per-op `id`, per-inv `streamId`); operation-owned 15000ms heartbeat(`inflight` only); `encodeActivity`; `redactActivity`(bearer→key/token/secret→paths→URL-query, UTF-8 cap); structural MCP classify; idempotent `terminalize(id)`(terminal=true, clearInterval ONCE, ONE frame, tombstone+120000ms, delete).
 
 ## Phase 2: SSE isolation RED + production (files 3,5)
 
-- [ ] 2.1 RED `test/replay-isolation.test.mjs`: same opaque-bound sub receives; wrong-project/engine/session → 0; missing params → 0; no broadcast; reconnect re-binds context; queue overflow drops oldest deterministically, preserves newest+order, never leaks across wrong project/engine/session.
-- [ ] 2.2 Modify `chat-events.mjs`: add `activity_*`; per-sub server-derived opaque context(never `req.query`); bounded queue(cap N, drop oldest); isolated replay by context; `req.on("close")` clears ONLY subscriber-owned queue+keepalive/drain timer/resources — MUST NOT stop operation-owned `ActivityRegistry` 15s heartbeat (ends only via idempotent `terminalize(id)` on operation terminal cause).
+- [x] 2.1 RED `test/replay-isolation.test.mjs`: same opaque-bound sub receives; wrong-project/engine/session → 0; missing params → 0; no broadcast; reconnect re-binds context; queue overflow drops oldest deterministically, preserves newest+order, never leaks across wrong project/engine/session.
+- [x] 2.2 Modify `chat-events.mjs`: add `activity_*`; per-sub server-derived opaque context(never `req.query`); bounded queue(cap N, drop oldest); isolated replay by context; `req.on("close")` clears ONLY subscriber-owned queue+keepalive/drain timer/resources — MUST NOT stop operation-owned `ActivityRegistry` 15s heartbeat (ends only via idempotent `terminalize(id)` on operation terminal cause).
 
 ## Phase 3: Engine wiring + harness (files 2,6)
 
