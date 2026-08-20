@@ -27,6 +27,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.example.idupi.domain.model.ActivityStatus
+import com.example.idupi.domain.model.ActivityUiState
 import com.example.idupi.domain.model.ChatMessage
 import com.example.idupi.domain.model.MessageSender
 import com.example.idupi.domain.model.QuickCommand
@@ -53,6 +55,7 @@ fun ChatScreen(
     val serverStatus by mainViewModel.status.collectAsState()
     val selectedWallpaper by mainViewModel.selectedWallpaper.collectAsState()
 
+    val activities by viewModel.activities.collectAsState()
     val subagents by viewModel.subagents.collectAsState()
     val selectedSubagent by viewModel.selectedSubagent.collectAsState()
 
@@ -255,6 +258,10 @@ fun ChatScreen(
 
                 if (activeTool != null) {
                     ActiveToolOverlay(toolName = activeTool!!)
+                }
+
+                if (activities.isNotEmpty()) {
+                    LiveActivityBar(activities = activities)
                 }
 
                 if (subagents.isNotEmpty()) {
@@ -977,5 +984,92 @@ fun SubagentLiveConsoleBottomSheet(
 
             Spacer(modifier = Modifier.height(AppSpacing.md))
         }
+    }
+}
+
+/**
+ * Live CLI/MCP activity. Running operations come first so the thing happening
+ * right now is not pushed off screen by what already finished.
+ */
+@Composable
+fun LiveActivityBar(activities: List<ActivityUiState>) {
+    val ordered = remember(activities) {
+        activities.sortedByDescending { it.isRunning }
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AppSpacing.lg, vertical = AppSpacing.xs),
+        verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
+    ) {
+        ordered.forEach { activity ->
+            LiveActivityRow(activity = activity)
+        }
+    }
+}
+
+@Composable
+private fun LiveActivityRow(activity: ActivityUiState) {
+    val dotColor = when (activity.status) {
+        ActivityStatus.OK -> StatusConnected
+        ActivityStatus.FAILED -> StatusError
+        ActivityStatus.TIMED_OUT -> StatusError
+        ActivityStatus.RUNNING -> if (activity.isStale) StatusTerminal else StatusWorking
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+    ) {
+        if (activity.isRunning) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(12.dp),
+                color = dotColor,
+                strokeWidth = 2.dp
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .clip(CircleShape)
+                    .background(dotColor)
+            )
+        }
+
+        if (activity.kind == "mcp") {
+            Text(text = "MCP", style = AppTypography.labelSmall, color = AccentPurple)
+        }
+
+        Text(
+            text = activity.label,
+            style = AppTypography.labelSmall,
+            color = TextPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+
+        Text(
+            text = activityStatusText(activity),
+            style = AppTypography.labelSmall,
+            color = if (activity.isStale) StatusTerminal else TextSecondary,
+            maxLines = 1
+        )
+    }
+}
+
+/**
+ * The trailing status text. While an operation is open this reports how long it
+ * has been running -- and, once the provider has gone quiet past the stale
+ * threshold, says so explicitly rather than implying the process is healthy.
+ */
+private fun activityStatusText(activity: ActivityUiState): String = when (activity.status) {
+    ActivityStatus.OK -> "listo"
+    ActivityStatus.FAILED -> "falló"
+    ActivityStatus.TIMED_OUT -> "sin respuesta"
+    ActivityStatus.RUNNING -> {
+        val seconds = activity.elapsedMs / 1000
+        if (activity.isStale) "sin novedades ${activity.sinceLastUpdateMs / 1000}s" else "${seconds}s"
     }
 }

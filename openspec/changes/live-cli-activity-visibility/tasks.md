@@ -43,12 +43,12 @@ Orchestrator must collect chain strategy (stacked-to-main | feature-branch-chain
 
 ## Phase 4: Android model + parser (files 7,8,11)
 
-- [ ] 4.1 RED extend `SseFrameParserTest.kt`: parse 6 `Activity*`; ignore unknown(old APK alive, no ACK); started→ended; heartbeat open; recent<20s / stale>=20s in-flight; gap<=20s; timeout terminalizes; duplicate id ignored.
-- [ ] 4.2 Modify `ChatEvent.kt`: add 6 `Activity*`(stable `id`+`streamId`, `elapsedMs`/`sinceLastUpdateMs`, `inflight`).
-- [ ] 4.3 Modify `SseFrameParser.kt`: `when` decodes `activity_*`; `else->null` ignores unknown.
+- [x] 4.1 RED extend `SseFrameParserTest.kt`: parse 6 `Activity*`; ignore unknown(old APK alive, no ACK); started→ended; heartbeat open; recent<20s / stale>=20s in-flight; gap<=20s; timeout terminalizes; duplicate id ignored.
+- [x] 4.2 Modify `ChatEvent.kt`: add 6 `Activity*`(stable `id`+`streamId`, `elapsedMs`/`sinceLastUpdateMs`, `inflight`).
+- [x] 4.3 Modify `SseFrameParser.kt`: `when` decodes `activity_*`; `else->null` ignores unknown.
 
 ## Phase 5: Android VM/UI (files 9,10,12)
 
-- [ ] 5.1 RED extend `ChatViewModelTest.kt`: activity→UI; heartbeat open; recent<20s / stale>=20s in-flight; gap<=20s; timeout terminalizes; duplicate ignored.
-- [ ] 5.2 Modify `ChatViewModel.kt`: map activity→UI(in-flight/recent/stale/terminal).
-- [ ] 5.3 Modify `ChatScreen.kt`: render indicator(stable id, elapsed, recent/stale/terminal).
+- [x] 5.1 RED extend `ChatViewModelTest.kt`: activity→UI; heartbeat open; recent<20s / stale>=20s in-flight; gap<=20s; timeout terminalizes; duplicate ignored.
+- [x] 5.2 Modify `ChatViewModel.kt`: map activity→UI(in-flight/recent/stale/terminal).
+- [x] 5.3 Modify `ChatScreen.kt`: render indicator(stable id, elapsed, recent/stale/terminal).

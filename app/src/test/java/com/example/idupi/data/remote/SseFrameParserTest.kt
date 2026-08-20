@@ -135,4 +135,127 @@ class SseFrameParserTest {
         assertEquals(ChatEvent.ErrorOccurred("boom"), event)
         assertTrue((event as ChatEvent.ErrorOccurred).error == "boom")
     }
+
+    // -- activity_* (Change A, task 4.1) --------------------------------------
+    //
+    // The server filters every activity frame to the subscriber's own
+    // engine/project/session before it reaches the wire (chat-events.mjs drops
+    // frames whose context is missing and delivers only to the matching
+    // subscriber), so the decoded events carry `id`/`streamId` for correlation
+    // and not the context triple that selected them.
+
+    @Test
+    fun `activity_start decodes identity kind name and detail`() {
+        val event = parseSseEvent(
+            json,
+            "activity_start",
+            """{"id":"a1","streamId":"s1","engine":"pi-cli","project":"p","sessionId":"sess",
+                "kind":"mcp","name":"playwright_browser_navigate","server":"playwright",
+                "detail":"https://example.com","startedAt":1000}""",
+        )
+        assertEquals(
+            ChatEvent.ActivityStarted(
+                id = "a1", streamId = "s1", kind = "mcp",
+                name = "playwright_browser_navigate", server = "playwright",
+                detail = "https://example.com", startedAt = 1000L,
+            ),
+            event,
+        )
+    }
+
+    @Test
+    fun `activity_start without server or detail keeps them null`() {
+        // Pi starts generic: the server enriches `server` additively only at the end.
+        val event = parseSseEvent(
+            json,
+            "activity_start",
+            """{"id":"a2","streamId":"s1","kind":"tool","name":"bash","startedAt":5}""",
+        )
+        val started = event as ChatEvent.ActivityStarted
+        assertNull(started.server)
+        assertNull(started.detail)
+        assertEquals("bash", started.name)
+    }
+
+    @Test
+    fun `activity_update carries additive server enrichment`() {
+        val event = parseSseEvent(
+            json,
+            "activity_update",
+            """{"id":"a1","streamId":"s1","server":"playwright","lastUpdateAt":2000}""",
+        )
+        assertEquals(
+            ChatEvent.ActivityUpdated(
+                id = "a1", streamId = "s1", server = "playwright",
+                detail = null, lastUpdateAt = 2000L,
+            ),
+            event,
+        )
+    }
+
+    @Test
+    fun `activity_heartbeat decodes elapsed sinceLastUpdate and inflight`() {
+        val event = parseSseEvent(
+            json,
+            "activity_heartbeat",
+            """{"id":"a1","streamId":"s1","elapsedMs":45000,"sinceLastUpdateMs":15000,"inflight":true}""",
+        )
+        assertEquals(
+            ChatEvent.ActivityHeartbeat(
+                id = "a1", streamId = "s1",
+                elapsedMs = 45000L, sinceLastUpdateMs = 15000L, inflight = true,
+            ),
+            event,
+        )
+    }
+
+    @Test
+    fun `activity_end carries the ok outcome`() {
+        val ok = parseSseEvent(json, "activity_end", """{"id":"a1","streamId":"s1","ok":true}""")
+        assertEquals(true, (ok as ChatEvent.ActivityEnded).ok)
+
+        val failed = parseSseEvent(json, "activity_end", """{"id":"a1","streamId":"s1","ok":false}""")
+        assertEquals(false, (failed as ChatEvent.ActivityEnded).ok)
+    }
+
+    @Test
+    fun `activity_failure carries the error class`() {
+        val event = parseSseEvent(
+            json,
+            "activity_failure",
+            """{"id":"a1","streamId":"s1","errorClass":"tool"}""",
+        )
+        assertEquals(
+            ChatEvent.ActivityFailed(id = "a1", streamId = "s1", errorClass = "tool", server = null, detail = null),
+            event,
+        )
+    }
+
+    @Test
+    fun `activity_timeout decodes as its own terminal event`() {
+        val event = parseSseEvent(json, "activity_timeout", """{"id":"a1","streamId":"s1"}""")
+        assertEquals(
+            ChatEvent.ActivityTimedOut(id = "a1", streamId = "s1", server = null, detail = null),
+            event,
+        )
+    }
+
+    @Test
+    fun `an unknown activity subtype is still ignored rather than crashing`() {
+        // Forward compatibility runs both ways: a NEWER server may add
+        // activity_* subtypes this build has never heard of.
+        assertNull(parseSseEvent(json, "activity_teleported", """{"id":"a1","streamId":"s1"}"""))
+    }
+
+    @Test
+    fun `a malformed activity frame is skipped without killing the stream`() {
+        assertNull(parseSseEvent(json, "activity_start", "{ not json"))
+
+        val recovered = parseSseEvent(
+            json,
+            "activity_start",
+            """{"id":"a9","streamId":"s1","kind":"tool","name":"read","startedAt":1}""",
+        )
+        assertEquals("read", (recovered as ChatEvent.ActivityStarted).name)
+    }
 }

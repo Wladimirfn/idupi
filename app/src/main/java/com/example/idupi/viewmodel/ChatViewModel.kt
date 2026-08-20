@@ -40,6 +40,14 @@ class ChatViewModel(
     private val _subagents = MutableStateFlow<List<SubagentLiveState>>(emptyList())
     val subagents = _subagents.asStateFlow()
 
+    /**
+     * Live CLI/MCP operations, correlated by the server's stable activity id.
+     * Terminal entries are kept so the chat can still show what ran and how it
+     * finished; the server tombstones its own copy after two minutes.
+     */
+    private val _activities = MutableStateFlow<List<ActivityUiState>>(emptyList())
+    val activities = _activities.asStateFlow()
+
     private val _selectedSubagent = MutableStateFlow<SubagentLiveState?>(null)
     val selectedSubagent = _selectedSubagent.asStateFlow()
 
@@ -118,12 +126,87 @@ class ChatViewModel(
         }
     }
 
+    /**
+     * Applies [transform] to the tracked activity with [id], if there is one.
+     * A frame for an id we never saw start is dropped rather than materialising
+     * a half-known entry out of it.
+     */
+    private fun updateActivity(id: String, transform: (ActivityUiState) -> ActivityUiState) {
+        if (_activities.value.none { it.id == id }) return
+        _activities.value = _activities.value.map { if (it.id == id) transform(it) else it }
+    }
+
     private fun observeChatEvents() {
         viewModelScope.launch {
             client.connectChat().collect { event ->
                 when (event) {
                     is ChatEvent.StatusChanged -> {
                         // Global status updated
+                    }
+                    is ChatEvent.ActivityStarted -> {
+                        // The id is the server's correlation key. A repeat for an
+                        // id we already track is a duplicate frame, not a second
+                        // operation, so it must not open another entry.
+                        if (_activities.value.none { it.id == event.id }) {
+                            _activities.value = _activities.value + ActivityUiState(
+                                id = event.id,
+                                streamId = event.streamId,
+                                kind = event.kind,
+                                name = event.name,
+                                server = event.server,
+                                detail = event.detail,
+                            )
+                        }
+                    }
+                    is ChatEvent.ActivityUpdated -> {
+                        // Additive: `server` and `detail` enrich what is already
+                        // shown, they never replace the original name or id, and a
+                        // null in the frame never erases a value already known.
+                        updateActivity(event.id) { current ->
+                            current.copy(
+                                server = event.server ?: current.server,
+                                detail = event.detail ?: current.detail,
+                                sinceLastUpdateMs = 0L,
+                            )
+                        }
+                    }
+                    is ChatEvent.ActivityHeartbeat -> {
+                        // Only meaningful while open: a heartbeat that arrives after
+                        // a terminal frame must never reopen the operation.
+                        updateActivity(event.id) { current ->
+                            if (!current.isRunning) current
+                            else current.copy(
+                                elapsedMs = event.elapsedMs,
+                                sinceLastUpdateMs = event.sinceLastUpdateMs,
+                            )
+                        }
+                    }
+                    is ChatEvent.ActivityEnded -> {
+                        updateActivity(event.id) { current ->
+                            current.copy(
+                                status = if (event.ok) ActivityStatus.OK else ActivityStatus.FAILED,
+                                server = event.server ?: current.server,
+                                detail = event.detail ?: current.detail,
+                            )
+                        }
+                    }
+                    is ChatEvent.ActivityFailed -> {
+                        updateActivity(event.id) { current ->
+                            current.copy(
+                                status = ActivityStatus.FAILED,
+                                server = event.server ?: current.server,
+                                detail = event.detail ?: current.detail,
+                            )
+                        }
+                    }
+                    is ChatEvent.ActivityTimedOut -> {
+                        updateActivity(event.id) { current ->
+                            current.copy(
+                                status = ActivityStatus.TIMED_OUT,
+                                server = event.server ?: current.server,
+                                detail = event.detail ?: current.detail,
+                            )
+                        }
                     }
                     is ChatEvent.ToolStarted -> {
                         _activeTool.value = event.toolName

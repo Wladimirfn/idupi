@@ -69,6 +69,34 @@ class SseFrameParser {
 @Serializable private data class EngineChangedPayload(val engine: String, val model: String, val provider: String? = null)
 @Serializable private data class ErrorPayload(val message: String)
 
+// Activity payloads (Change A). `server` and `detail` are omitted by the server
+// when absent, so every optional field needs a default -- see encodeActivity in
+// idupi-server/lib/activity.mjs.
+@Serializable private data class ActivityStartPayload(
+    val id: String, val streamId: String = "", val kind: String = "tool", val name: String = "",
+    val server: String? = null, val detail: String? = null, val startedAt: Long = 0L,
+)
+@Serializable private data class ActivityUpdatePayload(
+    val id: String, val streamId: String = "",
+    val server: String? = null, val detail: String? = null, val lastUpdateAt: Long = 0L,
+)
+@Serializable private data class ActivityHeartbeatPayload(
+    val id: String, val streamId: String = "",
+    val elapsedMs: Long = 0L, val sinceLastUpdateMs: Long = 0L, val inflight: Boolean = true,
+)
+@Serializable private data class ActivityEndPayload(
+    val id: String, val streamId: String = "", val ok: Boolean = false,
+    val server: String? = null, val detail: String? = null,
+)
+@Serializable private data class ActivityFailurePayload(
+    val id: String, val streamId: String = "", val errorClass: String? = null,
+    val server: String? = null, val detail: String? = null,
+)
+@Serializable private data class ActivityTimeoutPayload(
+    val id: String, val streamId: String = "",
+    val server: String? = null, val detail: String? = null,
+)
+
 private const val SSE_TAG = "SseFrameParser"
 
 /**
@@ -121,6 +149,52 @@ fun parseSseEvent(json: Json, event: String?, data: String): ChatEvent? {
                 // UI currently reacts to an engine/model/provider switch mid-stream.
                 json.decodeFromString(EngineChangedPayload.serializer(), data)
                 null
+            }
+
+            "activity_start" -> {
+                val p = json.decodeFromString(ActivityStartPayload.serializer(), data)
+                ChatEvent.ActivityStarted(
+                    id = p.id, streamId = p.streamId, kind = p.kind, name = p.name,
+                    server = p.server, detail = p.detail, startedAt = p.startedAt,
+                )
+            }
+
+            "activity_update" -> {
+                val p = json.decodeFromString(ActivityUpdatePayload.serializer(), data)
+                ChatEvent.ActivityUpdated(
+                    id = p.id, streamId = p.streamId,
+                    server = p.server, detail = p.detail, lastUpdateAt = p.lastUpdateAt,
+                )
+            }
+
+            "activity_heartbeat" -> {
+                val p = json.decodeFromString(ActivityHeartbeatPayload.serializer(), data)
+                ChatEvent.ActivityHeartbeat(
+                    id = p.id, streamId = p.streamId,
+                    elapsedMs = p.elapsedMs, sinceLastUpdateMs = p.sinceLastUpdateMs, inflight = p.inflight,
+                )
+            }
+
+            "activity_end" -> {
+                val p = json.decodeFromString(ActivityEndPayload.serializer(), data)
+                ChatEvent.ActivityEnded(
+                    id = p.id, streamId = p.streamId, ok = p.ok, server = p.server, detail = p.detail,
+                )
+            }
+
+            "activity_failure" -> {
+                val p = json.decodeFromString(ActivityFailurePayload.serializer(), data)
+                ChatEvent.ActivityFailed(
+                    id = p.id, streamId = p.streamId, errorClass = p.errorClass,
+                    server = p.server, detail = p.detail,
+                )
+            }
+
+            "activity_timeout" -> {
+                val p = json.decodeFromString(ActivityTimeoutPayload.serializer(), data)
+                ChatEvent.ActivityTimedOut(
+                    id = p.id, streamId = p.streamId, server = p.server, detail = p.detail,
+                )
             }
 
             "error" ->

@@ -3,6 +3,7 @@ package com.example.idupi.viewmodel
 import com.example.idupi.FakeClientSource
 import com.example.idupi.FakeIduPiClient
 import com.example.idupi.MainDispatcherRule
+import com.example.idupi.domain.model.ActivityStatus
 import com.example.idupi.domain.model.ChatEvent
 import com.example.idupi.domain.model.MessageSender
 import com.example.idupi.domain.repository.AiModelItem
@@ -182,5 +183,159 @@ class ChatViewModelTest {
 
         viewModel.dismissSubagentConsole()
         assertNull(viewModel.selectedSubagent.value)
+    }
+
+    // -- Live CLI activity (Change A, task 5.1) ------------------------------
+
+    @Test
+    fun `ActivityStarted opens a running entry keyed by its stable id`() = runTest {
+        val viewModel = ChatViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+
+        fake.emitChatEvent(
+            ChatEvent.ActivityStarted(
+                id = "act-1", streamId = "s1", kind = "mcp",
+                name = "playwright_browser_navigate", detail = "https://example.com",
+            ),
+        )
+        advanceUntilIdle()
+
+        val activity = viewModel.activities.value.single()
+        assertEquals("act-1", activity.id)
+        assertEquals("mcp", activity.kind)
+        assertEquals("playwright_browser_navigate", activity.name)
+        assertEquals(ActivityStatus.RUNNING, activity.status)
+        assertEquals(false, activity.isStale)
+    }
+
+    @Test
+    fun `a duplicate ActivityStarted for the same id does not open a second entry`() = runTest {
+        val viewModel = ChatViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+
+        val start = ChatEvent.ActivityStarted(id = "act-1", streamId = "s1", kind = "tool", name = "bash")
+        fake.emitChatEvent(start)
+        fake.emitChatEvent(start)
+        advanceUntilIdle()
+
+        assertEquals(1, viewModel.activities.value.size)
+    }
+
+    @Test
+    fun `ActivityUpdated adds the server without replacing the original name or id`() = runTest {
+        val viewModel = ChatViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+
+        fake.emitChatEvent(ChatEvent.ActivityStarted(id = "act-1", streamId = "s1", kind = "tool", name = "browser_navigate"))
+        fake.emitChatEvent(ChatEvent.ActivityUpdated(id = "act-1", streamId = "s1", server = "playwright"))
+        advanceUntilIdle()
+
+        val activity = viewModel.activities.value.single()
+        assertEquals("browser_navigate", activity.name)
+        assertEquals("act-1", activity.id)
+        assertEquals("playwright", activity.server)
+    }
+
+    @Test
+    fun `a heartbeat under 20s keeps the operation open and recent`() = runTest {
+        val viewModel = ChatViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+
+        fake.emitChatEvent(ChatEvent.ActivityStarted(id = "act-1", streamId = "s1", kind = "tool", name = "bash"))
+        fake.emitChatEvent(
+            ChatEvent.ActivityHeartbeat(
+                id = "act-1", streamId = "s1",
+                elapsedMs = 15_000L, sinceLastUpdateMs = 15_000L, inflight = true,
+            ),
+        )
+        advanceUntilIdle()
+
+        val activity = viewModel.activities.value.single()
+        assertEquals(ActivityStatus.RUNNING, activity.status)
+        assertEquals(15_000L, activity.elapsedMs)
+        assertEquals(false, activity.isStale)
+    }
+
+    @Test
+    fun `a heartbeat at or past 20s without a provider update reads as stale`() = runTest {
+        val viewModel = ChatViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+
+        fake.emitChatEvent(ChatEvent.ActivityStarted(id = "act-1", streamId = "s1", kind = "tool", name = "bash"))
+        fake.emitChatEvent(
+            ChatEvent.ActivityHeartbeat(
+                id = "act-1", streamId = "s1",
+                elapsedMs = 20_000L, sinceLastUpdateMs = 20_000L, inflight = true,
+            ),
+        )
+        advanceUntilIdle()
+
+        val activity = viewModel.activities.value.single()
+        assertEquals(ActivityStatus.RUNNING, activity.status)
+        assertEquals(true, activity.isStale)
+    }
+
+    @Test
+    fun `ActivityEnded terminalizes with its ok outcome`() = runTest {
+        val viewModel = ChatViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+
+        fake.emitChatEvent(ChatEvent.ActivityStarted(id = "act-1", streamId = "s1", kind = "tool", name = "bash"))
+        fake.emitChatEvent(ChatEvent.ActivityEnded(id = "act-1", streamId = "s1", ok = true))
+        advanceUntilIdle()
+        assertEquals(ActivityStatus.OK, viewModel.activities.value.single().status)
+
+        fake.emitChatEvent(ChatEvent.ActivityStarted(id = "act-2", streamId = "s1", kind = "tool", name = "grep"))
+        fake.emitChatEvent(ChatEvent.ActivityEnded(id = "act-2", streamId = "s1", ok = false))
+        advanceUntilIdle()
+        assertEquals(ActivityStatus.FAILED, viewModel.activities.value.last().status)
+    }
+
+    @Test
+    fun `ActivityFailed and ActivityTimedOut are distinct terminal states`() = runTest {
+        val viewModel = ChatViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+
+        fake.emitChatEvent(ChatEvent.ActivityStarted(id = "f1", streamId = "s1", kind = "tool", name = "bash"))
+        fake.emitChatEvent(ChatEvent.ActivityFailed(id = "f1", streamId = "s1", errorClass = "tool"))
+        fake.emitChatEvent(ChatEvent.ActivityStarted(id = "t1", streamId = "s1", kind = "mcp", name = "slow_mcp"))
+        fake.emitChatEvent(ChatEvent.ActivityTimedOut(id = "t1", streamId = "s1"))
+        advanceUntilIdle()
+
+        val byId = viewModel.activities.value.associateBy { it.id }
+        assertEquals(ActivityStatus.FAILED, byId.getValue("f1").status)
+        assertEquals(ActivityStatus.TIMED_OUT, byId.getValue("t1").status)
+    }
+
+    @Test
+    fun `a heartbeat arriving after a terminal frame never reopens the operation`() = runTest {
+        val viewModel = ChatViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+
+        fake.emitChatEvent(ChatEvent.ActivityStarted(id = "act-1", streamId = "s1", kind = "tool", name = "bash"))
+        fake.emitChatEvent(ChatEvent.ActivityEnded(id = "act-1", streamId = "s1", ok = true))
+        fake.emitChatEvent(
+            ChatEvent.ActivityHeartbeat(
+                id = "act-1", streamId = "s1",
+                elapsedMs = 90_000L, sinceLastUpdateMs = 90_000L, inflight = true,
+            ),
+        )
+        advanceUntilIdle()
+
+        val activity = viewModel.activities.value.single()
+        assertEquals(ActivityStatus.OK, activity.status)
+        assertEquals(false, activity.isStale)
+    }
+
+    @Test
+    fun `frames for an unknown id are dropped instead of inventing an entry`() = runTest {
+        val viewModel = ChatViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+
+        fake.emitChatEvent(ChatEvent.ActivityUpdated(id = "ghost", streamId = "s1", server = "nowhere"))
+        fake.emitChatEvent(ChatEvent.ActivityEnded(id = "ghost", streamId = "s1", ok = true))
+        advanceUntilIdle()
+
+        assertTrue(viewModel.activities.value.isEmpty())
     }
 }
