@@ -1631,6 +1631,18 @@ function getProjectFilesTree(dirPath, relativeTo = dirPath) {
 }
 
 // Gestor de Proceso Pi CLI RPC Persistente con Cambio de Modelo por Parámetros CLI (--provider y --model)
+// Shared by runClaudeCli, runOpenCodeCli and PiRpcManager.sendPrompt -- if the
+// underlying agent CLI (or an MCP server it spawns) never closes/replies, the
+// request must not hang the chat forever (observed live: a hung
+// `npx @playwright/mcp` left an OpenCode chat stuck on "Pensando..." for 9+
+// minutes with no recovery).
+//
+// MUST stay at module scope. It previously sat inside the http.createServer
+// request handler, where runClaudeCli/runOpenCodeCli could see it but
+// PiRpcManager -- declared above that handler -- could not: every Pi message
+// threw ReferenceError and returned 500.
+const AGENT_CLI_TIMEOUT_MS = 5 * 60 * 1000;
+
 class PiRpcManager {
     constructor() {
         this.child = null;
@@ -3267,7 +3279,7 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
             env: process.env
         });
 
-        // See AGENT_CLI_TIMEOUT_MS above runOpenCodeCli: `shell: true` makes
+        // See AGENT_CLI_TIMEOUT_MS at module scope: `shell: true` makes
         // `child` the cmd.exe wrapper, so a tree-kill (not child.kill()) is
         // required to reach Claude CLI itself and any MCP servers it spawns.
         const timeoutTimer = setTimeout(() => {
@@ -3453,12 +3465,6 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
 }
 
 // Ejecución Asíncrona en Streaming para OpenCode
-// Shared by runClaudeCli, runOpenCodeCli and PiRpcManager.sendPrompt -- if the
-// underlying agent CLI (or an MCP server it spawns) never closes/replies, the
-// request must not hang the chat forever (observed live: a hung
-// `npx @playwright/mcp` left an OpenCode chat stuck on "Pensando..." for 9+
-// minutes with no recovery).
-const AGENT_CLI_TIMEOUT_MS = 5 * 60 * 1000;
 
 function runOpenCodeCli(projPath, sessionId, message) {
     return new Promise((resolve, reject) => {
