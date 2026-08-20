@@ -2116,6 +2116,7 @@ const server = http.createServer(async (req, res) => {
                 res.writeHead(400, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ error: "engineId es requerido" }));
             } catch (err) {
+                console.error(`[IDUPI 500] ${req.method} ${pathname}`, err);
                 res.writeHead(500, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ error: err.message }));
             }
@@ -2182,6 +2183,7 @@ const server = http.createServer(async (req, res) => {
                 res.writeHead(200, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ status: "ok", terminal: newTerm }));
             } catch (err) {
+                console.error(`[IDUPI 500] ${req.method} ${pathname}`, err);
                 res.writeHead(500, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ error: err.message }));
             }
@@ -2210,6 +2212,7 @@ const server = http.createServer(async (req, res) => {
                 res.writeHead(200, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ status: "ok", output: result }));
             } catch (err) {
+                console.error(`[IDUPI 500] ${req.method} ${pathname}`, err);
                 res.writeHead(500, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ error: err.message }));
             }
@@ -2230,6 +2233,7 @@ const server = http.createServer(async (req, res) => {
                 res.writeHead(200, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ status: "ok", message: msg }));
             } catch (err) {
+                console.error(`[IDUPI 500] ${req.method} ${pathname}`, err);
                 res.writeHead(500, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ error: err.message }));
             }
@@ -2362,6 +2366,7 @@ const server = http.createServer(async (req, res) => {
                 res.writeHead(400, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ error: "Sesión no encontrada para reanudar" }));
             } catch (err) {
+                console.error(`[IDUPI 500] ${req.method} ${pathname}`, err);
                 res.writeHead(500, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ error: err.message }));
             }
@@ -2420,6 +2425,7 @@ const server = http.createServer(async (req, res) => {
                 res.writeHead(200, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ status: "ok", operatingAi: modelName, operatingProvider: providerName }));
             } catch (err) {
+                console.error(`[IDUPI 500] ${req.method} ${pathname}`, err);
                 res.writeHead(500, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ error: err.message }));
             }
@@ -2470,6 +2476,7 @@ const server = http.createServer(async (req, res) => {
                 res.writeHead(200, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ status: "ok", project: newProject }));
             } catch (err) {
+                console.error(`[IDUPI 500] ${req.method} ${pathname}`, err);
                 res.writeHead(500, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ error: err.message }));
             }
@@ -2485,6 +2492,7 @@ const server = http.createServer(async (req, res) => {
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify(result));
         } catch (err) {
+            console.error(`[IDUPI 500] ${req.method} ${pathname}`, err);
             res.writeHead(500, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: err.message }));
         }
@@ -2572,6 +2580,7 @@ const server = http.createServer(async (req, res) => {
                 res.writeHead(200, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ status: "ok", removedCount: removedList.length, projects: registeredProjects }));
             } catch (err) {
+                console.error(`[IDUPI 500] ${req.method} ${pathname}`, err);
                 res.writeHead(500, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ error: err.message }));
             }
@@ -2833,6 +2842,7 @@ function getModelsForProvider(providerId) {
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify(responsePayload));
         } catch (err) {
+            console.error(`[IDUPI 500] ${req.method} ${pathname}`, err);
             res.writeHead(500, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: err.message }));
         }
@@ -2912,6 +2922,7 @@ function getModelsForProvider(providerId) {
                 res.writeHead(200, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ status: "ok", profileId, activeProfile: profileId }));
             } catch (err) {
+                console.error(`[IDUPI 500] ${req.method} ${pathname}`, err);
                 res.writeHead(500, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ error: err.message }));
             }
@@ -2963,6 +2974,7 @@ function getModelsForProvider(providerId) {
                 res.writeHead(200, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ status: "ok", id: profileId, name: profileName, profile: profilePayload }));
             } catch (err) {
+                console.error(`[IDUPI 500] ${req.method} ${pathname}`, err);
                 res.writeHead(500, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ error: err.message }));
             }
@@ -2994,6 +3006,7 @@ function getModelsForProvider(providerId) {
                 res.writeHead(200, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ status: "ok", profileId }));
             } catch (err) {
+                console.error(`[IDUPI 500] ${req.method} ${pathname}`, err);
                 res.writeHead(500, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ error: err.message }));
             }
@@ -3068,6 +3081,7 @@ function getModelsForProvider(providerId) {
                 res.writeHead(200, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ status: "ok", phase, modelId }));
             } catch (err) {
+                console.error(`[IDUPI 500] ${req.method} ${pathname}`, err);
                 res.writeHead(500, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ error: err.message }));
             }
@@ -3133,6 +3147,7 @@ function getModelsForProvider(providerId) {
                 res.writeHead(200, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ status: success ? "ok" : "error", action, output }));
             } catch (err) {
+                console.error(`[IDUPI 500] ${req.method} ${pathname}`, err);
                 res.writeHead(500, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ error: err.message }));
             }
@@ -3655,6 +3670,7 @@ function runOpenCodeCli(projPath, sessionId, message) {
                     currentStatus.busy = false;
                     currentStatus.cliTask = "Error en tarea";
 
+                    console.error(`[IDUPI 500] ${req.method} ${pathname}`, piErr);
                     res.writeHead(500, { "Content-Type": "application/json" });
                     res.end(JSON.stringify({ error: piErr.message }));
                 }
