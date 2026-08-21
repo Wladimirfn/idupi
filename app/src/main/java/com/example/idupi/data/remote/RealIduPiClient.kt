@@ -53,7 +53,10 @@ class IduPiHttpException(
 ) : Exception(message)
 
 @Serializable
-private data class MessagePayload(val message: String)
+// clientTaskId is generated here, not by the server: the POST below is
+// abandoned after 20s, so the client never sees a server-assigned id and has
+// nothing else to correlate its poll against.
+private data class MessagePayload(val message: String, val clientTaskId: String)
 
 @Serializable
 private data class ChatResponse(val status: String, val output: String? = null, val error: String? = null)
@@ -392,6 +395,7 @@ class RealIduPiClient : IduPiClient {
             chatEventFlow.emit(ChatEvent.Thinking(true))
 
             var outputText: String? = null
+            val clientTaskId = java.util.UUID.randomUUID().toString()
 
             try {
                 // This request stays open for as long as the CLI takes to answer --
@@ -406,7 +410,7 @@ class RealIduPiClient : IduPiClient {
                 // NAT to kill.
                 val response: ChatResponse = send(HttpMethod.Post, "/api/v1/chat/message") {
                     contentType(ContentType.Application.Json)
-                    setBody(MessagePayload(message))
+                    setBody(MessagePayload(message, clientTaskId))
                     timeout {
                         requestTimeoutMillis = 20_000
                         socketTimeoutMillis = 20_000
@@ -429,7 +433,12 @@ class RealIduPiClient : IduPiClient {
                 for (attempt in 1..150) {
                     delay(2000)
                     try {
-                        val taskRes: ActiveTaskResponse = send(HttpMethod.Get, "/api/v1/chat/active-task").body()
+                        // Ask for THIS task. Without the id the server answers
+                        // with whatever task is current, so a second message
+                        // handed its answer to this poll -- or this poll never
+                        // saw its own result at all.
+                        val taskRes: ActiveTaskResponse =
+                            send(HttpMethod.Get, "/api/v1/chat/active-task?clientTaskId=$clientTaskId").body()
 
                         if (taskRes.status == "completed" && !taskRes.output.isNullOrBlank()) {
                             outputText = taskRes.output

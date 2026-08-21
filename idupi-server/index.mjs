@@ -11,6 +11,7 @@ import { homedir, networkInterfaces } from "node:os";
 import { join, basename, relative, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createAuthGuard, loadToken } from "../server-auth.mjs";
+import { TaskRegistry } from "./lib/task-registry.mjs";
 import { CHAT_EVENTS, publish as publishChatEvent, subscribe as subscribeChatStream } from "./chat-events.mjs";
 import {
     escapeSqlValue,
@@ -85,6 +86,10 @@ const CLAUDE_MODEL_ALIASES = {
 };
 
 // Estado global de la tarea activa en segundo plano
+// Per-client task state. `activeTask` stays for the status surfaces that read
+// it directly; this is what a polling client correlates against.
+const taskRegistry = new TaskRegistry();
+
 let activeTask = {
     id: null,
     message: null,
@@ -2230,8 +2235,14 @@ const handleRequest = async (req, res) => {
 
     // 1b. Tarea activa en segundo plano
     if (pathname === "/api/v1/chat/active-task" && req.method === "GET") {
+        // With an id the client gets ITS task and nothing else -- previously a
+        // poll returned whatever task happened to be current, so a second
+        // message handed its answer to the first message's poll. Without an id
+        // the old single-task behavior is preserved for older builds.
+        const clientTaskId = parsedUrl.searchParams.get("clientTaskId");
+        const payload = clientTaskId ? taskRegistry.get(clientTaskId) : activeTask;
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(activeTask));
+        res.end(JSON.stringify(payload));
         return;
     }
 
@@ -3714,6 +3725,8 @@ function runOpenCodeCli(projPath, sessionId, message) {
                 const userMessage = parsed.message || "";
                 
                 const taskId = `task-${Date.now()}`;
+                const clientTaskId = typeof parsed.clientTaskId === "string" ? parsed.clientTaskId : null;
+                if (clientTaskId) taskRegistry.start(clientTaskId, userMessage);
                 activeTask = {
                     id: taskId,
                     message: userMessage,
@@ -3755,6 +3768,7 @@ function runOpenCodeCli(projPath, sessionId, message) {
 
                     activeTask.status = "completed";
                     activeTask.output = agentOutput;
+                    if (clientTaskId) taskRegistry.finish(clientTaskId, { output: agentOutput });
 
                     currentStatus.busy = false;
                     currentStatus.cliTask = "En espera de mensajes";
@@ -3764,6 +3778,7 @@ function runOpenCodeCli(projPath, sessionId, message) {
                 } catch (piErr) {
                     activeTask.status = "error";
                     activeTask.error = piErr.message;
+                    if (clientTaskId) taskRegistry.finish(clientTaskId, { error: piErr.message });
 
                     currentStatus.busy = false;
                     currentStatus.cliTask = "Error en tarea";
