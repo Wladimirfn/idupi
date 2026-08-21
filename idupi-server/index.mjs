@@ -2157,7 +2157,7 @@ function detectMcp(engineLabel, ev) {
     });
 }
 
-const server = http.createServer(async (req, res) => {
+const handleRequest = async (req, res) => {
     // Every endpoint below can read files or spawn shells, so nothing is
     // reachable before the bearer token is verified.
     if (!requireAuth(req, res)) return;
@@ -3784,7 +3784,42 @@ function runOpenCodeCli(projPath, sessionId, message) {
 
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "Endpoint no encontrado" }));
-});
+};
+
+/**
+ * Never rejects. http.createServer does not await its handler, so a throw
+ * inside an async one becomes an unhandled rejection -- fatal in Node 24. The
+ * process exits, taking every SSE subscriber and the persistent Pi subprocess
+ * with it, and the request is never answered.
+ *
+ * That was reachable without any exotic input: two routes had no try/catch,
+ * and resolveProject falls back to registeredProjects[0], which is `undefined`
+ * once the last project is deleted -- so reading `proj.path` threw.
+ *
+ * Answering 500 is the fallback, not the goal: a route that can fail should
+ * still handle its own failure and say something useful. This only guarantees
+ * that failing to do so costs one request instead of the whole server.
+ */
+export async function guardedRequest(req, res) {
+    try {
+        await handleRequest(req, res);
+    } catch (err) {
+        try {
+            console.error(`[IDUPI 500] ${req?.method} ${req?.url}`, err);
+        } catch { /* logging must never be the thing that kills us */ }
+        try {
+            if (!res.headersSent) {
+                res.writeHead(500, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ error: err?.message || "Error interno" }));
+            } else {
+                res.end();
+            }
+        } catch { /* socket already gone: nothing left to say */ }
+    }
+}
+
+const server = http.createServer(guardedRequest);
+
 
 // TEST SEAM (behavior-preserving): skip binding the socket when IDUPI_NO_LISTEN=1
 // so the test suite can import this module and exercise the sessions functions
