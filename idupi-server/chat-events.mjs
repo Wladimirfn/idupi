@@ -42,6 +42,19 @@ const ACTIVITY_FRAME_TYPES = new Set(Object.values(ACTIVITY_TYPES));
 /** Open SSE responses mapped to their per-subscriber state. */
 const subscribers = new Map();
 
+/**
+ * Frames that reached NOBODY because no subscriber was connected when they were
+ * published. Only events whose loss the user would actually notice go here: the
+ * final answer and a hard error. A `thinking` flag or a half-finished
+ * `text_delta` from a turn that already ended is stale noise on reconnect.
+ *
+ * Buffering only the zero-subscriber case is what makes replay safe: a frame in
+ * here was delivered to no one, so replaying it cannot duplicate anything.
+ */
+const UNDELIVERED_CAP = 20;
+const REPLAY_WHEN_UNDELIVERED = new Set(["message_end", "error"]);
+let undelivered = [];
+
 /** Per-context ring buffer of recent activity frames, for isolated replay. */
 const recentActivity = new Map();
 
@@ -150,6 +163,15 @@ export function subscribe(req, res, context) {
         deliver(res, sub, frame);
     }
 
+    // Hand over whatever was produced while nobody was listening, then forget
+    // it: this is a one-time handover, not a log to be re-read on every
+    // reconnect. Cleared before delivering so a throw cannot replay it twice.
+    if (undelivered.length) {
+        const pending = undelivered;
+        undelivered = [];
+        for (const frame of pending) deliver(res, sub, frame);
+    }
+
     req.on("close", () => {
         // Clear ONLY subscriber-owned resources: the queue and the drain
         // listener. The operation-owned ActivityRegistry 15s heartbeat lives in
@@ -194,7 +216,15 @@ export function publish(type, data = {}) {
         return;
     }
 
-    if (subscribers.size === 0) return;
+    if (subscribers.size === 0) {
+        // Previously this just returned, so an answer that finished while the
+        // app was between SSE connections -- every screen navigation, every
+        // reconnect backoff -- was discarded and never seen again.
+        if (REPLAY_WHEN_UNDELIVERED.has(type)) {
+            undelivered = enqueueBounded(undelivered, frame, UNDELIVERED_CAP);
+        }
+        return;
+    }
     for (const [res, sub] of subscribers) deliver(res, sub, frame);
 }
 
