@@ -28,6 +28,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.idupi.domain.model.ActivityStatus
+import com.example.idupi.domain.model.liveActivities
+import com.example.idupi.domain.model.orderedSubagents
 import com.example.idupi.domain.model.ActivityUiState
 import com.example.idupi.domain.model.ChatMessage
 import com.example.idupi.domain.model.MessageSender
@@ -260,8 +262,9 @@ fun ChatScreen(
                     ActiveToolOverlay(toolName = activeTool!!)
                 }
 
-                if (activities.isNotEmpty()) {
-                    LiveActivityBar(activities = activities)
+                val runningActivities = liveActivities(activities)
+                if (runningActivities.isNotEmpty()) {
+                    LiveActivityBar(activities = runningActivities)
                 }
 
                 if (subagents.isNotEmpty()) {
@@ -787,7 +790,7 @@ fun ActiveSubagentsBar(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                items(subagents) { agent ->
+                items(orderedSubagents(subagents)) { agent ->
                     Surface(
                         onClick = { onSelectSubagent(agent) },
                         shape = AppShapes.small,
@@ -993,16 +996,13 @@ fun SubagentLiveConsoleBottomSheet(
  */
 @Composable
 fun LiveActivityBar(activities: List<ActivityUiState>) {
-    val ordered = remember(activities) {
-        activities.sortedByDescending { it.isRunning }
-    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = AppSpacing.lg, vertical = AppSpacing.xs),
         verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
     ) {
-        ordered.forEach { activity ->
+        activities.forEach { activity ->
             LiveActivityRow(activity = activity)
         }
     }

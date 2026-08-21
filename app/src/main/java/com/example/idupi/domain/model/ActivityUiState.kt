@@ -42,3 +42,30 @@ data class ActivityUiState(
     /** "playwright · browser_navigate" when the server is known, else just the name. */
     val label: String get() = server?.let { "$it · $name" } ?: name
 }
+
+/**
+ * What the live bar shows: operations still open, in the order they started.
+ *
+ * Finished operations are dropped on purpose. Every tool start and end already
+ * lands in the chat log as its own message with its outcome, so keeping a
+ * terminal row here duplicates that record -- and a fan-out of a dozen children
+ * turned it into a wall of identical "listo" lines that hid the one operation
+ * still running, which is the only thing this bar exists to show.
+ */
+fun liveActivities(activities: List<ActivityUiState>): List<ActivityUiState> =
+    activities.filter { it.isRunning }
+
+/**
+ * Subagents for the session strip: still-running first, most recent first
+ * inside each group.
+ *
+ * Arrival order buried the newest delegation at the far end of a horizontal
+ * strip, which is exactly the one the reader wants. [sortedWith] is stable, so
+ * subagents sharing a start timestamp keep their relative order instead of
+ * shuffling between recompositions.
+ */
+fun orderedSubagents(subagents: List<SubagentLiveState>): List<SubagentLiveState> =
+    subagents.sortedWith(
+        compareByDescending<SubagentLiveState> { it.isRunning }
+            .thenByDescending { it.startTime },
+    )

@@ -26,3 +26,7 @@ idupi-server/projects.json
 *.stackdump
 # Pi subagent run artifacts (transcripts, cost meta) -- runtime state, not source
 .pi-subagents/
+# Pi subagent role outputs: pi-subagents declares these in each role's
+# frontmatter (`output:`), so they reappear in the repo root on every run.
+/context.md
+/research.md

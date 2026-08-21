@@ -1252,7 +1252,9 @@ export {
     toSessionItem,
     buildPiClaudeSessionItem,
     buildOpenCodeSessionItem,
-    execOpenCodeDb
+    execOpenCodeDb,
+    describeToolInput,
+    describeSubagentName
 };
 
 /**
@@ -1844,9 +1846,13 @@ class PiRpcManager {
                 });
 
                 if (isSubagent) {
+                    // Claude and OpenCode already resolve the role above; Pi sent
+                    // the raw tool name, so every fan-out produced a column of
+                    // cards all called "subagent".
+                    this._subagentName = describeSubagentName(tName, event.input || {});
                     publishChatEvent(CHAT_EVENTS.SUBAGENT_START, {
                         id: tId,
-                        name: tName,
+                        name: this._subagentName,
                         task: tDetail
                     });
                 }
@@ -1885,7 +1891,7 @@ class PiRpcManager {
                     }
                     publishChatEvent(CHAT_EVENTS.SUBAGENT_END, {
                         id: tId,
-                        name: tName,
+                        name: this._subagentName || describeSubagentName(tName, event.input || {}),
                         summary: piSummary ? piSummary.slice(0, 300) : "Subagente completó la tarea",
                         ok: event.isError !== true
                     });
@@ -2039,16 +2045,66 @@ function extractToolResultText(content) {
 }
 
 /** Short human-readable summary of a tool call, for the chat timeline. */
+/** Bounds any detail line to the same width the chat has always used. */
+function boundDetail(text) {
+    return text.length > 120 ? text.slice(0, 117) + "..." : text;
+}
+
 function describeToolInput(event) {
     const input = event.input || event.args || event.parameters;
     if (!input || typeof input !== "object") return null;
-    // Prefer the fields that identify *what* the tool acted on.
+    // Prefer the fields that identify *what* the tool acted on. `task` is
+    // deliberately last: it is the broadest field, and a tool that names a
+    // concrete target should still show the target.
     for (const key of ["path", "file_path", "command", "pattern", "query", "url"]) {
         if (typeof input[key] === "string" && input[key]) {
-            return input[key].length > 120 ? input[key].slice(0, 117) + "..." : input[key];
+            return boundDetail(input[key]);
         }
     }
+
+    // pi-subagents' `subagent` tool carries neither: its parameters are `agent`
+    // (the role) and `task` (the prompt the model wrote for the child). Without
+    // this the delegation card showed generic filler and the real instruction --
+    // the single most useful thing to read -- never reached the chat.
+    const children = Array.isArray(input.children) ? input.children
+        : Array.isArray(input.steps) ? input.steps
+        : null;
+    if (children && children.length) {
+        const lines = children
+            .map((c) => {
+                if (!c || typeof c !== "object") return "";
+                const task = typeof c.task === "string" ? c.task : "";
+                const agent = typeof c.agent === "string" ? c.agent : "";
+                if (agent && task) return `${agent}: ${task}`;
+                return agent || task;
+            })
+            .filter(Boolean);
+        if (lines.length) return boundDetail(lines.join(" | "));
+    }
+    if (typeof input.task === "string" && input.task) return boundDetail(input.task);
+
     return null;
+}
+
+/**
+ * What to call a delegation card. Every fan-out through pi-subagents arrives as
+ * the same tool name, `subagent`, so labelling cards with it produces a column
+ * of identical rows. The role the model chose (`scout`, `researcher`, ...) is
+ * the part a reader can actually use.
+ */
+function describeSubagentName(toolName, input) {
+    if (toolName !== "subagent" || !input || typeof input !== "object") return toolName;
+    const children = Array.isArray(input.children) ? input.children
+        : Array.isArray(input.steps) ? input.steps
+        : null;
+    if (children && children.length) {
+        const roles = [...new Set(
+            children.map((c) => (c && typeof c.agent === "string" ? c.agent : "")).filter(Boolean),
+        )];
+        if (roles.length) return roles.join(", ");
+    }
+    if (typeof input.agent === "string" && input.agent) return input.agent;
+    return toolName;
 }
 
 // Pi's RPC vocabulary is not documented here, and guessing the delegation event
