@@ -121,7 +121,7 @@ loadDefaultModel();
 function getAvailableModels() {
     if (currentStatus.activeEngine === "opencode") {
         try {
-            const raw = execSync("opencode models", { encoding: "utf8", timeout: 5000 });
+            const raw = execSync("opencode models", { encoding: "utf8", timeout: 5000, maxBuffer: EXEC_MAX_BUFFER });
             const lines = raw.split("\n").map(l => l.trim()).filter(l => l.length > 0 && !l.startsWith("Notice:") && !l.startsWith("Error:"));
             const realModels = [];
             for (const line of lines) {
@@ -547,7 +547,7 @@ class TerminalManager {
         // 3. Inspección REAL de Procesos y Terminales Abiertas en tu PC (Bun, Claude, Codex, Kimi, Node, Python, PowerShell, CMD, Deno)
         try {
             if (process.platform === "win32") {
-                const rawCsv = execSync('wmic process get caption,commandline,processid /format:csv', { encoding: "utf8", timeout: 4000 });
+                const rawCsv = execSync('wmic process get caption,commandline,processid /format:csv', { encoding: "utf8", timeout: 4000, maxBuffer: EXEC_MAX_BUFFER });
                 const lines = rawCsv.split("\n").filter(l => l.trim().length > 0);
 
                 for (let i = 1; i < lines.length; i++) {
@@ -799,7 +799,7 @@ class TerminalManager {
             const pid = parseInt(termId.replace("proc-", ""), 10);
             if (pid && !isNaN(pid)) {
                 try {
-                    execSync(`taskkill /F /PID ${pid}`, { timeout: 3000 });
+                    execSync(`taskkill /F /PID ${pid}`, { timeout: 3000, maxBuffer: EXEC_MAX_BUFFER });
                     return `Proceso real (PID ${pid}) finalizado/detenido en tu PC exitosamente.`;
                 } catch (e) {
                     return `Error al finalizar proceso PID ${pid}: ${e.message}`;
@@ -831,7 +831,7 @@ class TerminalManager {
             const pid = parseInt(termId.replace("proc-", ""), 10);
             if (pid && !isNaN(pid)) {
                 try {
-                    execSync(`taskkill /F /PID ${pid}`, { timeout: 3000 });
+                    execSync(`taskkill /F /PID ${pid}`, { timeout: 3000, maxBuffer: EXEC_MAX_BUFFER });
                     return true;
                 } catch (e) {}
             }
@@ -1259,7 +1259,9 @@ export {
     buildOpenCodeSessionItem,
     execOpenCodeDb,
     describeToolInput,
-    describeSubagentName
+    describeSubagentName,
+    isAsyncDispatchReceipt,
+    summarizeSubagentResult
 };
 
 /**
@@ -1350,10 +1352,16 @@ function findSessionFilePath(sessionId) {
     return null;
 }
 
+/**
+ * History for one session, or null when there is genuinely nothing to read.
+ * Throws when the session exists but reading it failed, so the caller can tell
+ * "not found" apart from "found but unreadable" instead of reporting both as 404.
+ */
 function getSessionHistoryById(sessionId) {
+    let exportError = null;
     if (sessionId.startsWith("ses_")) {
         try {
-            const raw = execSync(`opencode export ${sessionId}`, { encoding: "utf8", timeout: 8000 });
+            const raw = execSync(`opencode export ${sessionId}`, { encoding: "utf8", timeout: 8000, maxBuffer: EXEC_MAX_BUFFER });
             const jsonText = raw.slice(raw.indexOf("{"));
             const data = JSON.parse(jsonText);
             const messages = [];
@@ -1379,11 +1387,20 @@ function getSessionHistoryById(sessionId) {
             return { messages, model: data.info?.model?.id || "gpt-5.6-luna" };
         } catch (e) {
             console.error("[OpenCode Export History Error]", e.message);
+            // The session exists; reading it failed. Falling through used to
+            // end in a 404 "Sesión no encontrada", which sent the app looking
+            // for a missing session while the real problem was the export --
+            // and left the user able to chat in a session whose history
+            // supposedly did not exist.
+            exportError = e;
         }
     }
 
     const targetFilePath = findSessionFilePath(sessionId);
-    if (!targetFilePath || !existsSync(targetFilePath)) return null;
+    if (!targetFilePath || !existsSync(targetFilePath)) {
+        if (exportError) throw exportError;
+        return null;
+    }
 
     const messages = [];
     let detectedModel = null;
@@ -1648,6 +1665,14 @@ function getProjectFilesTree(dirPath, relativeTo = dirPath) {
 // request handler, where runClaudeCli/runOpenCodeCli could see it but
 // PiRpcManager -- declared above that handler -- could not: every Pi message
 // threw ReferenceError and returned 500.
+// Node's default stdout buffer for a synchronous exec is 1 MB, and exceeding it
+// throws ENOBUFS. `opencode export` on a large session hit it, the history
+// endpoint degraded into a 404, and the app reported "error al reanudar la
+// sesión". Several other calls here can legitimately produce more than a
+// megabyte -- `wmic process` on a busy machine, a full model listing, and the
+// orchestrator action route, which runs an arbitrary user-supplied command.
+const EXEC_MAX_BUFFER = 64 * 1024 * 1024;
+
 const AGENT_CLI_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
@@ -1897,7 +1922,7 @@ class PiRpcManager {
                     publishChatEvent(CHAT_EVENTS.SUBAGENT_END, {
                         id: tId,
                         name: this._subagentName || describeSubagentName(tName, event.input || {}),
-                        summary: piSummary ? piSummary.slice(0, 300) : "Subagente completó la tarea",
+                        summary: summarizeSubagentResult(piSummary),
                         ok: event.isError !== true
                     });
                 }
@@ -1944,7 +1969,7 @@ class PiRpcManager {
                 resolve(resultText);
             }
 
-            noteUnmappedRpcEvent(event.type);
+            noteUnmappedRpcEvent(event.type, event);
         } catch (e) {}
     }
 
@@ -2097,6 +2122,37 @@ function describeToolInput(event) {
  * of identical rows. The role the model chose (`scout`, `researcher`, ...) is
  * the part a reader can actually use.
  */
+/**
+ * True when a `subagent` result is the dispatch receipt an async run returns
+ * immediately, rather than anything the subagent produced.
+ *
+ * Both markers are required. A single phrase would misfire on ordinary prose
+ * that happens to mention background work -- and mislabelling a real answer as
+ * "no answer yet" is the worse failure of the two.
+ */
+function isAsyncDispatchReceipt(text) {
+    if (typeof text !== "string" || !text) return false;
+    return /async run is detached/i.test(text) && /running in the background/i.test(text);
+}
+
+/**
+ * What the delegation card shows. A receipt is reported as what it is -- work
+ * handed to the background -- instead of being printed under "Respuesta" as if
+ * the subagent had replied with instructions addressed to the model.
+ *
+ * The real answer of an async run arrives later in `tool_execution_update`,
+ * which this server does not map yet; until a live capture shows that payload,
+ * claiming completion here would be inventing it.
+ */
+function summarizeSubagentResult(text) {
+    if (isAsyncDispatchReceipt(text)) {
+        return "Delegado en segundo plano: el subagente sigue trabajando, todavía sin respuesta.";
+    }
+    const trimmed = typeof text === "string" ? text.trim() : "";
+    if (!trimmed) return "Subagente completó la tarea";
+    return trimmed.slice(0, 300);
+}
+
 function describeSubagentName(toolName, input) {
     if (toolName !== "subagent" || !input || typeof input !== "object") return toolName;
     const children = Array.isArray(input.children) ? input.children
@@ -2121,10 +2177,17 @@ const MAPPED_RPC_EVENTS = new Set([
     "tool_execution_start", "tool_execution_end", "agent_end"
 ]);
 
-function noteUnmappedRpcEvent(type) {
+function noteUnmappedRpcEvent(type, event) {
     if (!type || MAPPED_RPC_EVENTS.has(type) || seenUnmappedEvents.has(type)) return;
     seenUnmappedEvents.add(type);
-    console.log(`[chat-stream] Evento RPC sin mapear: '${type}' — candidato para delegación/subagente`);
+    // Log the field names once. `tool_execution_update` is where an async
+    // subagent's real answer arrives, and its payload has never been captured
+    // here -- so the next live run identifies it instead of us guessing.
+    let shape = "";
+    try {
+        if (event && typeof event === "object") shape = ` — campos: ${Object.keys(event).join(", ")}`;
+    } catch { /* logging must never break the stream */ }
+    console.log(`[chat-stream] Evento RPC sin mapear: '${type}' — candidato para delegación/subagente${shape}`);
 }
 
 const piRpc = new PiRpcManager();
@@ -2431,7 +2494,17 @@ const handleRequest = async (req, res) => {
         const sessionId = parts[4];
         
         console.log(`[Sessions History API] Obteniendo historial para sesión ${sessionId}...`);
-        const sessionData = getSessionHistoryById(sessionId);
+        let sessionData;
+        try {
+            sessionData = getSessionHistoryById(sessionId);
+        } catch (err) {
+            console.error(`[IDUPI 502] ${req.method} ${pathname}`, err);
+            res.writeHead(502, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+                error: `No se pudo leer el historial de la sesión: ${err.message}`,
+            }));
+            return;
+        }
 
         if (sessionData) {
             res.writeHead(200, { "Content-Type": "application/json" });
@@ -2851,7 +2924,7 @@ function getModelsForProvider(providerId) {
         return providerModelsCache.get(providerId);
     }
     try {
-        const raw = execSync(`opencode models "${providerId}"`, { encoding: "utf8", timeout: 4000 });
+        const raw = execSync(`opencode models "${providerId}"`, { encoding: "utf8", timeout: 4000, maxBuffer: EXEC_MAX_BUFFER });
         const lines = raw.split("\n").map(l => l.trim()).filter(l => l && !l.startsWith("Error") && !l.startsWith("opencode models"));
         const models = lines.map(line => {
             const parts = line.split("/");
@@ -2901,7 +2974,7 @@ function getModelsForProvider(providerId) {
             };
 
             try {
-                const sddRaw = execSync("gentle-ai sdd-status", { cwd: resolveProject(activeProjectId).path, encoding: "utf8", timeout: 4000 });
+                const sddRaw = execSync("gentle-ai sdd-status", { cwd: resolveProject(activeProjectId).path, encoding: "utf8", timeout: 4000, maxBuffer: EXEC_MAX_BUFFER });
                 const jsonMatch = sddRaw.match(/```json\s*([\s\S]*?)\s*```/);
                 if (jsonMatch && jsonMatch[1]) {
                     const parsedSdd = JSON.parse(jsonMatch[1]);
@@ -3028,7 +3101,7 @@ function getModelsForProvider(providerId) {
 
                 // Sincronizar automáticamente en PC
                 try {
-                    execSync("gentle-ai sync", { encoding: "utf8", timeout: 10000 });
+                    execSync("gentle-ai sync", { encoding: "utf8", timeout: 10000, maxBuffer: EXEC_MAX_BUFFER });
                     console.log(`[Gentle-AI Sync] Perfil sincronizado con todos los agentes.`);
                 } catch (syncErr) {
                     console.warn(`[Gentle-AI Sync Warn]:`, syncErr.message);
@@ -3187,7 +3260,7 @@ function getModelsForProvider(providerId) {
 
                 // Propagar cambios a los archivos de configuración de cada agente vía sync
                 try {
-                    execSync("gentle-ai sync", { encoding: "utf8", timeout: 8000 });
+                    execSync("gentle-ai sync", { encoding: "utf8", timeout: 8000, maxBuffer: EXEC_MAX_BUFFER });
                     console.log(`[Gentle-AI Sync] Sincronización automática de modelos completada.`);
                 } catch (syncErr) {
                     console.warn(`[Gentle-AI Sync] Aviso en auto-sync:`, syncErr.message);
@@ -3253,7 +3326,7 @@ function getModelsForProvider(providerId) {
                 let output = "";
                 let success = true;
                 try {
-                    output = execSync(cmd, { cwd: activeProj.path, encoding: "utf8", timeout: 15000 });
+                    output = execSync(cmd, { cwd: activeProj.path, encoding: "utf8", timeout: 15000, maxBuffer: EXEC_MAX_BUFFER });
                 } catch (execErr) {
                     output = execErr.stdout ? execErr.stdout.toString() : (execErr.stderr ? execErr.stderr.toString() : execErr.message);
                     success = false;
@@ -3471,7 +3544,7 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
                                     publishChatEvent(CHAT_EVENTS.SUBAGENT_END, {
                                         id: toolId,
                                         name: activeSubagentName || "Subagent",
-                                        summary: resultText ? resultText.slice(0, 300) : "Subagente completó la tarea",
+                                        summary: summarizeSubagentResult(resultText),
                                         ok: !item.is_error
                                     });
                                     activeSubagentId = null;
@@ -3754,7 +3827,7 @@ function runOpenCodeCli(projPath, sessionId, message) {
                         agentOutput = await runOpenCodeCli(activeProj.path, activeOpenCodeSessionId, userMessage);
                         if (!activeOpenCodeSessionId) {
                             try {
-                                const rawDb = execSync('opencode db "SELECT id FROM session ORDER BY time_updated DESC LIMIT 1" --format json', { encoding: "utf8" });
+                                const rawDb = execSync('opencode db "SELECT id FROM session ORDER BY time_updated DESC LIMIT 1" --format json', { encoding: "utf8", maxBuffer: EXEC_MAX_BUFFER });
                                 const latestSes = JSON.parse(rawDb)[0];
                                 if (latestSes && latestSes.id) {
                                     activeOpenCodeSessionId = latestSes.id;
@@ -3848,7 +3921,7 @@ if (process.env.IDUPI_NO_LISTEN !== "1") {
     // 1. Tailscale IP (para conectar desde fuera de casa)
     let tailscaleIp = null;
     try {
-        tailscaleIp = execSync("tailscale ip -4", { encoding: "utf8", timeout: 2000 }).trim();
+        tailscaleIp = execSync("tailscale ip -4", { encoding: "utf8", timeout: 2000, maxBuffer: EXEC_MAX_BUFFER }).trim();
     } catch (e) {}
     if (tailscaleIp) {
         console.log(`   👉 Host (Fuera de casa / Tailscale): ${tailscaleIp}`);
