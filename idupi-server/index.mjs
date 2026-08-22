@@ -2070,15 +2070,22 @@ class PiRpcManager {
 
             // Where an async subagent's real answer arrives.
             //
-            // Pi appends the completion notice to the session as a
-            // `custom_message` entry and streams it as `entry_appended`
-            // (AgentSessionEvent, dist/core/agent-session.d.ts). The entry has
-            // `display: false` -- Pi's own UI hides it because its text is
-            // addressed to the model -- but it carries the child's output,
-            // which is the one thing the delegation card was missing.
-            if (event.type === "entry_appended" && event.entry?.type === "custom_message"
-                && event.entry.customType === "subagent-notify") {
-                const raw = typeof event.entry.content === "string" ? event.entry.content : "";
+            // It is a CUSTOM message, not a session entry event. Pi injects it
+            // with sendCustomMessage(), which appends the entry and then emits
+            // message_start/message_end with role "custom"
+            // (dist/core/agent-session.js:1096). `entry_appended` is emitted
+            // only by appendEntry(), a different API writing a `custom` entry
+            // -- so a handler keyed on it can never fire, and the delegation
+            // card stayed open forever waiting for an event that was never
+            // coming. Read from the type union, never observed: that is how
+            // the wrong channel got picked.
+            //
+            // The message is `display: false` -- Pi's own UI hides it, because
+            // its text is addressed to the model -- but it carries the child's
+            // output, the one thing the card was missing.
+            if (event.type === "message_end" && event.message?.role === "custom"
+                && event.message.customType === "subagent-notify") {
+                const raw = extractCustomMessageText(event.message.content);
                 const notice = parseSubagentNotify(raw);
                 if (notice && notice.output) {
                     this.resolvePendingSubagent(notice);
@@ -2317,6 +2324,20 @@ const SUBAGENT_TOOL_NAMES = new Set([
 ]);
 const SUBAGENT_TOOL_PREFIXES = ["sdd-", "review-", "jd-"];
 
+/**
+ * Text of a Pi custom message. `content` is `string | (TextContent |
+ * ImageContent)[]` (CustomMessageEntry, dist/core/session-manager.d.ts), so
+ * assuming the string form would silently read nothing from the array one.
+ */
+function extractCustomMessageText(content) {
+    if (typeof content === "string") return content;
+    if (!Array.isArray(content)) return "";
+    return content
+        .filter((part) => part && part.type === "text" && typeof part.text === "string")
+        .map((part) => part.text)
+        .join("\n");
+}
+
 function isSubagentTool(toolName, input) {
     const name = typeof toolName === "string" ? toolName.toLowerCase() : "";
     if (!name) return false;
@@ -2419,8 +2440,13 @@ function describeSubagentName(toolName, input) {
 const seenUnmappedEvents = new Set();
 const MAPPED_RPC_EVENTS = new Set([
     "model_change", "active_model", "message_update", "message_end",
-    "tool_execution_start", "tool_execution_end", "agent_end", "entry_appended",
+    "tool_execution_start", "tool_execution_end", "agent_end",
     "auto_retry_start", "auto_retry_end",
+    // `entry_appended` is deliberately NOT listed. It was marked as mapped on
+    // the strength of a type union alone, before any run had shown it, and
+    // that silenced the one log line that would have revealed the subagent
+    // notice never arrives through it. Nothing here gets marked mapped until a
+    // live run proves it exists.
     // Identified from a live run and deliberately not acted on: ordinary turn
     // bookkeeping and RPC command replies. Listing them keeps the log for
     // events that are genuinely still unknown, instead of flagging routine
