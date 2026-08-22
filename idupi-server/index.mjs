@@ -1823,10 +1823,32 @@ class PiRpcManager {
         });
     }
 
+    /** True while a chat message is still waiting for its answer. */
+    get isBusy() {
+        return this.pendingResolve !== null;
+    }
+
+    /**
+     * Binds the next message to a session, restarting the RPC child when the
+     * session actually changes.
+     *
+     * Refuses while a message is in flight. `currentSessionPath` is only ever
+     * set here, so a chat that started its own Pi session leaves it null: the
+     * user then taps that same session in the list, the resolved path differs
+     * from null, and this used to SIGTERM a child that was mid-answer. The
+     * close handler turned that into `Pi RPC se cerró con código null` and a
+     * 500, and the work was gone -- for the sole act of opening a session.
+     *
+     * @returns {boolean} false when it was refused because Pi is working.
+     */
     resumeSession(sessionPath) {
         if (this.currentSessionPath === sessionPath && this.child && !this.child.killed) {
             console.log(`[IDUPI Pi RPC] Sesión ya activa: ${sessionPath}`);
-            return;
+            return true;
+        }
+        if (this.isBusy) {
+            console.warn(`[IDUPI Pi RPC] Cambio de sesión rechazado: hay una respuesta en curso (${sessionPath})`);
+            return false;
         }
         this.currentSessionPath = sessionPath;
         if (this.child && !this.child.killed) {
@@ -1834,6 +1856,7 @@ class PiRpcManager {
             this.child.kill("SIGTERM");
             this.child = null;
         }
+        return true;
     }
 
     switchProject() {
@@ -2013,7 +2036,42 @@ class PiRpcManager {
                 }
             }
 
-            if (event.type === "agent_end" && this.pendingResolve) {
+            // Pi emits agent_end BEFORE an automatic retry as well, flagged
+            // with willRetry (dist/core/agent-session.d.ts). Treating that as
+            // the end of the turn closed the request on an attempt that had
+            // produced nothing: the app got the "Respuesta procesada
+            // correctamente" filler while the real answer streamed a moment
+            // later into a turn nobody was waiting on any more.
+            if (event.type === "agent_end" && event.willRetry === true) {
+                console.log("[IDUPI Pi RPC] Intento fallido; Pi va a reintentar. La respuesta sigue pendiente.");
+            }
+
+            if (event.type === "auto_retry_start") {
+                console.warn(
+                    `[IDUPI Pi RPC] Reintento ${event.attempt}/${event.maxAttempts} en ${event.delayMs}ms: ${event.errorMessage}`,
+                );
+                // The retry regenerates the answer from scratch, so text from
+                // the failed attempt is not a prefix of the real one. The app
+                // replaces the bubble with message_end's text, so clearing here
+                // is what stops the two attempts being concatenated.
+                this.currentOutput = "";
+                publishChatEvent(CHAT_EVENTS.THINKING, { active: true });
+            }
+
+            // Retries exhausted. Without this the request sat until the 5
+            // minute backstop even though Pi already knew it had given up.
+            if (event.type === "auto_retry_end" && event.success === false && this.pendingReject) {
+                const reject = this.pendingReject;
+                clearTimeout(this.pendingTimeoutTimer);
+                this.pendingTimeoutTimer = null;
+                this.pendingResolve = null;
+                this.pendingReject = null;
+                this.thinkingAnnounced = false;
+                publishChatEvent(CHAT_EVENTS.THINKING, { active: false });
+                reject(new Error(event.finalError || `Pi agotó los reintentos en el intento ${event.attempt}`));
+            }
+
+            if (event.type === "agent_end" && event.willRetry !== true && this.pendingResolve) {
                 // Terminalize any still-open Pi activity (Change A).
                 if (this._currentActivityId) {
                     activityRegistry.terminalize(this._currentActivityId, { ok: true });
@@ -2287,7 +2345,14 @@ function describeSubagentName(toolName, input) {
 const seenUnmappedEvents = new Set();
 const MAPPED_RPC_EVENTS = new Set([
     "model_change", "active_model", "message_update", "message_end",
-    "tool_execution_start", "tool_execution_end", "agent_end", "entry_appended"
+    "tool_execution_start", "tool_execution_end", "agent_end", "entry_appended",
+    "auto_retry_start", "auto_retry_end",
+    // Identified from a live run and deliberately not acted on: ordinary turn
+    // bookkeeping and RPC command replies. Listing them keeps the log for
+    // events that are genuinely still unknown, instead of flagging routine
+    // traffic as a delegation candidate on every single turn.
+    "agent_start", "agent_settled", "turn_start", "turn_end", "message_start",
+    "response", "extension_ui_request", "tool_execution_update", "queue_update",
 ]);
 
 function noteUnmappedRpcEvent(type, event) {
@@ -2656,8 +2721,14 @@ const handleRequest = async (req, res) => {
                         return;
                     }
                     if (sessionPath) {
+                        if (!piRpc.resumeSession(sessionPath)) {
+                            res.writeHead(409, { "Content-Type": "application/json" });
+                            res.end(JSON.stringify({
+                                error: "Pi está respondiendo ahora mismo. Esperá a que termine para cambiar de sesión.",
+                            }));
+                            return;
+                        }
                         currentStatus.activeEngine = "pi-cli";
-                        piRpc.resumeSession(sessionPath);
                         console.log(`[Pi Session Resume] Sesión reanudada: ${sessionPath}`);
                         res.writeHead(200, { "Content-Type": "application/json" });
                         res.end(JSON.stringify({ status: "ok", sessionId, engine: "pi-cli", filePath: sessionPath }));
