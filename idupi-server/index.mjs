@@ -1712,6 +1712,8 @@ class PiRpcManager {
         this.pendingResolve = null;
         this.pendingReject = null;
         this.currentOutput = "";
+        /** Last assistant message Pi closed in this turn; what the POST answers with. */
+        this.lastAnswer = "";
         this.currentSessionPath = null;
         this.currentModelId = null;
         this.currentProvider = null;
@@ -1908,11 +1910,24 @@ class PiRpcManager {
                 publishChatEvent(CHAT_EVENTS.TEXT_DELTA, { text });
             }
 
+            // One Pi turn holds SEVERAL assistant messages: the short preamble
+            // it writes before reaching for tools, then the real answer after
+            // them. All of them were accumulated into a single buffer and
+            // delivered as one chat message at agent_end, so the preamble never
+            // arrived as its own message -- and the single message_end that did
+            // arrive overwrote whatever the app had on screen.
+            //
+            // Each assistant message is closed here, where Pi itself ends it.
             if (event.type === "message_end" && event.message?.role === "assistant") {
-                const text = event.message.content?.find(c => c.type === "text")?.text;
-                if (text && !this.currentOutput) {
-                    this.currentOutput = text;
+                const fromEvent = event.message.content?.find(c => c.type === "text")?.text || "";
+                // Prefer Pi's own copy; the accumulated deltas are the fallback
+                // for a message that streamed but arrived here without content.
+                const text = (fromEvent || this.currentOutput).trim();
+                this.currentOutput = "";
+                if (text) {
+                    this.lastAnswer = text;
                     activeTask.output = text;
+                    publishChatEvent(CHAT_EVENTS.MESSAGE_END, { text });
                 }
             }
 
@@ -2050,10 +2065,12 @@ class PiRpcManager {
                 console.warn(
                     `[IDUPI Pi RPC] Reintento ${event.attempt}/${event.maxAttempts} en ${event.delayMs}ms: ${event.errorMessage}`,
                 );
-                // The retry regenerates the answer from scratch, so text from
-                // the failed attempt is not a prefix of the real one. The app
-                // replaces the bubble with message_end's text, so clearing here
-                // is what stops the two attempts being concatenated.
+                // The retry regenerates from scratch, so the half message the
+                // failed attempt left behind is not a prefix of the real one.
+                // Only that unfinished message is dropped: messages Pi already
+                // closed in this turn were published and cleared as they ended,
+                // so a retry can no longer swallow the preamble the way it did
+                // when the whole turn shared one buffer.
                 this.currentOutput = "";
                 publishChatEvent(CHAT_EVENTS.THINKING, { active: true });
             }
@@ -2081,14 +2098,22 @@ class PiRpcManager {
                 console.log("\n[IDUPI Pi RPC] Respuesta completada.");
                 clearTimeout(this.pendingTimeoutTimer);
                 this.pendingTimeoutTimer = null;
-                const resultText = this.currentOutput.trim() || "Respuesta procesada correctamente por Pi CLI.";
+                // Text Pi streamed but never closed with a message_end of its
+                // own. Publishing it here is the only way it reaches the chat;
+                // everything Pi did close was already sent as its own message.
+                const leftover = this.currentOutput.trim();
+                if (leftover) {
+                    this.lastAnswer = leftover;
+                    publishChatEvent(CHAT_EVENTS.MESSAGE_END, { text: leftover });
+                }
+                this.currentOutput = "";
+                const resultText = this.lastAnswer || "Respuesta procesada correctamente por Pi CLI.";
 
                 activeTask.status = "completed";
                 activeTask.output = resultText;
 
                 this.thinkingAnnounced = false;
                 publishChatEvent(CHAT_EVENTS.THINKING, { active: false });
-                publishChatEvent(CHAT_EVENTS.MESSAGE_END, { text: resultText });
 
                 const resolve = this.pendingResolve;
                 this.pendingResolve = null;
@@ -2113,6 +2138,7 @@ class PiRpcManager {
         publishChatEvent(CHAT_EVENTS.THINKING, { active: true });
 
         this.currentOutput = "";
+        this.lastAnswer = "";
 
         return new Promise((resolve, reject) => {
             this.pendingResolve = resolve;

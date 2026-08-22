@@ -109,6 +109,48 @@ class ChatViewModelTest {
     }
 
     @Test
+    fun `streaming deltas accumulate instead of replacing the bubble`() = runTest {
+        // Each delta is the next fragment, not the whole message. Replacing on
+        // every delta left a message being written live showing only its last
+        // chunk: for a sentence ending in a period, literally a single ".".
+        val viewModel = ChatViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+
+        for (fragment in listOf("Primero verifico", " si hay sesiones", " Pi disponibles", ".")) {
+            fake.emitChatEvent(ChatEvent.AssistantDelta(fragment))
+        }
+        advanceUntilIdle()
+
+        val streaming = viewModel.messages.value.last { it.sender == MessageSender.PI }
+        assertEquals("Primero verifico si hay sesiones Pi disponibles.", streaming.text)
+        assertTrue(streaming.isStreaming)
+    }
+
+    @Test
+    fun `a second assistant message opens its own bubble instead of overwriting the first`() = runTest {
+        // One Pi turn holds several assistant messages: the preamble before the
+        // tools, then the answer. Both have to survive as separate messages.
+        val viewModel = ChatViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+        // The chat opens with Pi's greeting, which is not part of this turn.
+        val before = viewModel.messages.value.count { it.sender == MessageSender.PI }
+
+        fake.emitChatEvent(ChatEvent.AssistantDelta("Primero verifico las sesiones."))
+        fake.emitChatEvent(ChatEvent.MessageEnded("Primero verifico las sesiones."))
+        advanceUntilIdle()
+
+        fake.emitChatEvent(ChatEvent.AssistantDelta("Aviso: hice ambos trabajos inline."))
+        fake.emitChatEvent(ChatEvent.MessageEnded("Aviso: hice ambos trabajos inline."))
+        advanceUntilIdle()
+
+        val turn = viewModel.messages.value.filter { it.sender == MessageSender.PI }.drop(before)
+        assertEquals(2, turn.size)
+        assertEquals("Primero verifico las sesiones.", turn[0].text)
+        assertEquals("Aviso: hice ambos trabajos inline.", turn[1].text)
+        assertTrue(turn.none { it.isStreaming })
+    }
+
+    @Test
     fun `ToolEnded correlates by id and marks the matching ToolStarted message done`() = runTest {
         val viewModel = ChatViewModel(FakeClientSource(fake))
         advanceUntilIdle()

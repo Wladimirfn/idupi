@@ -302,7 +302,14 @@ class ChatViewModel(
                         val lastStreamingIndex = currentList.indexOfLast { it.sender == MessageSender.PI && it.isStreaming }
                         if (lastStreamingIndex != -1) {
                             val updated = currentList.toMutableList()
-                            updated[lastStreamingIndex] = updated[lastStreamingIndex].copy(text = event.delta)
+                            // A delta is the next fragment, not the message. This
+                            // replaced the bubble with each fragment as it came,
+                            // so a message being written live showed only its last
+                            // chunk -- for a sentence ending in a period, literally
+                            // a single ".", until message_end replaced it wholesale.
+                            updated[lastStreamingIndex] = updated[lastStreamingIndex].copy(
+                                text = updated[lastStreamingIndex].text + event.delta
+                            )
                             _messages.value = updated
                         } else {
                             _messages.value = currentList + ChatMessage(
