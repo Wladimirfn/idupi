@@ -123,3 +123,26 @@ test("the buffer is bounded so a long offline stretch cannot grow without limit"
         assert.match(all, /respuesta 199/);
     });
 });
+
+test("an async subagent's answer survives arriving while nobody is listening", () => {
+    // The whole point of the async path: the child reports back minutes after
+    // the turn that launched it ended, which is exactly when the app is most
+    // likely to be between SSE connections.
+    assert.equal(subscriberCount(), 0, "precondition: no subscribers");
+
+    publish(CHAT_EVENTS.SUBAGENT_END, {
+        id: "card-1",
+        name: "gentle-ai-explore",
+        summary: "la revisión terminada",
+        ok: true,
+    });
+
+    const sub = fakeSubscriber();
+    subscribe(sub.req, sub.res, { engine: "pi-cli", project: "p", sessionId: "s" });
+
+    withSubscribers([sub], () => {
+        const all = sub.written.join("");
+        assert.match(all, /event: subagent_end/);
+        assert.match(all, /la revisión terminada/);
+    });
+});

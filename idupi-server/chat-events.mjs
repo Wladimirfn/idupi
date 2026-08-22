@@ -52,7 +52,15 @@ const subscribers = new Map();
  * here was delivered to no one, so replaying it cannot duplicate anything.
  */
 const UNDELIVERED_CAP = 20;
-const REPLAY_WHEN_UNDELIVERED = new Set(["message_end", "error"]);
+const REPLAY_WHEN_UNDELIVERED = new Set([
+    "message_end",
+    "error",
+    // An async subagent reports back minutes after the turn that launched it
+    // ended, which is exactly when nobody is likely to be listening. Losing
+    // that frame leaves its card open forever with no answer in it.
+    "subagent_start",
+    "subagent_end",
+]);
 let undelivered = [];
 
 /** Per-context ring buffer of recent activity frames, for isolated replay. */

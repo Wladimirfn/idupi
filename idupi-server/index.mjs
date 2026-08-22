@@ -12,6 +12,7 @@ import { join, basename, relative, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createAuthGuard, loadToken } from "../server-auth.mjs";
 import { TaskRegistry } from "./lib/task-registry.mjs";
+import { parseSubagentNotify, resolveNoticeCard } from "./lib/subagent-notify.mjs";
 import { CHAT_EVENTS, publish as publishChatEvent, subscribe as subscribeChatStream } from "./chat-events.mjs";
 import {
     escapeSqlValue,
@@ -1260,6 +1261,7 @@ export {
     execOpenCodeDb,
     describeToolInput,
     describeSubagentName,
+    isSubagentTool,
     isAsyncDispatchReceipt,
     summarizeSubagentResult
 };
@@ -1715,6 +1717,51 @@ class PiRpcManager {
         this.currentProvider = null;
         this.thinkingAnnounced = false;
         this.pendingTimeoutTimer = null;
+        /**
+         * Delegation cards still waiting for an async run to report back,
+         * oldest first. Insertion-ordered so an unnamed match resolves the
+         * longest-waiting card rather than an arbitrary one. An async run
+         * outlives the turn that launched it, so this must NOT be cleared at
+         * agent_end.
+         * @type {Map<string, string>} card id -> subagent name
+         */
+        this.pendingSubagents = new Map();
+    }
+
+    /** Caps at a size no real fan-out reaches, so a lost notice cannot leak. */
+    rememberPendingSubagent(id, name) {
+        if (!id) return;
+        this.pendingSubagents.set(id, name);
+        while (this.pendingSubagents.size > 32) {
+            this.pendingSubagents.delete(this.pendingSubagents.keys().next().value);
+        }
+    }
+
+    /**
+     * Closes the card an async run belongs to, with what the subagent actually
+     * said.
+     *
+     * pi-subagents reports the child's own run id, while the receipt carried
+     * the parent workflow's id, so the two never match directly. The role name
+     * is the field both sides share; when it does not identify a card either
+     * (a fan-out of same-role children, say) the longest-waiting card is the
+     * only defensible choice. With no card at all -- a resumed session, a
+     * restarted server -- the answer is still shown as its own card instead of
+     * being dropped.
+     */
+    resolvePendingSubagent(notice) {
+        const { id, name, isNew } = resolveNoticeCard(this.pendingSubagents, notice);
+        if (isNew) {
+            publishChatEvent(CHAT_EVENTS.SUBAGENT_START, { id, name, task: null });
+        } else {
+            this.pendingSubagents.delete(id);
+        }
+        publishChatEvent(CHAT_EVENTS.SUBAGENT_END, {
+            id,
+            name,
+            summary: summarizeSubagentResult(notice.output || ""),
+            ok: notice.ok,
+        });
     }
 
     setModel(modelId, provider = null) {
@@ -1852,11 +1899,7 @@ class PiRpcManager {
                 const tDetail = describeToolInput(event);
                 console.log(`\n[IDUPI Tool] Ejecutando: ${tName}`);
 
-                const isSubagent = tName.startsWith("sdd-") || tName.startsWith("review-") || 
-                                   tName.startsWith("jd-") || tName === "invoke_subagent" || 
-                                   tName === "delegate" || tName === "subagent" || 
-                                   tName === "gentle-orchestrator" || tName === "build" || 
-                                   tName === "explore" || tName === "plan";
+                const isSubagent = isSubagentTool(tName, event.input);
 
                 // Activity visibility (Change A): one stable id across the
                 // lifecycle. Pi MCP is detected structurally via statusKey=mcp
@@ -1904,11 +1947,7 @@ class PiRpcManager {
                 activityRegistry.terminalize(tId, { ok: event.isError !== true });
                 this._currentActivityId = null;
                 this._activityMcp = false;
-                const isSubagent = tName.startsWith("sdd-") || tName.startsWith("review-") || 
-                                   tName.startsWith("jd-") || tName === "invoke_subagent" || 
-                                   tName === "delegate" || tName === "subagent" || 
-                                   tName === "gentle-orchestrator" || tName === "build" || 
-                                   tName === "explore" || tName === "plan";
+                const isSubagent = isSubagentTool(tName, event.input);
 
                 if (isSubagent) {
                     const piSummary = extractPiResultText(event.result);
@@ -1919,12 +1958,23 @@ class PiRpcManager {
                             `[IDUPI Subagente] Forma de 'result' no reconocida para '${tName}'. Claves: ${Object.keys(event.result).join(", ")}`,
                         );
                     }
-                    publishChatEvent(CHAT_EVENTS.SUBAGENT_END, {
-                        id: tId,
-                        name: this._subagentName || describeSubagentName(tName, event.input || {}),
-                        summary: summarizeSubagentResult(piSummary),
-                        ok: event.isError !== true
-                    });
+                    const subagentName = this._subagentName || describeSubagentName(tName, event.input || {});
+                    if (isAsyncDispatchReceipt(piSummary)) {
+                        // An async run answers the tool call instantly with a
+                        // dispatch receipt. Closing the card here reported a
+                        // completion that had not happened and printed text
+                        // addressed to the model under "Respuesta". The card
+                        // stays open until the real answer arrives as a
+                        // `subagent-notify` entry (see entry_appended below).
+                        this.rememberPendingSubagent(tId, subagentName);
+                    } else {
+                        publishChatEvent(CHAT_EVENTS.SUBAGENT_END, {
+                            id: tId,
+                            name: subagentName,
+                            summary: summarizeSubagentResult(piSummary),
+                            ok: event.isError !== true
+                        });
+                    }
                 }
 
                 publishChatEvent(CHAT_EVENTS.TOOL_END, {
@@ -1932,6 +1982,25 @@ class PiRpcManager {
                     name: tName,
                     ok: event.isError !== true
                 });
+            }
+
+            // Where an async subagent's real answer arrives.
+            //
+            // Pi appends the completion notice to the session as a
+            // `custom_message` entry and streams it as `entry_appended`
+            // (AgentSessionEvent, dist/core/agent-session.d.ts). The entry has
+            // `display: false` -- Pi's own UI hides it because its text is
+            // addressed to the model -- but it carries the child's output,
+            // which is the one thing the delegation card was missing.
+            if (event.type === "entry_appended" && event.entry?.type === "custom_message"
+                && event.entry.customType === "subagent-notify") {
+                const raw = typeof event.entry.content === "string" ? event.entry.content : "";
+                const notice = parseSubagentNotify(raw);
+                if (notice && notice.output) {
+                    this.resolvePendingSubagent(notice);
+                } else {
+                    console.warn("[IDUPI Subagente] Aviso de fin sin respuesta legible:", raw.slice(0, 200));
+                }
             }
 
             // Pi MCP status signal (Change A): a generic MCP start. The active
@@ -2117,6 +2186,46 @@ function describeToolInput(event) {
 }
 
 /**
+ * Is this tool call a delegation to a subagent?
+ *
+ * One rule for all three engines. There used to be four inline copies with
+ * three different rule sets, and they disagreed in a way the user could see:
+ * OpenCode's copy never listed `task`, which is the exact name OpenCode gives
+ * its delegation tool, so an OpenCode subagent produced no card at all -- only
+ * the orchestrator's final answer. Claude's copy did list it.
+ *
+ * `includes("agent")` from the old Claude copy is deliberately not kept: it
+ * matched any MCP tool with "agent" in its name and turned ordinary calls into
+ * delegation cards. Every real delegation tool is covered by name or prefix.
+ */
+const SUBAGENT_TOOL_NAMES = new Set([
+    "task",              // Claude Code and OpenCode
+    "agent",             // Claude Code, older builds
+    "subagent",          // pi-subagents
+    "invoke_subagent",
+    "delegate",
+    "gentle-orchestrator",
+    "build",
+    "explore",
+    "plan",
+]);
+const SUBAGENT_TOOL_PREFIXES = ["sdd-", "review-", "jd-"];
+
+function isSubagentTool(toolName, input) {
+    // A role/subagent_type parameter names the child being launched, so it
+    // identifies a delegation whatever the tool ends up being called.
+    if (input && typeof input === "object") {
+        if (typeof input.role === "string" && input.role) return true;
+        if (typeof input.subagent_type === "string" && input.subagent_type) return true;
+    }
+    const name = typeof toolName === "string" ? toolName.toLowerCase() : "";
+    if (!name) return false;
+    if (SUBAGENT_TOOL_NAMES.has(name)) return true;
+    if (SUBAGENT_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return true;
+    return name.includes("subagent") || name.includes("supervisor");
+}
+
+/**
  * What to call a delegation card. Every fan-out through pi-subagents arrives as
  * the same tool name, `subagent`, so labelling cards with it produces a column
  * of identical rows. The role the model chose (`scout`, `researcher`, ...) is
@@ -2140,9 +2249,8 @@ function isAsyncDispatchReceipt(text) {
  * handed to the background -- instead of being printed under "Respuesta" as if
  * the subagent had replied with instructions addressed to the model.
  *
- * The real answer of an async run arrives later in `tool_execution_update`,
- * which this server does not map yet; until a live capture shows that payload,
- * claiming completion here would be inventing it.
+ * For an async run the card is now left open instead, and closed by the
+ * `subagent-notify` entry that carries the real answer.
  */
 function summarizeSubagentResult(text) {
     if (isAsyncDispatchReceipt(text)) {
@@ -2154,7 +2262,12 @@ function summarizeSubagentResult(text) {
 }
 
 function describeSubagentName(toolName, input) {
-    if (toolName !== "subagent" || !input || typeof input !== "object") return toolName;
+    if (!input || typeof input !== "object") return toolName;
+    // Claude and OpenCode put the chosen role in `subagent_type` / `role` while
+    // still calling the tool `task`, so reading it here is what keeps those
+    // cards from all being labelled "task".
+    if (typeof input.subagent_type === "string" && input.subagent_type) return input.subagent_type;
+    if (typeof input.role === "string" && input.role) return input.role;
     const children = Array.isArray(input.children) ? input.children
         : Array.isArray(input.steps) ? input.steps
         : null;
@@ -2174,15 +2287,15 @@ function describeSubagentName(toolName, input) {
 const seenUnmappedEvents = new Set();
 const MAPPED_RPC_EVENTS = new Set([
     "model_change", "active_model", "message_update", "message_end",
-    "tool_execution_start", "tool_execution_end", "agent_end"
+    "tool_execution_start", "tool_execution_end", "agent_end", "entry_appended"
 ]);
 
 function noteUnmappedRpcEvent(type, event) {
     if (!type || MAPPED_RPC_EVENTS.has(type) || seenUnmappedEvents.has(type)) return;
     seenUnmappedEvents.add(type);
-    // Log the field names once. `tool_execution_update` is where an async
-    // subagent's real answer arrives, and its payload has never been captured
-    // here -- so the next live run identifies it instead of us guessing.
+    // Log the field names once, so a live run identifies an unmapped payload
+    // instead of us guessing at it. This is how `entry_appended` -- the event
+    // that actually carries an async subagent's answer -- was found.
     let shape = "";
     try {
         if (event && typeof event === "object") shape = ` — campos: ${Object.keys(event).join(", ")}`;
@@ -3489,17 +3602,13 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
                                 publishChatEvent(CHAT_EVENTS.TEXT_DELTA, { text: item.text });
                             } else if (item.type === "tool_use") {
                                 const toolName = item.name || "Tool";
-                                const isSubagent = toolName.toLowerCase().includes("task") || 
-                                                   toolName.toLowerCase().includes("agent") || 
-                                                   toolName.toLowerCase().startsWith("sdd-") || 
-                                                   toolName.toLowerCase().startsWith("jd-") || 
-                                                   toolName.toLowerCase().startsWith("review-");
+                                const isSubagent = isSubagentTool(toolName, item.input);
                                 const toolId = item.id || `tool-${Date.now()}`;
                                 if (isSubagent) {
                                     activeSubagentId = toolId;
                                     // The Task tool is always literally named "Task"; the agent
                                     // the user actually picked lives in subagent_type.
-                                    activeSubagentName = item.input?.subagent_type || toolName;
+                                    activeSubagentName = describeSubagentName(toolName, item.input || {});
                                     const taskDesc = item.input?.task || item.input?.prompt || item.input?.description || `Ejecutando subagente ${toolName}...`;
                                     publishChatEvent(CHAT_EVENTS.SUBAGENT_START, {
                                         id: toolId,
@@ -3690,15 +3799,11 @@ function runOpenCodeCli(projPath, sessionId, message) {
                     const toolName = event.part.tool || "Tool";
                     const input = event.part.state?.input || {};
                     const callId = event.part.callID || event.part.id || `tool-${Date.now()}`;
-                    const isSubagent = input.role || 
-                                       toolName.toLowerCase().includes("supervisor") ||
-                                       toolName.toLowerCase().includes("agent") ||
-                                       toolName.toLowerCase().startsWith("sdd-") ||
-                                       toolName.toLowerCase().startsWith("jd-") ||
-                                       toolName.toLowerCase().startsWith("review-");
+                    const isSubagent = isSubagentTool(toolName, input);
                     if (isSubagent) {
-                        const subagentName = input.role || toolName;
-                        const taskDesc = input.question || input.task || input.prompt || `Consultando a subagente ${subagentName}...`;
+                        const subagentName = describeSubagentName(toolName, input);
+                        const taskDesc = input.question || input.task || input.prompt
+                            || input.description || `Consultando a subagente ${subagentName}...`;
                         publishChatEvent(CHAT_EVENTS.SUBAGENT_START, {
                             id: callId,
                             name: subagentName,
@@ -3707,7 +3812,9 @@ function runOpenCodeCli(projPath, sessionId, message) {
                         publishChatEvent(CHAT_EVENTS.SUBAGENT_END, {
                             id: callId,
                             name: subagentName,
-                            summary: event.part.state?.output ? String(event.part.state.output).slice(0, 300) : "Subagente completó la tarea",
+                            summary: summarizeSubagentResult(
+                                event.part.state?.output ? String(event.part.state.output) : "",
+                            ),
                             ok: event.part.state?.status !== "error"
                         });
                     } else {
