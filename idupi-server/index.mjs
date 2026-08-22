@@ -37,6 +37,10 @@ import {
     redactActivity,
 } from "./lib/activity.mjs";
 
+// Remote screen module (docs/remote-screen-module.md): routes live in their
+// own module so this monolith stops growing.
+import { handleScreenRoute, shutdownScreen } from "./lib/screen-routes.mjs";
+
 const PORT = process.env.PORT || 8788;
 const requireAuth = createAuthGuard(loadToken());
 const PI_CLI_JS = join(
@@ -2601,6 +2605,10 @@ const handleRequest = async (req, res) => {
     const parsedUrl = new URL(rawUrl, `http://localhost:${PORT}`);
     const pathname = parsedUrl.pathname;
 
+    // Remote screen routes live in lib/screen-routes.mjs; it answers true when
+    // the path is theirs. Still behind requireAuth like everything below.
+    if (await handleScreenRoute(req, res, pathname)) return;
+
     // 0. Stream de eventos del chat (SSE). Long-lived: no responde y sigue abierto.
     if (pathname === "/api/v1/chat/stream" && req.method === "GET") {
         // Context is server-derived (never client query) so activity frames are
@@ -4373,6 +4381,9 @@ export async function guardedRequest(req, res) {
 }
 
 const server = http.createServer(guardedRequest);
+
+// Kill the capture helper when the server process exits so it never outlives us.
+process.on("exit", shutdownScreen);
 
 
 // TEST SEAM (behavior-preserving): skip binding the socket when IDUPI_NO_LISTEN=1
