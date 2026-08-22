@@ -1831,6 +1831,44 @@ class PiRpcManager {
     }
 
     /**
+     * (Re)arms the watchdog that kills a Pi process which has gone silent.
+     *
+     * Pi CLI is a persistent RPC subprocess, not spawned per message, so a
+     * genuinely stuck request never closes on its own -- and sendPrompt()
+     * refuses new messages while one is pending, so the whole chat would hang.
+     *
+     * The window used to be measured from the start of the message, which
+     * killed real work: a turn running a long chain of tools was terminated at
+     * exactly five minutes while Pi was visibly executing bash. It is measured
+     * from the last sign of life instead, so the limit is silence, not
+     * duration. Pi emits no periodic keepalive -- every event corresponds to
+     * actual work -- so a hung tool still produces the silence that fires it.
+     */
+    armIdleWatchdog() {
+        if (!this.pendingResolve) return;
+        clearTimeout(this.pendingTimeoutTimer);
+        this.pendingTimeoutTimer = setTimeout(() => {
+            if (!this.pendingResolve) return;
+            const stuckPid = this.child?.pid;
+            console.warn(`[IDUPI Pi RPC Timeout] Pi no dio señales de vida en ${AGENT_CLI_TIMEOUT_MS}ms, terminando el proceso (PID ${stuckPid}).`);
+            const settleResolve = this.pendingResolve;
+            this.pendingResolve = null;
+            this.pendingReject = null;
+            this.pendingTimeoutTimer = null;
+            if (stuckPid) {
+                execFile("taskkill", ["/F", "/T", "/PID", String(stuckPid)], () => {});
+            }
+            this.child = null;
+            this.thinkingAnnounced = false;
+            publishChatEvent(CHAT_EVENTS.THINKING, { active: false });
+            const timeoutMsg = `⚠️ Pi CLI estuvo ${AGENT_CLI_TIMEOUT_MS / 1000}s sin dar señales de vida y fue detenido.`;
+            activeTask.output = timeoutMsg;
+            publishChatEvent(CHAT_EVENTS.MESSAGE_END, { text: timeoutMsg });
+            settleResolve(timeoutMsg);
+        }, AGENT_CLI_TIMEOUT_MS);
+    }
+
+    /**
      * Binds the next message to a session, restarting the RPC child when the
      * session actually changes.
      *
@@ -1884,6 +1922,11 @@ class PiRpcManager {
     handleRpcLine(line) {
         try {
             const event = JSON.parse(line);
+
+            // Any event at all is proof Pi is still working, whatever it is.
+            // The watchdog measures silence, so this is what stops a long but
+            // healthy turn from being killed mid-work.
+            this.armIdleWatchdog();
 
             if (event.type === "model_change" || event.type === "active_model") {
                 const m = event.modelId || event.model || event.data?.model;
@@ -2144,31 +2187,7 @@ class PiRpcManager {
             this.pendingResolve = resolve;
             this.pendingReject = reject;
 
-            // Pi CLI is a persistent RPC subprocess, not spawned per-message,
-            // so a stuck request never closes on its own the way a one-shot
-            // CLI would. If no 'agent_end' arrives in time, force a restart
-            // (see AGENT_CLI_TIMEOUT_MS) rather than leave the chat -- and
-            // every future message, since sendPrompt() rejects new requests
-            // while one is pending -- hung indefinitely.
-            this.pendingTimeoutTimer = setTimeout(() => {
-                if (!this.pendingResolve) return;
-                const stuckPid = this.child?.pid;
-                console.warn(`[IDUPI Pi RPC Timeout] Sin 'agent_end' tras ${AGENT_CLI_TIMEOUT_MS}ms, terminando el proceso Pi CLI (PID ${stuckPid}).`);
-                const settleResolve = this.pendingResolve;
-                this.pendingResolve = null;
-                this.pendingReject = null;
-                this.pendingTimeoutTimer = null;
-                if (stuckPid) {
-                    execFile("taskkill", ["/F", "/T", "/PID", String(stuckPid)], () => {});
-                }
-                this.child = null;
-                this.thinkingAnnounced = false;
-                publishChatEvent(CHAT_EVENTS.THINKING, { active: false });
-                const timeoutMsg = `⚠️ Pi CLI no respondió dentro de ${AGENT_CLI_TIMEOUT_MS / 1000}s y fue detenido.`;
-                activeTask.output = timeoutMsg;
-                publishChatEvent(CHAT_EVENTS.MESSAGE_END, { text: timeoutMsg });
-                settleResolve(timeoutMsg);
-            }, AGENT_CLI_TIMEOUT_MS);
+            this.armIdleWatchdog();
 
             const promptCmd = JSON.stringify({
                 id: `idupi-${Date.now()}`,
