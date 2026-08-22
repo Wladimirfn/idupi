@@ -1758,12 +1758,15 @@ class PiRpcManager {
         } else {
             this.pendingSubagents.delete(id);
         }
-        publishChatEvent(CHAT_EVENTS.SUBAGENT_END, {
-            id,
-            name,
-            summary: summarizeSubagentResult(notice.output || ""),
-            ok: notice.ok,
-        });
+        // Pi's preview cap cuts the notice inside the first child's output, so
+        // the other children are not in the text at all. Saying how many ran is
+        // honest; showing one child's answer as if it were the whole result is
+        // not.
+        const answer = summarizeSubagentResult(notice.output || "");
+        const summary = notice.childCount > 1
+            ? `${notice.childCount} subagentes terminaron. Pi solo incluyó el primero (${notice.agent || "?"}):\n${answer}`
+            : answer;
+        publishChatEvent(CHAT_EVENTS.SUBAGENT_END, { id, name, summary, ok: notice.ok });
     }
 
     setModel(modelId, provider = null) {
@@ -2315,14 +2318,29 @@ const SUBAGENT_TOOL_NAMES = new Set([
 const SUBAGENT_TOOL_PREFIXES = ["sdd-", "review-", "jd-"];
 
 function isSubagentTool(toolName, input) {
+    const name = typeof toolName === "string" ? toolName.toLowerCase() : "";
+    if (!name) return false;
+
+    // pi-subagents reuses ONE tool for launching, polling, stopping and
+    // scheduling. Its schema settles which is which: `action` is
+    //   "Optional management/control action. Omit this field for structured
+    //    single-child or workflowScript execution."
+    // so a call that carries one is a question about existing work, never new
+    // work. Treating every call as a delegation opened a card per poll: two
+    // subagents produced four cards, three of them from one launch plus two
+    // status queries and a wait.
+    if (input && typeof input === "object" && typeof input.action === "string" && input.action) {
+        return false;
+    }
+    // subagent_wait blocks on runs that already exist; it starts nothing.
+    if (name !== "subagent" && name.startsWith("subagent_")) return false;
+
     // A role/subagent_type parameter names the child being launched, so it
     // identifies a delegation whatever the tool ends up being called.
     if (input && typeof input === "object") {
         if (typeof input.role === "string" && input.role) return true;
         if (typeof input.subagent_type === "string" && input.subagent_type) return true;
     }
-    const name = typeof toolName === "string" ? toolName.toLowerCase() : "";
-    if (!name) return false;
     if (SUBAGENT_TOOL_NAMES.has(name)) return true;
     if (SUBAGENT_TOOL_PREFIXES.some((prefix) => name.startsWith(prefix))) return true;
     return name.includes("subagent") || name.includes("supervisor");
@@ -2381,6 +2399,17 @@ function describeSubagentName(toolName, input) {
         if (roles.length) return roles.join(", ");
     }
     if (typeof input.agent === "string" && input.agent) return input.agent;
+
+    // A fan-out arrives as a workflowScript: the roles are written inside the
+    // script the model generated, and nowhere else at launch time, so without
+    // this the card for a two-subagent run is labelled "subagent". Only a
+    // label -- if the shape ever changes the card falls back to the tool name.
+    if (typeof input.workflowScript === "string" && input.workflowScript) {
+        const roles = [...new Set(
+            [...input.workflowScript.matchAll(/agent:\s*['"]([^'"]+)['"]/g)].map((m) => m[1]),
+        )];
+        if (roles.length) return roles.join(", ");
+    }
     return toolName;
 }
 

@@ -111,6 +111,13 @@ export function parseSubagentNotify(content) {
     const headlineAgent = headline && headline[2] !== "workflow" ? headline[2] : null;
     const headlineFailed = headline ? headline[1] === "failed" : false;
 
+    // A fan-out returns one entry per child, keyed by role. The preview cap
+    // almost always cuts inside the first child's output, so the rest are not
+    // in this text at all -- the count is, and saying so beats presenting one
+    // child's answer as if it were the whole result.
+    const childMatch = content.match(/completed with (\d+) child run\(s\)/);
+    const childCount = childMatch ? Number(childMatch[1]) : 1;
+
     let parsed = null;
     try {
         parsed = JSON.parse(fragment.trim());
@@ -118,13 +125,22 @@ export function parseSubagentNotify(content) {
         // Expected for any run long enough to hit the 1000-char preview cap.
     }
     if (parsed && typeof parsed === "object") {
-        const first = Array.isArray(parsed) ? parsed[0] : parsed;
+        let first = Array.isArray(parsed) ? parsed[0] : parsed;
+        if (first && typeof first === "object" && typeof first.agent !== "string") {
+            // A fan-out is keyed by role -- {scout: {...}, researcher: {...}} --
+            // so the object itself carries no agent: the children are its values.
+            const nested = Object.values(first).find(
+                (v) => v && typeof v === "object" && typeof v.agent === "string",
+            );
+            if (nested) first = nested;
+        }
         if (first && typeof first === "object") {
             return {
                 agent: typeof first.agent === "string" ? first.agent : headlineAgent,
                 runId: typeof first.runId === "string" ? first.runId : null,
                 output: typeof first.output === "string" ? first.output : null,
                 ok: first.ok === false ? false : !headlineFailed,
+                childCount,
             };
         }
     }
@@ -135,6 +151,7 @@ export function parseSubagentNotify(content) {
         runId: scanStringField(fragment, "runId"),
         output: scanStringField(fragment, "output"),
         ok: okMatch ? okMatch[1] === "true" : !headlineFailed,
+        childCount,
     };
 }
 
