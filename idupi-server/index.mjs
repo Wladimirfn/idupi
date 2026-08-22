@@ -12,7 +12,7 @@ import { join, basename, relative, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { createAuthGuard, loadToken } from "../server-auth.mjs";
 import { TaskRegistry } from "./lib/task-registry.mjs";
-import { parseSubagentNotify, resolveNoticeCard } from "./lib/subagent-notify.mjs";
+import { parseSubagentNotify, resolveNoticeCard, describeNoticeResult } from "./lib/subagent-notify.mjs";
 import { CHAT_EVENTS, publish as publishChatEvent, subscribe as subscribeChatStream } from "./chat-events.mjs";
 import {
     escapeSqlValue,
@@ -1762,11 +1762,12 @@ class PiRpcManager {
         // the other children are not in the text at all. Saying how many ran is
         // honest; showing one child's answer as if it were the whole result is
         // not.
-        const answer = summarizeSubagentResult(notice.output || "");
-        const summary = notice.childCount > 1
-            ? `${notice.childCount} subagentes terminaron. Pi solo incluyó el primero (${notice.agent || "?"}):\n${answer}`
-            : answer;
-        publishChatEvent(CHAT_EVENTS.SUBAGENT_END, { id, name, summary, ok: notice.ok });
+        publishChatEvent(CHAT_EVENTS.SUBAGENT_END, {
+            id,
+            name,
+            summary: describeNoticeResult(notice),
+            ok: notice.ok,
+        });
     }
 
     setModel(modelId, provider = null) {
@@ -2031,6 +2032,28 @@ class PiRpcManager {
                 activityRegistry.terminalize(tId, { ok: event.isError !== true });
                 this._currentActivityId = null;
                 this._activityMcp = false;
+                // Second, independent proof that delegated work finished.
+                //
+                // subagent_wait blocks until the runs it was given complete, so
+                // its return IS that proof -- no parsing required. The card had
+                // exactly one way to close, through a notice whose channel and
+                // whose shape both turned out to be wrong, and each time it was
+                // wrong the card span forever on work that was done. One signal
+                // gating a terminal state is the actual defect.
+                if (tName === "subagent_wait" && this.pendingSubagents.size) {
+                    const waited = extractPiResultText(event.result) || "";
+                    console.log(`[IDUPI Subagente] subagent_wait cerró ${this.pendingSubagents.size} tarjeta(s) pendiente(s).`);
+                    for (const [cardId, cardName] of [...this.pendingSubagents]) {
+                        this.pendingSubagents.delete(cardId);
+                        publishChatEvent(CHAT_EVENTS.SUBAGENT_END, {
+                            id: cardId,
+                            name: cardName,
+                            summary: summarizeSubagentResult(waited) || "El subagente terminó.",
+                            ok: event.isError !== true,
+                        });
+                    }
+                }
+
                 const isSubagent = isSubagentTool(tName, event.input);
 
                 if (isSubagent) {
@@ -2087,10 +2110,17 @@ class PiRpcManager {
                 && event.message.customType === "subagent-notify") {
                 const raw = extractCustomMessageText(event.message.content);
                 const notice = parseSubagentNotify(raw);
-                if (notice && notice.output) {
+                if (notice) {
+                    // Closing used to require a readable answer, so a notice
+                    // whose shape we could not read left the card spinning on
+                    // work that had finished. Finishing and being readable are
+                    // different facts: the notice proves the first one.
+                    if (!notice.output) {
+                        console.warn("[IDUPI Subagente] Aviso de fin sin respuesta legible:", raw.slice(0, 200));
+                    }
                     this.resolvePendingSubagent(notice);
                 } else {
-                    console.warn("[IDUPI Subagente] Aviso de fin sin respuesta legible:", raw.slice(0, 200));
+                    console.warn("[IDUPI Subagente] Aviso de fin no reconocido:", raw.slice(0, 200));
                 }
             }
 

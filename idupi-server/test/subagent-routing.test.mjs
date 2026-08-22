@@ -64,7 +64,7 @@ test("with no open card the answer still gets one instead of vanishing", () => {
 
 test("the real captured notice resolves to a readable card summary", () => {
     const real = JSON.parse(readFileSync(new URL("./fixtures/subagent-notify.json", import.meta.url), "utf8"));
-    const explore = real.find((e) => e.content.includes("gentle-ai-explore"));
+    const explore = real.find((e) => e.content.includes("Revisión exploratoria IDUPI"));
     const notice = parseSubagentNotify(explore.content);
     const pending = new Map([["card-a", "gentle-ai-explore"]]);
     const picked = resolveNoticeCard(pending, notice);
@@ -124,10 +124,10 @@ test("a fan-out card is labelled with its roles instead of the tool name", () =>
 
 test("a fan-out notice reports how many children ran", () => {
     const real = JSON.parse(readFileSync(new URL("./fixtures/subagent-notify.json", import.meta.url), "utf8"));
-    const fanout = real.find((e) => e.content.includes("with 2 child run(s)"));
+    const fanout = real.find((e) => e.content.includes('"scout": "Total'));
     assert.ok(fanout, "la captura del fan-out de dos hijos debe existir");
     const notice = parseSubagentNotify(fanout.content);
     assert.equal(notice.childCount, 2);
-    assert.equal(notice.agent, "gentle-ai-explore");
-    assert.match(notice.output, /Total \.kt files/);
+    assert.equal(notice.agent, "scout");
+    assert.match(notice.output, /Total .?\.kt.? files/);
 });

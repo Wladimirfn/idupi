@@ -5,153 +5,74 @@
  * An async delegation answers the tool call immediately with a dispatch
  * receipt -- "The async run is detached and running in the background" -- so
  * the real answer cannot come from `tool_execution_end`. Pi delivers it later
- * as an `entry_appended` event carrying a `custom_message` entry whose
- * `customType` is `subagent-notify`:
+ * as a CUSTOM message: sendCustomMessage() appends the entry and emits
+ * message_start/message_end with role "custom" and customType
+ * "subagent-notify" (dist/core/agent-session.js:1096). It is NOT an
+ * `entry_appended` event -- that one is emitted only by appendEntry(), a
+ * different API -- and keying on it left the delegation card open forever.
  *
  *   Background task completed: **workflow**
  *
- *   Workflow completed with 1 child run(s). Return: {
- *     "key": "main", "ok": true, "agent": "gentle-ai-explore",
- *     "runId": "...", "output": "...", "artifactPaths": [...]
- *   } Trace: 2 event(s).
+ *   Workflow completed with 2 child run(s). Return: {
+ *     "scout": "Total .kt files ...",
+ *     "researcher": { "agent": "...", "runId": "...", "output": "..." }
+ *   } Trace: 4 event(s).
  *
- * That block is NOT reliably valid JSON. pi-subagents builds it with
- * `formatWorkflowValue(workflow.value).slice(0, 1_000)`, so any run whose
- * output or artifact list runs long arrives cut mid-string -- both notices
- * captured from a real session are truncated, so treating truncation as the
- * exception would fail on the common case. Parsing therefore tries JSON first
- * and falls back to scanning the fields out of the fragment.
+ * Two things about that block make a naive reader fail, and both were observed
+ * in real runs rather than assumed:
+ *
+ *  - It is usually NOT valid JSON. pi-subagents builds it with
+ *    `formatWorkflowValue(workflow.value).slice(0, 1_000)`, so it arrives cut
+ *    mid-value far more often than not.
+ *  - Its shape is not fixed. `Return:` is whatever the workflowScript returned,
+ *    and the model writes that script: one run gave objects with `output`, the
+ *    next gave plain strings under the same prompt.
+ *
+ * So the children are read structurally (see subagent-children.mjs), and a
+ * notice always parses into something actionable: a caller must be able to
+ * close a card on "this finished" even when the text cannot be read.
  */
+
+import { extractChildren } from "./subagent-children.mjs";
 
 const RETURN_MARKER = "Return: ";
 
-/** Reads one JSON string literal starting at the opening quote. */
-function readJsonStringAt(text, quoteIndex) {
-    let raw = "";
-    let terminated = false;
-    for (let i = quoteIndex + 1; i < text.length; i++) {
-        const ch = text[i];
-        if (ch === "\\") {
-            // A lone trailing backslash is what truncation mid-escape leaves
-            // behind; dropping it keeps the rest of the string usable.
-            if (i + 1 >= text.length) break;
-            raw += ch + text[i + 1];
-            i++;
-            continue;
-        }
-        if (ch === '"') {
-            terminated = true;
-            break;
-        }
-        raw += ch;
-    }
-    return { raw, terminated };
-}
-
-/** Turns a raw JSON string body back into text, without throwing on a fragment. */
-function decodeJsonStringBody(raw) {
-    try {
-        return JSON.parse(`"${raw}"`);
-    } catch {
-        // Truncation can leave an escape the strict parser rejects. Decode the
-        // escapes we know rather than surfacing nothing at all.
-        return raw.replace(/\\(u[0-9a-fA-F]{4}|.)/g, (whole, esc) => {
-            if (esc[0] === "u") return String.fromCharCode(parseInt(esc.slice(1), 16));
-            switch (esc) {
-                case "n": return "\n";
-                case "r": return "\r";
-                case "t": return "\t";
-                case "b": return "\b";
-                case "f": return "\f";
-                case '"': return '"';
-                case "\\": return "\\";
-                case "/": return "/";
-                default: return whole;
-            }
-        });
-    }
-}
-
-function scanStringField(fragment, field) {
-    const key = `"${field}"`;
-    let from = 0;
-    while (true) {
-        const at = fragment.indexOf(key, from);
-        if (at === -1) return null;
-        const rest = fragment.slice(at + key.length);
-        const m = rest.match(/^\s*:\s*"/);
-        if (!m) {
-            from = at + key.length;
-            continue;
-        }
-        const quoteIndex = at + key.length + m[0].length - 1;
-        const { raw, terminated } = readJsonStringAt(fragment, quoteIndex);
-        const decoded = decodeJsonStringBody(raw);
-        // An unterminated string swallowed whatever pi-subagents appended after
-        // the preview. That suffix is fixed and machine-written, so removing it
-        // cannot eat a real answer.
-        return terminated ? decoded : decoded.replace(/ Trace: \d+ event\(s\)\.\s*$/, "");
-    }
-}
-
 /**
- * @returns {{agent: string|null, runId: string|null, output: string|null, ok: boolean}|null}
- *   null when the text is not a subagent completion notice.
+ * @returns {{agent: string|null, runId: string|null, output: string|null,
+ *            ok: boolean, childCount: number, children: Array}|null}
+ *   null only when the text is not a completion notice at all.
  */
 export function parseSubagentNotify(content) {
     if (typeof content !== "string" || !content) return null;
-    const markerAt = content.indexOf(RETURN_MARKER);
-    if (markerAt === -1) return null;
-    const fragment = content.slice(markerAt + RETURN_MARKER.length);
 
-    // The headline names the run that finished. For a workflow it literally
-    // says "workflow", which is not a role a reader recognises, so the child's
-    // own agent name (read below) wins whenever there is one.
     const headline = content.match(/Background task (completed|failed):\s*\*\*(.+?)\*\*/);
+    const markerAt = content.indexOf(RETURN_MARKER);
+    // A notice with no Return block still reports that work finished, which is
+    // enough to close a card. Only text that is neither is rejected.
+    if (markerAt === -1 && !headline) return null;
+
+    const fragment = markerAt === -1 ? "" : content.slice(markerAt + RETURN_MARKER.length);
+
+    // The headline names the run that finished. For a fan-out it literally says
+    // "workflow", which is not a role a reader recognises, so a child's own
+    // name wins whenever there is one.
     const headlineAgent = headline && headline[2] !== "workflow" ? headline[2] : null;
     const headlineFailed = headline ? headline[1] === "failed" : false;
 
-    // A fan-out returns one entry per child, keyed by role. The preview cap
-    // almost always cuts inside the first child's output, so the rest are not
-    // in this text at all -- the count is, and saying so beats presenting one
-    // child's answer as if it were the whole result.
-    const childMatch = content.match(/completed with (\d+) child run\(s\)/);
-    const childCount = childMatch ? Number(childMatch[1]) : 1;
-
-    let parsed = null;
-    try {
-        parsed = JSON.parse(fragment.trim());
-    } catch {
-        // Expected for any run long enough to hit the 1000-char preview cap.
-    }
-    if (parsed && typeof parsed === "object") {
-        let first = Array.isArray(parsed) ? parsed[0] : parsed;
-        if (first && typeof first === "object" && typeof first.agent !== "string") {
-            // A fan-out is keyed by role -- {scout: {...}, researcher: {...}} --
-            // so the object itself carries no agent: the children are its values.
-            const nested = Object.values(first).find(
-                (v) => v && typeof v === "object" && typeof v.agent === "string",
-            );
-            if (nested) first = nested;
-        }
-        if (first && typeof first === "object") {
-            return {
-                agent: typeof first.agent === "string" ? first.agent : headlineAgent,
-                runId: typeof first.runId === "string" ? first.runId : null,
-                output: typeof first.output === "string" ? first.output : null,
-                ok: first.ok === false ? false : !headlineFailed,
-                childCount,
-            };
-        }
-    }
-
+    const declared = content.match(/completed with (\d+) child run\(s\)/);
+    const children = extractChildren(fragment);
+    const first = children.find((c) => c.output) || children[0] || null;
     const okMatch = fragment.match(/"ok"\s*:\s*(true|false)/);
+
     return {
-        agent: scanStringField(fragment, "agent") || headlineAgent,
-        runId: scanStringField(fragment, "runId"),
-        output: scanStringField(fragment, "output"),
-        ok: okMatch ? okMatch[1] === "true" : !headlineFailed,
-        childCount,
+        agent: (first && first.agent) || headlineAgent,
+        runId: (first && first.runId) || null,
+        output: (first && first.output) || null,
+        ok: headlineFailed ? false : (okMatch ? okMatch[1] === "true" : true),
+        // The declared count is authoritative: the preview can cut before the
+        // later children appear, so what was read is a floor, not the total.
+        childCount: Math.max(declared ? Number(declared[1]) : 1, children.length),
+        children,
     };
 }
 
@@ -183,4 +104,27 @@ export function resolveNoticeCard(pending, notice) {
         name: notice.agent || "subagent",
         isNew: true,
     };
+}
+
+/**
+ * What the card shows for a finished delegation: every child's answer that
+ * could be read, labelled, plus an honest line about the ones that could not.
+ */
+export function describeNoticeResult(notice) {
+    const withText = notice.children.filter((c) => c.output);
+    const missing = notice.childCount - withText.length;
+
+    if (!withText.length) {
+        return notice.childCount > 1
+            ? `${notice.childCount} subagentes terminaron. Pi no incluyó sus respuestas en el aviso.`
+            : "El subagente terminó, pero Pi no incluyó su respuesta en el aviso.";
+    }
+
+    const parts = withText.map((c) => (
+        notice.childCount > 1 ? `**${c.agent}**: ${c.output.trim()}` : c.output.trim()
+    ));
+    if (missing > 0) {
+        parts.push(`(${missing} más terminaron; Pi cortó el aviso antes de incluirlas.)`);
+    }
+    return parts.join("\n\n");
 }

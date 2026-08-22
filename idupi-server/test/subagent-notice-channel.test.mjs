@@ -66,3 +66,30 @@ test("an assistant message is still not mistaken for a completion notice", () =>
         "el cierre de mensajes del asistente debe seguir filtrando por su propio rol",
     );
 });
+
+// --- A terminal state must not hang on one fragile signal ------------------
+
+test("a notice closes the card whether or not its answer could be read", () => {
+    const handler = source.match(/customType === "subagent-notify"\) \{[\s\S]*?\n {12}\}/);
+    assert.ok(handler, "no se encontró el manejo del aviso");
+    assert.match(handler[0], /if \(notice\) \{/, "no puede exigir texto legible para cerrar");
+    assert.ok(
+        !/if \(notice && notice\.output\)/.test(handler[0]),
+        "exigir la respuesta para cerrar es lo que dejaba la tarjeta girando sobre trabajo terminado",
+    );
+});
+
+test("subagent_wait closes pending cards as a second, independent proof", () => {
+    // The card had exactly one way to close, through a notice whose channel and
+    // whose shape both turned out to be wrong. subagent_wait blocks until the
+    // runs complete, so its return is proof that needs no parsing.
+    assert.match(
+        source,
+        /tName === "subagent_wait" && this\.pendingSubagents\.size/,
+        "no hay segundo cierre: una sola señal sigue decidiendo el estado terminal",
+    );
+    const at = source.indexOf('tName === "subagent_wait" && this.pendingSubagents.size');
+    const block = source.slice(at, at + 900);
+    assert.match(block, /pendingSubagents\.delete\(cardId\)/, "debe vaciar lo que cierra");
+    assert.match(block, /CHAT_EVENTS\.SUBAGENT_END/, "y publicar el cierre");
+});

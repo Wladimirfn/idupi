@@ -3,23 +3,43 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { parseSubagentNotify } from "../lib/subagent-notify.mjs";
 
-// Captured from a real Pi session (~/.pi/agent/sessions/.../*.jsonl, entries
-// with customType "subagent-notify"). The only edit is the home directory,
-// replaced with a neutral name; nothing this parser reads was touched. Both
-// notices are truncated by pi-subagents' 1000-char preview cap, which is
-// exactly why a JSON.parse-only reader is not enough.
+// Every notice captured from real Pi sessions (~/.pi/agent/sessions/.../*.jsonl,
+// entries with customType "subagent-notify"). The only edit is the home
+// directory, replaced with a neutral name; nothing this parser reads was
+// touched. They are truncated by pi-subagents' 1000-char preview cap and they
+// disagree with each other about shape -- which together are the whole reason
+// a JSON.parse-and-read-`output` reader was never going to hold.
 const REAL = JSON.parse(readFileSync(new URL("./fixtures/subagent-notify.json", import.meta.url), "utf8"));
 
-test("every captured notice is genuinely truncated JSON", () => {
-    assert.ok(REAL.length >= 2, "fixture debe traer al menos dos capturas reales");
+test("the captured notices really do come in incompatible shapes", () => {
+    // Nine notices from real sessions: a fan-out keyed to objects, the same
+    // fan-out keyed to plain strings, a single child describing itself, a
+    // Return of `null`, a Return of a bare sentence, and a failed workflow with
+    // no Return block at all. Anything keyed to one shape breaks on the others.
+    assert.ok(REAL.length >= 5, "hacen falta varias capturas reales para que esto pruebe algo");
+    const shapes = new Set(REAL.map((e) => {
+        const at = e.content.indexOf("Return: ");
+        if (at === -1) return "sin-return";
+        const fragment = e.content.slice(at + 8).trim();
+        if (fragment.startsWith("{")) return fragment.includes('"output"') ? "objetos" : "strings";
+        return "primitivo";
+    }));
+    assert.ok(shapes.size >= 3, `se esperaban varias formas, hay: ${[...shapes].join(", ")}`);
+});
+
+test("every captured notice yields something a card can close on", () => {
+    // Finishing and being readable are different facts. A notice must always
+    // report the first one, whatever shape it arrived in.
     for (const entry of REAL) {
-        const fragment = entry.content.slice(entry.content.indexOf("Return: ") + 8);
-        assert.throws(() => JSON.parse(fragment.trim()));
+        const notice = parseSubagentNotify(entry.content);
+        assert.notEqual(notice, null, `no se reconoció: ${entry.content.slice(0, 60)}`);
+        assert.equal(typeof notice.ok, "boolean");
+        assert.ok(notice.childCount >= 1);
     }
 });
 
 test("reads the agent and the answer out of a truncated notice", () => {
-    const explore = REAL.find((e) => e.content.includes("gentle-ai-explore"));
+    const explore = REAL.find((e) => e.content.includes("Revisión exploratoria IDUPI"));
     assert.ok(explore, "la captura del run gentle-ai-explore debe existir");
     const parsed = parseSubagentNotify(explore.content);
     assert.equal(parsed.agent, "gentle-ai-explore");
@@ -28,7 +48,7 @@ test("reads the agent and the answer out of a truncated notice", () => {
 });
 
 test("decodes escapes instead of leaking them into the card", () => {
-    const explore = REAL.find((e) => e.content.includes("gentle-ai-explore"));
+    const explore = REAL.find((e) => e.content.includes("Revisión exploratoria IDUPI"));
     const parsed = parseSubagentNotify(explore.content);
     const BACKSLASH_N = String.fromCharCode(92) + "n";
     assert.ok(!parsed.output.includes(BACKSLASH_N), "los escapes deben quedar decodificados");
