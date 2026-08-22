@@ -13,6 +13,10 @@ import { randomUUID } from "node:crypto";
 import { createAuthGuard, loadToken } from "../server-auth.mjs";
 import { TaskRegistry } from "./lib/task-registry.mjs";
 import { parseSubagentNotify, resolveNoticeCard, describeNoticeResult } from "./lib/subagent-notify.mjs";
+import { SubagentCards } from "./lib/subagent-cards.mjs";
+import { planAssistantMessage } from "./lib/claude-stream.mjs";
+import { MessageBoundary } from "./lib/message-boundary.mjs";
+import { describeRateLimit } from "./lib/rate-limit-notice.mjs";
 import { CHAT_EVENTS, publish as publishChatEvent, subscribe as subscribeChatStream } from "./chat-events.mjs";
 import {
     escapeSqlValue,
@@ -1109,18 +1113,44 @@ function buildOpenCodeCursorClause(subCursor) {
     return ` AND (s.time_updated < ${ts} OR (s.time_updated = ${ts} AND s.id < '${id}'))`;
 }
 
-async function fetchOpenCodePage(normProjPath, subCursor, limit) {
+/**
+ * The two kinds of row a session list should not open with.
+ *
+ * `parent_id` is OpenCode's own marker: NULL for a session the user started,
+ * set for one a subagent ran under. Measured on this project's real store, 99
+ * of 108 sessions were children -- the list was 92% delegated work nobody
+ * opened by hand. The second clause drops a session with a single exchange: a
+ * one-shot run, a test, an abandoned start.
+ *
+ * It belongs in SQL, not in a filter over the fetched page: dropping rows after
+ * the LIMIT returns short pages and makes the cursor skip ahead. The listing
+ * and the count share this one clause so they cannot disagree -- a count that
+ * ignored it would report 108 beside a list of 9.
+ *
+ * No value is interpolated here, so nothing needs escaping; every other
+ * interpolation in these queries still goes through escapeSqlValue /
+ * validateNumeric per the SQL Safety Contract.
+ */
+function buildOpenCodeNoiseClause(includeAll) {
+    return includeAll
+        ? ""
+        : " AND s.parent_id IS NULL AND (SELECT COUNT(*) FROM message m2 WHERE m2.session_id = s.id) > 2";
+}
+
+async function fetchOpenCodePage(normProjPath, subCursor, limit, includeAll = false) {
     const escapedDir = escapeSqlValue(normProjPath);
     const validLimit = validateNumeric(limit, { integer: true, min: 1, max: 200 });
     const cursorClause = buildOpenCodeCursorClause(subCursor);
-    const sql = `SELECT s.id, s.directory, s.title, s.time_updated, (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id) as msg_count FROM session s WHERE REPLACE(LOWER(s.directory), '\\', '/') = '${escapedDir}'${cursorClause} ORDER BY s.time_updated DESC, s.id DESC LIMIT ${validLimit}`;
+    const noiseClause = buildOpenCodeNoiseClause(includeAll);
+    const sql = `SELECT s.id, s.directory, s.title, s.time_updated, (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id) as msg_count FROM session s WHERE REPLACE(LOWER(s.directory), '\\', '/') = '${escapedDir}'${noiseClause}${cursorClause} ORDER BY s.time_updated DESC, s.id DESC LIMIT ${validLimit}`;
     const rows = await execOpenCodeDb(sql);
     return rows.map(r => ({ ts: r.time_updated, id: r.id, title: r.title, msgCount: r.msg_count }));
 }
 
-async function countOpenCodeSessions(normProjPath) {
+async function countOpenCodeSessions(normProjPath, includeAll = false) {
     const escapedDir = escapeSqlValue(normProjPath);
-    const sql = `SELECT COUNT(*) as cnt FROM session s WHERE REPLACE(LOWER(s.directory), '\\', '/') = '${escapedDir}'`;
+    const noiseClause = buildOpenCodeNoiseClause(includeAll);
+    const sql = `SELECT COUNT(*) as cnt FROM session s WHERE REPLACE(LOWER(s.directory), '\\', '/') = '${escapedDir}'${noiseClause}`;
     const rows = await execOpenCodeDb(sql);
     return (rows && rows[0] && typeof rows[0].cnt === "number") ? rows[0].cnt : 0;
 }
@@ -1134,10 +1164,10 @@ const ENGINE_LABELS = { "claude": "Claude", "pi-cli": "Pi", "opencode": "OpenCod
  * Failure/Partial-Success Contract) and reported as `{failed: true}`, never
  * a silent empty result.
  */
-async function fetchEnginePageResult(engine, normProjPath, subCursor, limit) {
+async function fetchEnginePageResult(engine, normProjPath, subCursor, limit, includeAll = false) {
     try {
         if (engine === "opencode") {
-            const rows = await fetchOpenCodePage(normProjPath, subCursor, limit);
+            const rows = await fetchOpenCodePage(normProjPath, subCursor, limit, includeAll);
             return { failed: false, items: rows.map(r => ({ ts: r.ts, id: r.id, row: r })) };
         }
 
@@ -1170,7 +1200,7 @@ function toSessionItem(engine, item, projName) {
  * request; throws (with `httpStatus`/`engine` attached) for a per-engine
  * scan failure, which the route handler maps to a 502.
  */
-async function fetchSessionsPage({ engine, cursorParam, limit, projPath, projName, deps = {} }) {
+async function fetchSessionsPage({ engine, cursorParam, limit, projPath, projName, includeAll = false, deps = {} }) {
     const fetchEngine = deps.fetchEnginePageResult || fetchEnginePageResult;
     const normProjPath = normalizePathForCompare(projPath);
 
@@ -1187,7 +1217,7 @@ async function fetchSessionsPage({ engine, cursorParam, limit, projPath, projNam
             return { sessions: [], nextCursor: null, partial: false, failures: [] };
         }
 
-        const result = await fetchEngine(engine, normProjPath, subCursor, limit);
+        const result = await fetchEngine(engine, normProjPath, subCursor, limit, includeAll);
         if (result.failed) {
             throw Object.assign(new Error(`Failed to scan ${engine} sessions`), { httpStatus: 502, engine });
         }
@@ -1228,7 +1258,7 @@ async function fetchSessionsPage({ engine, cursorParam, limit, projPath, projNam
         engineStates[name] = { cursor };
         if (cursor === DONE) continue;
         fetchPromises.push(
-            fetchEngine(name, normProjPath, cursor, limit).then((r) => {
+            fetchEngine(name, normProjPath, cursor, limit, includeAll).then((r) => {
                 engineStates[name].fetchResult = r.failed ? { failed: true } : { failed: false, items: r.items };
                 if (r.failed) failures.push({ engine: name, message: `Failed to scan ${name} sessions` });
             })
@@ -1272,14 +1302,14 @@ export {
  * cache / OpenCode SQL aggregate the listing uses. Failed engines' keys are
  * omitted from `counts`, never reported as `0` (design's `/counts` section).
  */
-async function fetchSessionCounts(projPath) {
+async function fetchSessionCounts(projPath, includeAll = false) {
     const normProjPath = normalizePathForCompare(projPath);
     const failures = [];
 
     const results = await Promise.all(ENGINES.map(async (engine) => {
         try {
             const count = engine === "opencode"
-                ? await countOpenCodeSessions(normProjPath)
+                ? await countOpenCodeSessions(normProjPath, includeAll)
                 : getOrBuildEngineIndex(engine, normProjPath).records.length;
             return { engine, count };
         } catch (err) {
@@ -1897,6 +1927,35 @@ class PiRpcManager {
         this.currentSessionPath = sessionPath;
         if (this.child && !this.child.killed) {
             console.log(`[IDUPI Pi RPC] Reanudando sesión específica: ${sessionPath}`);
+            this.child.kill("SIGTERM");
+            this.child = null;
+        }
+        return true;
+    }
+
+    /**
+     * Drops the resumed session so the next turn starts a fresh one.
+     *
+     * Pi's session is not an id the way Claude's and OpenCode's are: it is a
+     * live child started with `--session <path>`, so clearing the path and
+     * ending the child is what actually creates a new session. The model and
+     * provider are deliberately left alone -- ensureStarted() rebuilds the child
+     * from them, which is what "nueva pero ya configurada" means.
+     *
+     * Refuses while a turn is running, for the same reason resumeSession does:
+     * SIGTERM on a working child ends it with "Pi RPC se cerró con código null"
+     * and the answer in flight is lost.
+     *
+     * @returns {boolean} false when a turn is in progress and nothing was done.
+     */
+    startNewSession() {
+        if (this.isBusy) {
+            console.warn("[IDUPI Pi RPC] Sesión nueva rechazada: hay una respuesta en curso.");
+            return false;
+        }
+        this.currentSessionPath = null;
+        if (this.child && !this.child.killed) {
+            console.log("[IDUPI Pi RPC] Cerrando la sesión actual para abrir una nueva...");
             this.child.kill("SIGTERM");
             this.child = null;
         }
@@ -2747,6 +2806,9 @@ const handleRequest = async (req, res) => {
         const activeProj = resolveProject(projectIdParam || activeProjectId);
         const engineParam = parsedUrl.searchParams.get("engine") || "all";
         const cursorParam = parsedUrl.searchParams.get("cursor") || null;
+        // Off by default: the list opens with the sessions the user actually
+        // started. The switch in the app turns it on to see everything.
+        const includeAll = parsedUrl.searchParams.get("includeAll") === "true";
 
         let limitParam;
         try {
@@ -2761,7 +2823,8 @@ const handleRequest = async (req, res) => {
                 cursorParam,
                 limit: limitParam,
                 projPath: activeProj.path,
-                projName: activeProj.name
+                projName: activeProj.name,
+                includeAll
             });
             console.log(`[Sessions DB] Cargadas ${page.sessions.length} sesiones para '${activeProj.name}' (Filtro: ${engineParam}).`);
             res.writeHead(200, { "Content-Type": "application/json" });
@@ -2780,7 +2843,10 @@ const handleRequest = async (req, res) => {
         const activeProj = resolveProject(projectIdParam || activeProjectId);
 
         try {
-            const result = await fetchSessionCounts(activeProj.path);
+            const result = await fetchSessionCounts(
+                activeProj.path,
+                parsedUrl.searchParams.get("includeAll") === "true"
+            );
             if (result.allFailed) {
                 res.writeHead(502, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ error: "Failed to count sessions for all engines", failures: result.failures }));
@@ -2878,11 +2944,27 @@ const handleRequest = async (req, res) => {
 
     // 7b. Crear Nueva Sesión (Limpia sesión activa para iniciar conversación limpia)
     if (pathname === "/api/v1/sessions/new" && req.method === "POST") {
+        // Pi is the one engine whose session is a live child, so it can refuse.
+        // Claude and OpenCode only hold an id, and clearing an id cannot lose a
+        // turn -- but they are cleared only once Pi agreed, so a refusal leaves
+        // ALL three engines exactly as they were.
+        if (!piRpc.startNewSession()) {
+            res.writeHead(409, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+                error: "Hay una respuesta en curso. Esperá a que termine para abrir una sesión nueva."
+            }));
+            return;
+        }
         activeClaudeSessionId = null;
         activeOpenCodeSessionId = null;
-        console.log("[Sessions] Nueva sesión solicitada. Estado de sesiones reseteado.");
+        console.log(`[Sessions] Sesión nueva lista en '${currentStatus.activeEngine}' con ${currentStatus.operatingProvider || "auto"}/${currentStatus.operatingAi}.`);
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ status: "ok" }));
+        res.end(JSON.stringify({
+            status: "ok",
+            activeEngine: currentStatus.activeEngine,
+            operatingAi: currentStatus.operatingAi,
+            operatingProvider: currentStatus.operatingProvider
+        }));
         return;
     }
 
@@ -3756,8 +3838,15 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
 
         let fullOutput = "";
         let buffer = "";
-        let activeSubagentId = null;
-        let activeSubagentName = null;
+        // One card per delegation, keyed by the tool_use id Claude itself
+        // assigns. A parallel launch opens several at once, so a single slot
+        // here silently evicted every card but the last (see
+        // test/claude-parallel-subagents.test.mjs).
+        const subagentCards = new SubagentCards();
+        // The last assistant message already delivered to the chat. Now that
+        // every message is closed as it ends, the one published at close would
+        // otherwise show the final answer a second time.
+        let lastDeliveredText = "";
         let settled = false;
         let timedOut = false;
 
@@ -3792,48 +3881,53 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
                     publishChatEvent(CHAT_EVENTS.TEXT_DELTA, { text: event.delta.text });
                 }
 
-                // 2. Subagentes y herramientas en vivo
+                // 2. Mensajes, subagentes y herramientas en vivo
                 if (event.type === "assistant" && event.message?.content) {
-                    const content = event.message.content;
-                    if (Array.isArray(content)) {
-                        for (const item of content) {
-                            if (item.type === "text" && item.text) {
-                                fullOutput = item.text;
-                                activeTask.output = fullOutput;
-                                publishChatEvent(CHAT_EVENTS.TEXT_DELTA, { text: item.text });
-                            } else if (item.type === "tool_use") {
-                                const toolName = item.name || "Tool";
-                                const isSubagent = isSubagentTool(toolName, item.input);
-                                const toolId = item.id || `tool-${Date.now()}`;
-                                if (isSubagent) {
-                                    activeSubagentId = toolId;
-                                    // The Task tool is always literally named "Task"; the agent
-                                    // the user actually picked lives in subagent_type.
-                                    activeSubagentName = describeSubagentName(toolName, item.input || {});
-                                    const taskDesc = item.input?.task || item.input?.prompt || item.input?.description || `Ejecutando subagente ${toolName}...`;
-                                    publishChatEvent(CHAT_EVENTS.SUBAGENT_START, {
-                                        id: toolId,
-                                        name: activeSubagentName,
-                                        task: taskDesc
-                                    });
-                                } else {
-                                    const mcp = detectMcp("claude", { toolName });
-                                    activityRegistry.start(toolId, {
-                                        engine: "claude",
-                                        project: activeProjectId,
-                                        sessionId: currentActivitySession("claude"),
-                                        kind: mcp.isMcp ? "mcp" : "tool",
-                                        name: mcp.name,
-                                        detail: describeToolInput(item) || `Ejecutando ${toolName}...`,
-                                        server: mcp.isMcp ? mcp.server : undefined,
-                                    });
-                                    publishChatEvent(CHAT_EVENTS.TOOL_START, {
-                                        id: toolId,
-                                        name: toolName,
-                                        detail: describeToolInput(item) || `Ejecutando ${toolName}...`
-                                    });
-                                }
-                            }
+                    const plan = planAssistantMessage(event.message.content);
+
+                    // Each `assistant` event is ONE complete message, and a turn
+                    // holds several of them. Closing each where Claude ends it is
+                    // what keeps the chat in order: without it the app appended
+                    // every later message into the bubble the first one opened,
+                    // so the final answer rendered ABOVE the tool and subagent
+                    // cards it came after. Closed before this message's own tool
+                    // cards open, because its text was written before they ran.
+                    if (plan.text) {
+                        fullOutput = plan.text.trim();
+                        activeTask.output = fullOutput;
+                        lastDeliveredText = fullOutput;
+                        publishChatEvent(CHAT_EVENTS.MESSAGE_END, { text: fullOutput });
+                    }
+
+                    for (const tool of plan.tools) {
+                        const { id: toolId, name: toolName, item } = tool;
+                        if (isSubagentTool(toolName, tool.input)) {
+                            // The Task tool is always literally named "Task"; the agent
+                            // the user actually picked lives in subagent_type.
+                            const subagentName = describeSubagentName(toolName, tool.input);
+                            subagentCards.open(toolId, subagentName);
+                            const taskDesc = tool.input.task || tool.input.prompt || tool.input.description || `Ejecutando subagente ${toolName}...`;
+                            publishChatEvent(CHAT_EVENTS.SUBAGENT_START, {
+                                id: toolId,
+                                name: subagentName,
+                                task: taskDesc
+                            });
+                        } else {
+                            const mcp = detectMcp("claude", { toolName });
+                            activityRegistry.start(toolId, {
+                                engine: "claude",
+                                project: activeProjectId,
+                                sessionId: currentActivitySession("claude"),
+                                kind: mcp.isMcp ? "mcp" : "tool",
+                                name: mcp.name,
+                                detail: describeToolInput(item) || `Ejecutando ${toolName}...`,
+                                server: mcp.isMcp ? mcp.server : undefined,
+                            });
+                            publishChatEvent(CHAT_EVENTS.TOOL_START, {
+                                id: toolId,
+                                name: toolName,
+                                detail: describeToolInput(item) || `Ejecutando ${toolName}...`
+                            });
                         }
                     }
                 }
@@ -3845,7 +3939,11 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
                         for (const item of content) {
                             if (item.type === "tool_result") {
                                 const toolId = item.tool_use_id;
-                                if (toolId === activeSubagentId) {
+                                // Each result closes its OWN card. Comparing against the
+                                // last launch instead routed the first subagent's result
+                                // to the plain-tool branch below, leaving its card open.
+                                const card = toolId ? subagentCards.close(toolId) : null;
+                                if (card) {
                                     // The subagent's real answer is in item.content; discarding
                                     // it left the card reading "Subagente completó la tarea"
                                     // no matter what the subagent actually reported. Pi and
@@ -3853,12 +3951,10 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
                                     const resultText = extractToolResultText(item.content).trim();
                                     publishChatEvent(CHAT_EVENTS.SUBAGENT_END, {
                                         id: toolId,
-                                        name: activeSubagentName || "Subagent",
+                                        name: card.name || "Subagent",
                                         summary: summarizeSubagentResult(resultText),
                                         ok: !item.is_error
                                     });
-                                    activeSubagentId = null;
-                                    activeSubagentName = null;
                                 } else if (toolId) {
                                     activityRegistry.terminalize(toolId, { ok: !item.is_error });
                                     publishChatEvent(CHAT_EVENTS.TOOL_END, {
@@ -3874,12 +3970,21 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
 
                 // 4. Detección de límite de tasa / cuota
                 if (event.type === "rate_limit_event") {
-                    const info = event.rate_limit_info;
-                    const resetDate = info?.resetsAt ? new Date(info.resetsAt * 1000).toLocaleTimeString() : "próximamente";
-                    const rateMsg = `⚠️ Límite de sesión de Claude alcanzado. Se restablece a las ${resetDate}.`;
-                    fullOutput = rateMsg;
-                    activeTask.output = fullOutput;
-                    publishChatEvent(CHAT_EVENTS.TEXT_DELTA, { text: rateMsg });
+                    // Claude emits this as ordinary status during a healthy turn.
+                    // Announcing it every time told the app the quota was gone
+                    // mid-conversation, and assigning it over fullOutput replaced
+                    // the model's answer with the warning. It goes out on the
+                    // system channel now, and only when the payload says so.
+                    const notice = describeRateLimit(event.rate_limit_info);
+                    if (notice) {
+                        publishChatEvent(CHAT_EVENTS.TOOL_START, {
+                            id: `rate-limit-${Date.now()}`,
+                            name: "system",
+                            detail: notice
+                        });
+                    } else {
+                        console.log(`[Claude CLI] rate_limit_event informativo: ${JSON.stringify(event.rate_limit_info ?? null)}`);
+                    }
                 }
 
                 // 5. Resultado final del CLI
@@ -3929,10 +4034,13 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
             }
 
             publishChatEvent(CHAT_EVENTS.THINKING, { active: false });
-            if (activeSubagentId) {
+            // A run can end with cards still open (a crash, a timeout, a kill).
+            // Closing one of them and leaving the rest is the same single-slot
+            // mistake at the end of the stream, so every one is closed.
+            for (const card of subagentCards.drain()) {
                 publishChatEvent(CHAT_EVENTS.SUBAGENT_END, {
-                    id: activeSubagentId,
-                    name: activeSubagentName || "Subagent",
+                    id: card.id,
+                    name: card.name || "Subagent",
                     summary: "Subagente finalizó sin devolver un resultado",
                     ok: code === 0
                 });
@@ -3944,8 +4052,19 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
                     : (code === 0 ? "Completado por Claude CLI." : `Claude CLI finalizó con código ${code}`)
             );
             activeTask.output = cleanResult;
-            publishChatEvent(CHAT_EVENTS.MESSAGE_END, { text: cleanResult });
-            resolve(cleanResult);
+            // Every assistant message was already closed where it ended, so the
+            // only thing left to deliver here is a turn the chat received
+            // nothing from: a timeout notice, an exit code, or output that never
+            // arrived as an assistant message at all.
+            if (!lastDeliveredText) {
+                publishChatEvent(CHAT_EVENTS.MESSAGE_END, { text: cleanResult });
+            }
+            // The app emits a SECOND MessageEnded from this response body
+            // (RealIduPiClient.sendMessage): the answer has two transports. Pi
+            // has always resolved its last message, so the app's dedup matched
+            // and nothing was shown twice. Returning the whole turn concatenated
+            // is what made it show up again as one blob at the bottom.
+            resolve(lastDeliveredText || cleanResult);
         });
     });
 }
@@ -3963,6 +4082,10 @@ function runOpenCodeCli(projPath, sessionId, message) {
 
         let fullOutput = "";
         let buffer = "";
+        // OpenCode's stream marks no end of message, so it is derived: the text
+        // written since the last tool call IS one message.
+        const boundary = new MessageBoundary();
+        let lastDeliveredText = "";
         let settled = false;
         let timedOut = false;
 
@@ -3994,6 +4117,7 @@ function runOpenCodeCli(projPath, sessionId, message) {
                 const event = JSON.parse(trimmed);
                 if (event.type === "text" && event.part?.text) {
                     fullOutput += event.part.text;
+                    boundary.append(event.part.text);
                     activeTask.output = fullOutput;
                     publishChatEvent(CHAT_EVENTS.TEXT_DELTA, { text: event.part.text });
                 } else if (event.type === "tool_use" && event.part) {
@@ -4001,6 +4125,18 @@ function runOpenCodeCli(projPath, sessionId, message) {
                     const input = event.part.state?.input || {};
                     const callId = event.part.callID || event.part.id || `tool-${Date.now()}`;
                     const isSubagent = isSubagentTool(toolName, input);
+
+                    // Reaching for a tool ends the message being written, so it
+                    // is closed HERE -- before this tool's card is appended
+                    // below it. Without that the bubble stayed open all turn and
+                    // every later message was written back into it, above every
+                    // card. See lib/message-boundary.mjs.
+                    const finished = boundary.take();
+                    if (finished) {
+                        lastDeliveredText = finished;
+                        publishChatEvent(CHAT_EVENTS.MESSAGE_END, { text: finished });
+                    }
+
                     if (isSubagent) {
                         const subagentName = describeSubagentName(toolName, input);
                         const taskDesc = input.question || input.task || input.prompt
@@ -4049,6 +4185,7 @@ function runOpenCodeCli(projPath, sessionId, message) {
                 }
             } catch (e) {
                 fullOutput += trimmed + "\n";
+                boundary.append(trimmed + "\n");
                 activeTask.output = fullOutput;
                 publishChatEvent(CHAT_EVENTS.TEXT_DELTA, { text: trimmed });
             }
@@ -4084,14 +4221,35 @@ function runOpenCodeCli(projPath, sessionId, message) {
                 processJsonLine(buffer);
             }
             publishChatEvent(CHAT_EVENTS.THINKING, { active: false });
+
+            // The last message has no tool after it to close it, so the end of
+            // the run does.
+            const finished = boundary.take();
+            if (finished) {
+                lastDeliveredText = finished;
+                publishChatEvent(CHAT_EVENTS.MESSAGE_END, { text: finished });
+            }
+
             const cleanResult = fullOutput.trim() || (
                 timedOut
                     ? `⚠️ OpenCode no respondió dentro de ${AGENT_CLI_TIMEOUT_MS / 1000}s y fue detenido.`
                     : (code === 0 ? "Completado por OpenCode." : `OpenCode finalizó con código ${code}`)
             );
             activeTask.output = cleanResult;
-            publishChatEvent(CHAT_EVENTS.MESSAGE_END, { text: cleanResult });
-            resolve(cleanResult);
+            // cleanResult is the WHOLE turn concatenated, so it must never be
+            // published on top of messages already delivered one by one -- that
+            // would repeat the entire turn as one bubble at the bottom. It is
+            // published only when the chat received nothing at all: a timeout
+            // notice, an exit code, output that never arrived as a message.
+            if (!lastDeliveredText) {
+                publishChatEvent(CHAT_EVENTS.MESSAGE_END, { text: cleanResult });
+            }
+            // The app emits a SECOND MessageEnded from this response body
+            // (RealIduPiClient.sendMessage): the answer has two transports. Pi
+            // has always resolved its last message, so the app's dedup matched
+            // and nothing was shown twice. Returning the whole turn concatenated
+            // is what made it show up again as one blob at the bottom.
+            resolve(lastDeliveredText || cleanResult);
         });
     });
 }
