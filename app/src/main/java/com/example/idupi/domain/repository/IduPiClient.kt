@@ -35,8 +35,10 @@ interface IduPiClient {
     suspend fun getProjects(): List<Project>
     suspend fun addProject(name: String, path: String): String?
     suspend fun selectProject(projectId: String)
-    suspend fun getSessions(engine: String = "all", cursor: String? = null, limit: Int = 30): SessionsPage
-    suspend fun getSessionCounts(): SessionCountsResponse
+    suspend fun getSessions(engine: String = "all", cursor: String? = null, limit: Int = 30, includeAll: Boolean = false): SessionsPage
+    suspend fun getSessionCounts(includeAll: Boolean = false): SessionCountsResponse
+    /** Starts a fresh CLI session on the active engine, keeping the chosen model. */
+    suspend fun startNewSession(): Boolean
     suspend fun getSessionHistory(sessionId: String): List<SessionHistoryItem>
     suspend fun resumeSession(sessionId: String): Boolean
     suspend fun getAvailableModels(): List<AiModelItem>

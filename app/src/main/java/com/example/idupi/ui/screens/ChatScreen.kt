@@ -2,7 +2,10 @@ package com.example.idupi.ui.screens
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -23,6 +26,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -34,6 +39,10 @@ import com.example.idupi.domain.model.ActivityUiState
 import com.example.idupi.domain.model.ChatMessage
 import com.example.idupi.domain.model.MessageSender
 import com.example.idupi.domain.model.QuickCommand
+import com.example.idupi.domain.model.chatTitleFor
+import com.example.idupi.domain.model.shouldAnimateScroll
+import com.example.idupi.domain.model.copyTextOf
+import com.example.idupi.domain.model.toggled
 import com.example.idupi.ui.components.MarkdownText
 import com.example.idupi.ui.theme.*
 import com.example.idupi.viewmodel.ChatViewModel
@@ -64,8 +73,22 @@ fun ChatScreen(
     var showCommandsSheet by remember { mutableStateOf(false) }
     var showModelDialog by remember { mutableStateOf(false) }
 
+    // Long-pressing a message starts selection; tapping then toggles. An empty
+    // set IS "not selecting", so there is no second flag that can disagree with
+    // what is actually selected.
+    var selectedIds by remember { mutableStateOf(emptySet<String>()) }
+    val selectionMode = selectedIds.isNotEmpty()
+    val clipboard = LocalClipboardManager.current
+
     LaunchedEffect(Unit) {
         viewModel.refreshModels()
+    }
+
+    // The opening greeting introduced itself as Pi whatever engine was active.
+    // It is rewritten as soon as the engine is known, and only while the chat
+    // is still untouched (see ChatViewModel.applyActiveEngine).
+    LaunchedEffect(serverStatus?.activeEngine) {
+        viewModel.applyActiveEngine(serverStatus?.activeEngine)
     }
 
     val matrixBgColor = IDUPITheme.colors.matrixBg
@@ -80,8 +103,22 @@ fun ChatScreen(
         topBar = {
             TopAppBar(
                 title = {
+                  if (selectionMode) {
+                    Text(
+                        text = if (selectedIds.size == 1) "1 mensaje seleccionado"
+                               else "${selectedIds.size} mensajes seleccionados",
+                        style = AppTypography.appBarTitle,
+                        color = TextPrimary
+                    )
+                  } else {
                     Column {
-                        Text("Chat con Pi", style = AppTypography.appBarTitle, color = TextPrimary)
+                        // The header used to say "Chat con Pi" whatever engine was
+                        // answering, so a Claude or OpenCode session was labelled Pi.
+                        Text(
+                            text = chatTitleFor(serverStatus?.activeEngine),
+                            style = AppTypography.appBarTitle,
+                            color = TextPrimary
+                        )
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(AppSpacing.xs)
@@ -99,46 +136,36 @@ fun ChatScreen(
                                 style = AppTypography.labelSmall,
                                 color = TextSecondary
                             )
-                            Text("•", style = AppTypography.labelSmall, color = TextSecondary)
-                            
-                            // Model Selector Badge Chip
-                            val activeModelName = serverStatus?.operatingAi ?: "gpt-5.6-luna"
-                            val activeProviderName = serverStatus?.operatingProvider
-                            val displayText = if (!activeProviderName.isNullOrBlank()) "$activeProviderName/$activeModelName" else activeModelName
-
-                            Surface(
-                                onClick = {
-                                    viewModel.refreshModels()
-                                    showModelDialog = true
-                                },
-                                shape = AppShapes.small,
-                                color = PrimaryIndigo.copy(alpha = 0.2f),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, PrimaryIndigo.copy(alpha = 0.4f))
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = AppSpacing.xs, vertical = 2.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    Icon(Icons.Default.SmartToy, contentDescription = null, modifier = Modifier.size(12.dp), tint = PrimaryIndigo)
-                                    Text(
-                                        text = displayText,
-                                        style = AppTypography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                        color = PrimaryIndigo,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                            }
+                        }
+                    }
+                  }
+                },
+                navigationIcon = {
+                    if (selectionMode) {
+                        IconButton(onClick = { selectedIds = emptySet() }) {
+                            Icon(Icons.Default.Close, contentDescription = "Cancelar selección", tint = TextPrimary)
+                        }
+                    } else {
+                        IconButton(onClick = onMenuClick) {
+                            Icon(Icons.Default.Menu, contentDescription = "Menú", tint = TextPrimary)
                         }
                     }
                 },
-                navigationIcon = {
-                    IconButton(onClick = onMenuClick) {
-                        Icon(Icons.Default.Menu, contentDescription = "Menú", tint = TextPrimary)
-                    }
-                },
                 actions = {
+                  if (selectionMode) {
+                    IconButton(onClick = { selectedIds = messages.map { it.id }.toSet() }) {
+                        Icon(Icons.Default.SelectAll, contentDescription = "Seleccionar todo", tint = TextSecondary)
+                    }
+                    IconButton(onClick = {
+                        // copyTextOf reads the chat in screen order, so what is
+                        // pasted matches what was read regardless of tap order.
+                        val text = copyTextOf(messages, selectedIds)
+                        if (text.isNotEmpty()) clipboard.setText(AnnotatedString(text))
+                        selectedIds = emptySet()
+                    }) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = "Copiar", tint = PrimaryIndigo)
+                    }
+                  } else {
                     IconButton(onClick = {
                         viewModel.refreshModels()
                         showModelDialog = true
@@ -153,6 +180,7 @@ fun ChatScreen(
                             Icon(Icons.Default.Stop, contentDescription = "Detener", tint = StatusError)
                         }
                     }
+                  }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = SlateCard)
             )
@@ -215,13 +243,66 @@ fun ChatScreen(
 
             val listState = rememberLazyListState()
 
-            LaunchedEffect(messages.size) {
+            // Keyed on the last message's id as well as the size: switching to a
+            // session that happens to have the same number of messages is a
+            // different list, and keying on size alone never noticed.
+            var previousCount by remember { mutableStateOf(0) }
+            LaunchedEffect(messages.size, messages.lastOrNull()?.id) {
                 if (messages.isNotEmpty()) {
-                    listState.animateScrollToItem(messages.size - 1)
+                    val target = messages.size - 1
+                    // Animating a whole history means travelling through every
+                    // message in it; see shouldAnimateScroll.
+                    if (shouldAnimateScroll(previousCount, messages.size)) {
+                        listState.animateScrollToItem(target)
+                    } else {
+                        listState.scrollToItem(target)
+                    }
                 }
+                previousCount = messages.size
             }
 
             Column(modifier = Modifier.fillMaxSize()) {
+                // The model used to share one cramped line with the connection
+                // status inside the app bar, where a full "provider/model" never
+                // fit and was always cut to "openai-codex/gpt...". Its own
+                // full-width row below the bar shows the whole name.
+                val activeModelName = serverStatus?.operatingAi.orEmpty()
+                val activeProviderName = serverStatus?.operatingProvider
+                val modelText = when {
+                    activeModelName.isBlank() -> "Modelo no informado"
+                    !activeProviderName.isNullOrBlank() -> "$activeProviderName/$activeModelName"
+                    else -> activeModelName
+                }
+                Surface(
+                    onClick = {
+                        viewModel.refreshModels()
+                        showModelDialog = true
+                    },
+                    color = PrimaryIndigo.copy(alpha = 0.12f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = AppSpacing.lg, vertical = AppSpacing.xs),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(AppSpacing.xs)
+                    ) {
+                        Icon(
+                            Icons.Default.SmartToy,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                            tint = PrimaryIndigo
+                        )
+                        Text(
+                            text = modelText,
+                            style = AppTypography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = PrimaryIndigo,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+
                 LazyColumn(
                     state = listState,
                     modifier = Modifier
@@ -231,9 +312,13 @@ fun ChatScreen(
                     contentPadding = PaddingValues(vertical = AppSpacing.lg),
                     verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
                 ) {
-                    items(messages) { msg ->
+                    items(messages, key = { it.id }) { msg ->
                         ChatBubble(
                             message = msg,
+                            selected = msg.id in selectedIds,
+                            selectionMode = selectionMode,
+                            onLongPress = { selectedIds = selectedIds.toggled(msg.id) },
+                            onSelectTap = { selectedIds = selectedIds.toggled(msg.id) },
                             onSubagentClick = { name, id ->
                                 val found = subagents.find { it.id == id || it.name == name }
                                 if (found != null) {
@@ -310,7 +395,9 @@ fun ChatScreen(
                     currentProvider = serverStatus?.operatingProvider,
                     availableModels = availableModels,
                     onModelSelect = { model, provider ->
-                        viewModel.switchModel(model, provider)
+                        // Without refreshing the status the header keeps showing
+                        // the previous model even though the new one is answering.
+                        viewModel.switchModel(model, provider) { mainViewModel.refreshStatus() }
                         showModelDialog = false
                     },
                     onDismiss = { showModelDialog = false }
@@ -471,9 +558,58 @@ fun ModelSelectionDialog(
     )
 }
 
+/**
+ * @param selectionMode true while at least one message is selected. A tap then
+ *   toggles selection instead of doing what it normally does -- opening a
+ *   subagent console mid-selection would be a surprise, not a shortcut.
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChatBubble(
     message: ChatMessage,
+    selected: Boolean = false,
+    selectionMode: Boolean = false,
+    onLongPress: () -> Unit = {},
+    onSelectTap: () -> Unit = {},
+    onSubagentClick: (name: String, id: String?) -> Unit = { _, _ -> }
+) {
+    val selectionModifier = Modifier
+        .fillMaxWidth()
+        .background(if (selected) PrimaryIndigo.copy(alpha = 0.22f) else Color.Transparent)
+        .combinedClickable(
+            onClick = { if (selectionMode) onSelectTap() },
+            onLongClick = onLongPress
+        )
+
+    Box(modifier = selectionModifier) {
+        ChatBubbleContent(
+            message = message,
+            selectionMode = selectionMode,
+            onSubagentClick = onSubagentClick
+        )
+        // A tint BEHIND the row only shows around a narrow bubble. An assistant
+        // reply is full-width with an opaque background, so it covered the tint
+        // completely and read as not selected. Drawn over the row instead, every
+        // bubble looks selected the same way whatever its width or colour.
+        if (selected) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(PrimaryIndigo.copy(alpha = 0.28f))
+            )
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .border(2.dp, PrimaryIndigo, AppShapes.card)
+            )
+        }
+    }
+}
+
+@Composable
+private fun ChatBubbleContent(
+    message: ChatMessage,
+    selectionMode: Boolean = false,
     onSubagentClick: (name: String, id: String?) -> Unit = { _, _ -> }
 ) {
     val isUser = message.sender == MessageSender.USER
@@ -481,7 +617,14 @@ fun ChatBubble(
     val isSystem = message.sender == MessageSender.SYSTEM || message.sender == MessageSender.ERROR
 
     when {
-        isActivity -> ActivityBubble(message = message, onSubagentClick = onSubagentClick)
+        // A tool/subagent card carries its own clickable Surface. Left enabled it
+        // would swallow the long press that starts a selection, so during
+        // selection it stops taking clicks and the gesture reaches the wrapper.
+        isActivity -> ActivityBubble(
+            message = message,
+            interactive = !selectionMode,
+            onSubagentClick = onSubagentClick
+        )
         isSystem -> SystemBubble(message)
         else -> {
             Row(
@@ -527,6 +670,7 @@ fun ChatBubble(
 @Composable
 fun ActivityBubble(
     message: ChatMessage,
+    interactive: Boolean = true,
     onSubagentClick: (name: String, id: String?) -> Unit = { _, _ -> }
 ) {
     val isSubagent = message.sender == MessageSender.SUBAGENT
@@ -545,6 +689,7 @@ fun ActivityBubble(
                     onSubagentClick(message.toolName, message.toolId)
                 }
             },
+            enabled = interactive,
             color = accentColor.copy(alpha = 0.1f),
             shape = AppShapes.card,
             border = androidx.compose.foundation.BorderStroke(1.dp, accentColor.copy(alpha = 0.35f)),

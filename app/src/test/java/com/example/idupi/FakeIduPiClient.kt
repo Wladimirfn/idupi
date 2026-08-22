@@ -134,7 +134,7 @@ class FakeIduPiClient : IduPiClient {
         lastSelectedProjectId = projectId
     }
 
-    override suspend fun getSessions(engine: String, cursor: String?, limit: Int): SessionsPage {
+    override suspend fun getSessions(engine: String, cursor: String?, limit: Int, includeAll: Boolean): SessionsPage {
         maybeFail()
         lastRequestedSessionEngine = engine
         lastRequestedSessionCursor = cursor
@@ -146,7 +146,15 @@ class FakeIduPiClient : IduPiClient {
         return if (sessionsQueue.isNotEmpty()) sessionsQueue.removeFirst() else sessionsToReturn
     }
 
-    override suspend fun getSessionCounts(): SessionCountsResponse {
+    /** Every [startNewSession] call increments this, so tests can assert it was asked for. */
+    var newSessionCalls: Int = 0
+
+    override suspend fun startNewSession(): Boolean {
+        newSessionCalls++
+        return true
+    }
+
+    override suspend fun getSessionCounts(includeAll: Boolean): SessionCountsResponse {
         if (countsHandlers.isNotEmpty()) {
             return countsHandlers.removeFirst().invoke()
         }

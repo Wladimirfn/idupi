@@ -41,6 +41,7 @@ fun SessionsScreen(
     val countsPartial by viewModel.countsPartial.collectAsState()
     val selectedEngine by viewModel.selectedEngine.collectAsState()
     val canLoadMore by viewModel.canLoadMore.collectAsState()
+    val includeAll by viewModel.includeAll.collectAsState()
 
     // Fresh scroll state per engine so a chip switch resets the list to the top,
     // matching the pre-refactor LazyColumn behavior (state was disposed on engine
@@ -80,6 +81,9 @@ fun SessionsScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = { viewModel.startNewSession() }) {
+                        Icon(imageVector = Icons.Default.AddComment, contentDescription = "Sesión nueva", tint = PrimaryIndigo)
+                    }
                     IconButton(onClick = { viewModel.refreshSessions() }) {
                         Icon(imageVector = Icons.Default.Refresh, contentDescription = "Refrescar", tint = TextPrimary)
                     }
@@ -97,6 +101,27 @@ fun SessionsScreen(
             verticalArrangement = Arrangement.spacedBy(AppSpacing.md)
         ) {
             Spacer(modifier = Modifier.height(AppSpacing.xs))
+
+            // The list opens with the sessions the user actually started. On
+            // OpenCode the unfiltered store holds 108 rows for this project, of
+            // which 99 are subagent runs -- so showing everything is a choice,
+            // not the default.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "Mostrar subagentes y sesiones de un turno",
+                    style = AppTypography.labelSmall,
+                    color = TextSecondary,
+                    modifier = Modifier.weight(1f)
+                )
+                Switch(
+                    checked = includeAll,
+                    onCheckedChange = { viewModel.setIncludeAll(it) }
+                )
+            }
 
             // Engine Filter Chips. Badges come from the server counts StateFlow:
             // a null count (engine not yet loaded, or failed and omitted from a

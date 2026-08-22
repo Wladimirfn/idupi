@@ -46,6 +46,20 @@ class SessionsViewModel(
     private var pageGeneration = 0L
     private var loadingMore = false
 
+    /**
+     * Off by default: the list opens with the sessions the user actually
+     * started. On OpenCode the unfiltered list is 108 rows of which 99 are
+     * subagent runs, so showing everything is the exception, not the default.
+     */
+    private val _includeAll = MutableStateFlow(false)
+    val includeAll = _includeAll.asStateFlow()
+
+    fun setIncludeAll(value: Boolean) {
+        if (_includeAll.value == value) return
+        _includeAll.value = value
+        refreshSessions()
+    }
+
     fun clearError() {
         _errorMessage.value = null
     }
@@ -102,7 +116,7 @@ class SessionsViewModel(
         viewModelScope.launch {
             _isLoading.value = true
             try {
-                val page = client.getSessions(engine = engine, cursor = cursor, limit = PAGE_SIZE)
+                val page = client.getSessions(engine = engine, cursor = cursor, limit = PAGE_SIZE, includeAll = _includeAll.value)
                 if (generation == pageGeneration && engine == _selectedEngine.value && cursor == nextCursor) {
                     nextCursor = page.nextCursor
                     _canLoadMore.value = page.nextCursor != null
@@ -132,7 +146,7 @@ class SessionsViewModel(
 
     private suspend fun loadCounts(requestId: Long) {
         try {
-            val response = client.getSessionCounts()
+            val response = client.getSessionCounts(includeAll = _includeAll.value)
             // Guard the success commit with the request id: an older counts request
             // that completes after a newer refresh (which may have cleared counts on
             // failure) must NOT resurrect stale badges over the newer state.
@@ -156,7 +170,7 @@ class SessionsViewModel(
 
     private suspend fun fetchFirstPage(engine: String, requestId: Long) {
         try {
-            val page = client.getSessions(engine = engine, cursor = null, limit = PAGE_SIZE)
+            val page = client.getSessions(engine = engine, cursor = null, limit = PAGE_SIZE, includeAll = _includeAll.value)
             if (requestId == firstPageRequestId) {
                 nextCursor = page.nextCursor
                 _canLoadMore.value = page.nextCursor != null
@@ -168,6 +182,27 @@ class SessionsViewModel(
             if (requestId == firstPageRequestId) {
                 Log.w(TAG, "Failed to load sessions for engine $engine", e)
                 _errorMessage.value = "No se pudieron cargar las sesiones: ${e.localizedMessage}"
+            }
+        }
+    }
+
+    /**
+     * Starts a fresh CLI session on the active engine, keeping the chosen model.
+     * The server refuses with 409 while a turn is running -- killing a working
+     * Pi child loses the answer in flight -- and that refusal is surfaced rather
+     * than swallowed, so the user knows nothing changed.
+     */
+    fun startNewSession(onDone: () -> Unit = {}) {
+        viewModelScope.launch {
+            try {
+                client.startNewSession()
+                refreshSessions()
+                onDone()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to start a new session", e)
+                _errorMessage.value = "No se pudo abrir una sesión nueva: ${e.localizedMessage}"
             }
         }
     }

@@ -74,16 +74,31 @@ class ChatViewModel(
     }
 
     init {
-        // Initial mock message
-        _messages.value = listOf(
-            ChatMessage(
-                sender = MessageSender.PI,
-                text = "¡Qué hacés! Soy Pi. Estoy listo para ayudarte con tu proyecto a través de la terminal IDUPI. ¿De qué se trata lo que querés resolver hoy?"
-            )
-        )
+        _messages.value = listOf(greetingMessage(null))
         observeChatEvents()
         refreshCommands()
         refreshModels()
+    }
+
+    private fun greetingMessage(activeEngine: String?) =
+        ChatMessage(sender = MessageSender.PI, text = greetingFor(activeEngine))
+
+    /**
+     * Rewrites the opening greeting once the active engine is known, so a Claude
+     * or OpenCode session is not greeted by Pi.
+     *
+     * Only while the chat is untouched: the greeting is the whole list at that
+     * point, and rewriting it after a conversation has started would edit
+     * history the user has already read.
+     */
+    fun applyActiveEngine(activeEngine: String?) {
+        val current = _messages.value
+        if (current.size != 1) return
+        val only = current.first()
+        if (only.sender != MessageSender.PI) return
+        val greeting = greetingFor(activeEngine)
+        if (only.text == greeting) return
+        _messages.value = listOf(only.copy(text = greeting))
     }
 
     fun refreshModels() {
@@ -99,11 +114,18 @@ class ChatViewModel(
         }
     }
 
-    fun switchModel(modelName: String, provider: String? = null) {
+    /**
+     * @param onSwitched runs only after the server confirmed the change. The
+     *   header reads the model from the server status, which nothing refreshed
+     *   after a switch -- so the badge kept showing the previous model even
+     *   though the new one was already answering.
+     */
+    fun switchModel(modelName: String, provider: String? = null, onSwitched: () -> Unit = {}) {
         viewModelScope.launch {
             try {
                 client.switchModel(modelName, provider)
                 refreshModels()
+                onSwitched()
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

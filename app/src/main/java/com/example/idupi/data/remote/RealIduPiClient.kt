@@ -215,15 +215,25 @@ class RealIduPiClient : IduPiClient {
         }
     }
 
-    override suspend fun getSessions(engine: String, cursor: String?, limit: Int): SessionsPage =
+    override suspend fun getSessions(engine: String, cursor: String?, limit: Int, includeAll: Boolean): SessionsPage =
         send(HttpMethod.Get, "/api/v1/sessions") {
             parameter("engine", engine)
             if (cursor != null) parameter("cursor", cursor)
             parameter("limit", limit)
+            // Only sent when on: the server's default is already the filtered
+            // list, so an absent parameter and "false" mean the same thing.
+            if (includeAll) parameter("includeAll", "true")
         }.body()
 
-    override suspend fun getSessionCounts(): SessionCountsResponse =
-        send(HttpMethod.Get, "/api/v1/sessions/counts").body()
+    override suspend fun getSessionCounts(includeAll: Boolean): SessionCountsResponse =
+        send(HttpMethod.Get, "/api/v1/sessions/counts") {
+            if (includeAll) parameter("includeAll", "true")
+        }.body()
+
+    override suspend fun startNewSession(): Boolean {
+        send(HttpMethod.Post, "/api/v1/sessions/new")
+        return true
+    }
 
     override suspend fun getSessionHistory(sessionId: String): List<com.example.idupi.domain.repository.SessionHistoryItem> {
         val res: SessionHistoryResponse = send(HttpMethod.Get, "/api/v1/sessions/$sessionId/history").body()
