@@ -77,6 +77,6 @@ function getTestPiSessions(projPath, projName) {
     return sessions;
 }
 
-const idupiSessions = getTestPiSessions("C:\\Users\\dev\\AndroidStudioProjects\\IDUPI", "IDUPI");
+const idupiSessions = getTestPiSessions(path.join(os.homedir(), "AndroidStudioProjects", "IDUPI"), "IDUPI");
 console.log("Found IDUPI Pi sessions:", idupiSessions.length);
 idupiSessions.forEach(s => console.log(" -", s.id, "|", s.date, "|", s.title));

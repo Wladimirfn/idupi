@@ -3,10 +3,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { parseSubagentNotify } from "../lib/subagent-notify.mjs";
 
-// Captured verbatim from a real Pi session
-// (~/.pi/agent/sessions/.../*.jsonl, entries with customType
-// "subagent-notify"). Both are truncated by pi-subagents' 1000-char preview
-// cap, which is exactly why a JSON.parse-only reader is not enough.
+// Captured from a real Pi session (~/.pi/agent/sessions/.../*.jsonl, entries
+// with customType "subagent-notify"). The only edit is the home directory,
+// replaced with a neutral name; nothing this parser reads was touched. Both
+// notices are truncated by pi-subagents' 1000-char preview cap, which is
+// exactly why a JSON.parse-only reader is not enough.
 const REAL = JSON.parse(readFileSync(new URL("./fixtures/subagent-notify.json", import.meta.url), "utf8"));
 
 test("every captured notice is genuinely truncated JSON", () => {

@@ -71,4 +71,4 @@ function testFullScanner(projPath, projName) {
     console.log(`Claude: ${allSessions.filter(s => s.engine === "claude").length}`);
 }
 
-testFullScanner("C:\\Users\\dev\\OneDrive\\Escritorio\\Mis proyectos\\Sistema_de_mantencion", "Sistema_de_mantencion");
+testFullScanner(join(homedir(), "OneDrive", "Escritorio", "Mis proyectos", "Sistema_de_mantencion"), "Sistema_de_mantencion");
