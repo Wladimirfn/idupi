@@ -3629,7 +3629,7 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
                                     publishChatEvent(CHAT_EVENTS.TOOL_START, {
                                         id: toolId,
                                         name: toolName,
-                                        message: describeToolInput(item) || `Ejecutando ${toolName}...`
+                                        detail: describeToolInput(item) || `Ejecutando ${toolName}...`
                                     });
                                 }
                             }
@@ -3837,7 +3837,7 @@ function runOpenCodeCli(projPath, sessionId, message) {
                         publishChatEvent(CHAT_EVENTS.TOOL_START, {
                             id: callId,
                             name: toolName,
-                            message: ocDetail
+                            detail: ocDetail
                         });
                         publishChatEvent(CHAT_EVENTS.TOOL_END, {
                             id: callId,
