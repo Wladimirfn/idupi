@@ -4,6 +4,8 @@ package main
 
 import (
 	"fmt"
+	"sync"
+	"time"
 	"unsafe"
 )
 
@@ -137,6 +139,131 @@ func clampRelDelta(v float64) float64 {
 		return -limit
 	}
 	return v
+}
+
+// buildClickPair builds a COMPLETE click as a down+up pair. A click whose
+// halves travel as separate wire commands wedges the physical mouse forever
+// when the release is lost (the OS keeps the button logically pressed); the
+// pair is sent through SendInput as ONE contiguous array so nothing can slip
+// between press and release.
+func buildClickPair(req inputRequest, monitors []Monitor) (*mouseInput, *mouseInput, error) {
+	if len(monitors) == 0 {
+		return nil, nil, fmt.Errorf("no monitors to aim at")
+	}
+	down := &mouseInput{Type: 0} // INPUT_MOUSE
+	up := &mouseInput{Type: 0}
+
+	// Aim first when a position came along; otherwise press wherever the
+	// cursor already sits.
+	if req.HasPos {
+		var m Monitor
+		if req.MonitorIndex >= 0 && req.MonitorIndex < len(monitors) {
+			m = monitors[req.MonitorIndex]
+		} else {
+			for _, cand := range monitors {
+				if cand.Primary {
+					m = cand
+					break
+				}
+			}
+		}
+		bounds := Bounds{X: m.X, Y: m.Y, W: m.Width, H: m.Height}
+		all := make([]Bounds, 0, len(monitors))
+		for _, mo := range monitors {
+			all = append(all, Bounds{X: mo.X, Y: mo.Y, W: mo.Width, H: mo.Height})
+		}
+		ax, ay := AbsolutePointer(bounds, VirtualBounds(all), req.NX, req.NY)
+		down.Dx, down.Dy = ax, ay
+		down.DwFlags = meMove | meAbsolute | meVirtual
+	}
+
+	switch req.Button {
+	case "right":
+		down.DwFlags |= meRightDown
+		up.DwFlags = meRightUp
+	default:
+		down.DwFlags |= meLeftDown
+		up.DwFlags = meLeftUp
+	}
+	return down, up, nil
+}
+
+// executeClick sends the down+up pair atomically.
+func executeClick(down, up *mouseInput) error {
+	pair := [2]mouseInput{*down, *up}
+	r, _, err := procSendInput.Call(2, uintptr(unsafe.Pointer(&pair[0])), unsafe.Sizeof(pair[0]))
+	if r == 0 {
+		return fmt.Errorf("SendInput click failed: %v", err)
+	}
+	return nil
+}
+
+// --- stuck-button watchdog -------------------------------------------------
+//
+// A remote press whose release never arrives wedges the PHYSICAL mouse
+// OS-WIDE: SendInput state is global, so even killing this process cannot
+// undo it. The hold tracker remembers remotely-pressed buttons and main()'s
+// watchdog goroutine auto-releases anything held past the limit.
+
+const holdLimit = 30 * time.Second
+
+// heldButtons is the watchdog's state, fed by every mouse send below.
+var heldButtons holdTracker
+
+type holdTracker struct {
+	mu        sync.Mutex
+	left      bool
+	right     bool
+	heldSince time.Time
+}
+
+// note records what one sent mouse event did to the buttons.
+func (h *holdTracker) note(flags uint32, now time.Time) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if flags&(meLeftDown|meRightDown) != 0 {
+		if !h.left && !h.right {
+			h.heldSince = now
+		}
+	}
+	if flags&meLeftDown != 0 {
+		h.left = true
+	}
+	if flags&meRightDown != 0 {
+		h.right = true
+	}
+	if flags&(meLeftUp|meRightUp) != 0 {
+		if flags&meLeftUp != 0 {
+			h.left = false
+		}
+		if flags&meRightUp != 0 {
+			h.right = false
+		}
+		if !h.left && !h.right {
+			h.heldSince = time.Time{}
+		}
+	}
+}
+
+// expired reports the release flags for any button held past the limit and
+// clears it from the tracker.
+func (h *holdTracker) expired(now time.Time, limit time.Duration) (uint32, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !(h.left || h.right) || now.Sub(h.heldSince) < limit {
+		return 0, false
+	}
+	var flags uint32
+	if h.left {
+		flags |= meLeftUp
+		h.left = false
+	}
+	if h.right {
+		flags |= meRightUp
+		h.right = false
+	}
+	h.heldSince = time.Time{}
+	return flags, true
 }
 
 func buttonFlag(button string, down bool) uint32 {

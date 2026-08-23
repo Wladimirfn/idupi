@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 type request struct {
@@ -57,6 +58,22 @@ func main() {
 	in.Buffer(make([]byte, 64*1024), 1024*1024)
 	out := bufio.NewWriter(os.Stdout)
 	defer out.Flush()
+
+	// Stuck-button watchdog: a remote press whose release never arrives
+	// wedges the user's PHYSICAL mouse OS-wide. Anything held past the
+	// limit gets auto-released -- the worst failure this module can cause
+	// must heal itself, not wait for a human to reboot.
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for now := range ticker.C {
+			if flags, ok := heldButtons.expired(now, holdLimit); ok {
+				if err := executeInput(&mouseInput{Type: 0, DwFlags: flags}); err == nil {
+					fmt.Fprintln(os.Stderr, "[watchdog] auto-released remotely-stuck mouse buttons")
+				}
+			}
+		}
+	}()
 
 	for in.Scan() {
 		line := bytes.TrimSpace(in.Bytes())
@@ -187,6 +204,29 @@ func inputCommand(out *bufio.Writer, req *request) {
 		writeError(out, req.ID, fmt.Errorf("normalised coordinates must be within 0..1"))
 		return
 	}
+	if action == "click" {
+		// Atomic click (stuck-button fix): down+up in ONE helper command so
+		// a lost release can never wedge the physical mouse.
+		inReq := inputRequest{Action: action, Button: strings.ToLower(req.Button), MonitorIndex: deref(req.Monitor)}
+		if hasPos {
+			inReq.HasPos = true
+			inReq.NX, inReq.NY = *req.NX, *req.NY
+		}
+		down, up, err := buildClickPair(inReq, monitors)
+		if err != nil {
+			writeError(out, req.ID, err)
+			return
+		}
+		if err := executeClick(down, up); err != nil {
+			writeError(out, req.ID, err)
+			return
+		}
+		now := time.Now()
+		heldButtons.note(down.DwFlags, now)
+		heldButtons.note(up.DwFlags, now)
+		writeControl(out, req.ID, map[string]any{"ok": true})
+		return
+	}
 	if action == "relmove" && (req.DX == nil || req.DY == nil) {
 		writeError(out, req.ID, fmt.Errorf("relmove needs dx and dy"))
 		return
@@ -231,5 +271,6 @@ func inputCommand(out *bufio.Writer, req *request) {
 		writeError(out, req.ID, err)
 		return
 	}
+	heldButtons.note(in.DwFlags, time.Now())
 	writeControl(out, req.ID, map[string]any{"ok": true})
 }

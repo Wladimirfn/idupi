@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 	"unsafe"
 )
 
@@ -144,5 +145,90 @@ func TestBuildKeyInputAcceptsSurrogateUnits(t *testing.T) {
 		if _, err := buildKeyInput("keychar", code); err != nil {
 			t.Fatalf("keychar(%#x): %v", code, err)
 		}
+	}
+}
+
+// A lost release wedges the physical mouse OS-WIDE -- the worst failure this
+// module can cause. The hold tracker is the watchdog: it remembers which
+// buttons were pressed remotely and reports the ones held past the limit so
+// main() can auto-release them.
+func TestHoldTrackerWatchesPressedButtons(t *testing.T) {
+	var h holdTracker
+	now := time.Unix(1_000_000, 0)
+
+	// Idle: nothing to release.
+	if _, ok := h.expired(now, holdLimit); ok {
+		t.Fatalf("nothing held, but expired reported a release")
+	}
+
+	// Press left at t=0.
+	h.note(meLeftDown, now)
+	if !h.left || h.right {
+		t.Fatalf("left should be held, right not")
+	}
+	if _, ok := h.expired(now.Add(holdLimit-time.Second), holdLimit); ok {
+		t.Fatalf("held under the limit must not report")
+	}
+
+	// Past the limit: report a LEFT release.
+	flags, ok := h.expired(now.Add(holdLimit+time.Second), holdLimit)
+	if !ok || flags != meLeftUp {
+		t.Fatalf("expected left-up release, got %#x ok=%v", flags, ok)
+	}
+
+	// Right press then right release clears it.
+	h.note(meRightDown, now)
+	h.note(meRightUp, now.Add(time.Second))
+	if h.right {
+		t.Fatalf("right released but tracker still holds it")
+	}
+
+	// A click pair presses AND releases atomically: nothing stays held.
+	h.note(meLeftDown, now)
+	h.note(meLeftUp, now)
+	if h.left {
+		t.Fatalf("click pair must leave nothing held")
+	}
+}
+
+// A click whose down and up travel as separate wire commands wedges the
+// physical mouse forever when the up is lost -- the pair must be built AND
+// sent as one atomic unit inside the helper.
+func TestBuildClickPairIsAtomicAndCorrect(t *testing.T) {
+	m := Monitor{ID: 0, Primary: true, X: 0, Y: 0, Width: 1920, Height: 1080}
+
+	// Coordless: pure down+up at the current cursor position.
+	down, up, err := buildClickPair(inputRequest{Action: "click", Button: "left"}, []Monitor{m})
+	if err != nil {
+		t.Fatalf("coordless click: %v", err)
+	}
+	if down.DwFlags != meLeftDown || up.DwFlags != meLeftUp {
+		t.Fatalf("coordless flags: got %#x/%#x", down.DwFlags, up.DwFlags)
+	}
+	if down.Dx != 0 || down.Dy != 0 {
+		t.Fatalf("coordless click must not move the cursor")
+	}
+
+	// With position: aim first (absolute virtual), then press and release.
+	down, up, err = buildClickPair(inputRequest{
+		Action: "click", Button: "right", HasPos: true,
+		MonitorIndex: 0, NX: 0.5, NY: 0.5,
+	}, []Monitor{m})
+	if err != nil {
+		t.Fatalf("positioned click: %v", err)
+	}
+	wantDown := uint32(meMove | meAbsolute | meVirtual | meRightDown)
+	if down.DwFlags != wantDown || up.DwFlags != meRightUp {
+		t.Fatalf("positioned flags: got %#x/%#x", down.DwFlags, up.DwFlags)
+	}
+	// The aim coordinates follow AbsolutePointer's own contract.
+	wantX, wantY := AbsolutePointer(Bounds{W: 1920, H: 1080}, Bounds{W: 1920, H: 1080}, 0.5, 0.5)
+	if down.Dx != wantX || down.Dy != wantY {
+		t.Fatalf("positioned click must aim at the fraction centre, got (%d,%d), want (%d,%d)", down.Dx, down.Dy, wantX, wantY)
+	}
+	// The release must NOT carry movement flags: it releases wherever the
+	// down pressed.
+	if up.DwFlags&meMove != 0 {
+		t.Fatalf("up must not move the cursor")
 	}
 }
