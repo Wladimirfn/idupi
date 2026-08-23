@@ -63,7 +63,16 @@ export function createScreenStream({
       // double-acks for the current one must not queue extra captures.
       if (frameId !== lastFrameId || ackedFrameId === frameId) return;
       ackedFrameId = frameId;
-      await captureOnce();
+      try {
+        await captureOnce();
+      } catch (err) {
+        // Nothing was produced, so the acknowledgement was never spent. Give
+        // it back: with no timer underneath, a receiver whose retry we reject
+        // as a duplicate has no other way to ask, and the session hangs until
+        // its socket times out. One failed capture costs one frame.
+        ackedFrameId = null;
+        throw err;
+      }
     },
 
     /** Applies to subsequent captures; never triggers an unsolicited frame. */
