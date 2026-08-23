@@ -149,4 +149,29 @@ class RemoteScreenViewModelTest {
         assertEquals(null, viewModel.uiState.value.currentFrame)
         assertEquals(0L, viewModel.uiState.value.frameCount)
     }
+
+    @Test
+    fun `a failed ack is retried until it lands, or the stream dies with it`() = runTest {
+        val fake = FakeIduPiClient()
+        fake.screenMonitorsToReturn = listOf(primaryMonitor)
+        // First frame: its ack fails twice before landing. Second frame: clean.
+        // If the ViewModel gave up after one attempt, neither would be acked and
+        // the ack-paced server would go silent until the socket timeout killed
+        // the session -- the exact freeze seen live after ~a minute of streaming.
+        fake.failNextAcks = 2
+        fake.screenFramesToEmit = listOf(frame(1), frame(2))
+        val viewModel = RemoteScreenViewModel(
+            clientSource = FakeClientSource(fake),
+            decodeJpeg = { stubBitmap }
+        )
+        viewModel.refreshMonitors()
+        advanceUntilIdle()
+
+        viewModel.startStreaming(viewportW = 800, viewportH = 450)
+        advanceUntilIdle()
+
+        assertEquals(2, fake.screenAcks.size)
+        assertEquals(listOf(1, 2), fake.screenAcks.map { it.frameId })
+    }
+    
 }

@@ -20,7 +20,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import android.app.Activity
+import android.content.Context
+import android.view.WindowManager
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -28,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import com.example.idupi.domain.model.ScreenMonitor
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -49,6 +54,19 @@ fun RemoteScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val density = LocalDensity.current
+    val view = LocalView.current
+
+    // A paused render stops the acks, the ack-paced server goes silent, and
+    // the socket dies at its idle timeout: watching this screen must keep the
+    // display on or the phone's own screen timeout freezes the session at
+    // exactly that minute mark.
+    DisposableEffect(Unit) {
+        val window = view.context.findActivity()?.window
+        window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        onDispose {
+            window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
 
     // The picker has nothing to show until the monitors are fetched, and the
     // screen is the only thing that knows it is being looked at.
@@ -181,4 +199,10 @@ private fun monitorLabel(monitor: ScreenMonitor): String =
  */
 private fun statusLine(renderMs: Long, bytes: Int, fps: Int): String =
     "$fps fps · ${bytes / 1024} KB · $renderMs ms decode"
-
+/** Unwraps ContextWrapper chains to the Activity, for window flag changes. */
+private tailrec fun Context.findActivity(): Activity? =
+    when (this) {
+        is Activity -> this
+        is android.content.ContextWrapper -> baseContext.findActivity()
+        else -> null
+    }

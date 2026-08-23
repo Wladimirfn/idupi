@@ -10,7 +10,9 @@ import com.example.idupi.domain.model.recentArrivals
 import com.example.idupi.domain.model.ScreenStreamRequest
 import com.example.idupi.domain.model.ScreenWireMessage
 import com.example.idupi.domain.repository.IduPiClientSource
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -150,15 +152,31 @@ class RemoteScreenViewModel(
         // ack costs the whole session -- nothing else can wake a stream the
         // receiver paces -- while acknowledging it costs one frame of picture
         // that the previous frame covers for.
-        runCatching {
-            client.acknowledgeScreenFrame(
-                sid = sid,
-                frameId = frame.meta.id,
-                bytes = frame.jpeg.size,
-                renderMs = renderMs
-            )
-        }.onFailure { e ->
-            _uiState.value = _uiState.value.copy(error = e.message)
+        //
+        // And an ack that FAILS must be retried: after a failed capture the
+        // server hands the ack back and waits for exactly this redelivery.
+        // Giving up after one attempt froze live sessions at their first
+        // hiccup until the socket timeout killed them.
+        var backoffMs = ACK_RETRY_BASE_MS
+        for (attempt in 1..ACK_MAX_ATTEMPTS) {
+            try {
+                client.acknowledgeScreenFrame(
+                    sid = sid,
+                    frameId = frame.meta.id,
+                    bytes = frame.jpeg.size,
+                    renderMs = renderMs
+                )
+                break
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (attempt == ACK_MAX_ATTEMPTS) {
+                    _uiState.value = _uiState.value.copy(error = e.message)
+                } else {
+                    delay(backoffMs)
+                    backoffMs = (backoffMs * 2).coerceAtMost(ACK_RETRY_CAP_MS)
+                }
+            }
         }
     }
 
@@ -178,6 +196,11 @@ class RemoteScreenViewModel(
     }
 
     private companion object {
+        /** Bounded ack retries: enough to cross a helper respawn (~instant)
+         * or a transient GDI hiccup, small enough to surface real breakage. */
+        const val ACK_MAX_ATTEMPTS = 8
+        const val ACK_RETRY_BASE_MS = 100L
+        const val ACK_RETRY_CAP_MS = 2_000L
         val DEFAULT_VIEWPORT_PAIR: Pair<Int, Int> =
             com.example.idupi.domain.model.DEFAULT_VIEWPORT
     }

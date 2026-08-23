@@ -391,8 +391,15 @@ class FakeIduPiClient : IduPiClient {
         }
     }
 
+    /** When > 0, that many next acks throw (transient-failure simulation). */
+    var failNextAcks: Int = 0
+
     override suspend fun acknowledgeScreenFrame(sid: String, frameId: Int, bytes: Int, renderMs: Long) {
         maybeFail()
+        if (failNextAcks > 0) {
+            failNextAcks--
+            throw java.io.IOException("transient ack failure")
+        }
         screenAcks.add(
             RecordedScreenAck(
                 sid = sid,
