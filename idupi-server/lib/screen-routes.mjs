@@ -12,10 +12,71 @@ import { createScreenStream } from "./screen-stream.mjs";
 import { encodeControl, encodeFrame } from "./screen-protocol.mjs";
 
 const screenHelper = new ScreenHelper();
+// Input rides a DEDICATED helper instance: mouse moves must never queue
+// behind capture work sharing one stdin, because input latency is what this
+// feature is judged on (brief §4.5).
+let inputHelper = null;
+function ensureInputHelper() {
+    if (!inputHelper) inputHelper = new ScreenHelper();
+    return inputHelper;
+}
+// Remote input ships ON (owner decision, overrides the brief's safe-off):
+// the machine is a working remote the moment the server starts. Only an
+// explicit IDUPI_REMOTE_INPUT=0 turns it off -- seeing a screen and
+// controlling the PC are still two different permissions behind one token,
+// so the kill switch stays one env var away.
+const REMOTE_INPUT_ENABLED = process.env.IDUPI_REMOTE_INPUT !== "0";
 // Active receiver-paced streams keyed by the client-chosen session id.
 const screenSessions = new Map();
 
 export async function handleScreenRoute(req, res, pathname) {
+    // What the server allows over this bridge; the app hides its controls
+    // accordingly. Behind requireAuth like everything else.
+    if (pathname === "/api/v1/screen/config" && req.method === "GET") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ remoteInputEnabled: REMOTE_INPUT_ENABLED }));
+        return true;
+    }
+
+    // Remote input: normalised coordinates against ONE monitor, resolved to
+    // absolute virtual-desktop units inside the Go helper. Ships enabled --
+    // IDUPI_REMOTE_INPUT=0 downgrades it to a 403 even for a valid token.
+    if (pathname === "/api/v1/screen/input" && req.method === "POST") {
+        if (!REMOTE_INPUT_ENABLED) {
+            res.writeHead(403, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "remote input is disabled on this server (IDUPI_REMOTE_INPUT=0 disables it)" }));
+            return true;
+        }
+        let body = "";
+        req.on("data", chunk => { body += chunk; });
+        req.on("end", async () => {
+            try {
+                const parsed = JSON.parse(body || "{}");
+                await ensureHelperBuilt();
+                const helper = ensureInputHelper();
+                const response = await helper.request({
+                    cmd: "input",
+                    action: parsed.type,
+                    button: parsed.button || "",
+                    monitor: parsed.monitor ?? 0,
+                    x: parsed.x,
+                    y: parsed.y,
+                    // Pad-mode relative travel and realtime keyboard codes
+                    // ride the same dedicated input helper.
+                    dx: parsed.dx,
+                    dy: parsed.dy,
+                    code: parsed.code,
+                    delta: parsed.delta,
+                });
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify(response));
+            } catch (err) {
+                res.writeHead(502, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ error: err.message }));
+            }
+        });
+        return true;
+    }
     // Remote screen: enumerate monitors through the Go capture helper.
     if (pathname === "/api/v1/screen/monitors" && req.method === "GET") {
         try {
