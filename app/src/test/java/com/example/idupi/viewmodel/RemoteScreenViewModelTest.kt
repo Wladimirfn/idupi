@@ -4,8 +4,13 @@ import androidx.compose.ui.graphics.ImageBitmap
 import com.example.idupi.MainDispatcherRule
 import com.example.idupi.FakeClientSource
 import com.example.idupi.FakeIduPiClient
+import com.example.idupi.domain.model.KeyPress
+import com.example.idupi.domain.model.ScreenInputEvent
 import com.example.idupi.domain.model.ScreenMonitor
+import com.example.idupi.domain.model.ScreenRemoteConfig
 import com.example.idupi.domain.model.ScreenWireMessage
+import com.example.idupi.domain.model.SpecialKey
+import com.example.idupi.domain.model.keyboardDiffs
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -174,4 +179,86 @@ class RemoteScreenViewModelTest {
         assertEquals(listOf(1, 2), fake.screenAcks.map { it.frameId })
     }
     
+
+    @Test
+    fun `input is not sent while the server has it disabled`() = runTest {
+        val fake = FakeIduPiClient()
+        fake.screenConfigToReturn = ScreenRemoteConfig(remoteInputEnabled = false)
+        fake.screenMonitorsToReturn = listOf(primaryMonitor)
+        val viewModel = RemoteScreenViewModel(
+            clientSource = FakeClientSource(fake),
+            decodeJpeg = { stubBitmap },
+        )
+        viewModel.refreshConfig()
+        advanceUntilIdle()
+
+        viewModel.sendInput(ScreenInputEvent(type = "move", monitor = 0, x = 0.5, y = 0.5))
+        advanceUntilIdle()
+
+        // Seeing the screen must not silently mean moving it: without opt-in
+        // the ViewModel is the second gate, behind the server's own 403.
+        assertEquals(0, fake.screenInputs.size)
+    }
+
+    @Test
+    fun `input flows once the server opted in`() = runTest {
+        val fake = FakeIduPiClient()
+        fake.screenConfigToReturn = ScreenRemoteConfig(remoteInputEnabled = true)
+        val viewModel = RemoteScreenViewModel(
+            clientSource = FakeClientSource(fake),
+            decodeJpeg = { stubBitmap },
+        )
+        viewModel.refreshConfig()
+        advanceUntilIdle()
+
+        viewModel.sendInput(ScreenInputEvent(type = "move", monitor = 0, x = 0.25, y = 0.75))
+        advanceUntilIdle()
+
+        assertEquals(1, fake.screenInputs.size)
+        assertEquals(0.25, fake.screenInputs.first().x)
+    }
+
+    @Test
+    fun `keystrokes are gated like the mouse while input is disabled`() = runTest {
+        val fake = FakeIduPiClient()
+        fake.screenConfigToReturn = ScreenRemoteConfig(remoteInputEnabled = false)
+        val viewModel = RemoteScreenViewModel(
+            clientSource = FakeClientSource(fake),
+            decodeJpeg = { stubBitmap },
+        )
+        viewModel.refreshConfig()
+        advanceUntilIdle()
+
+        viewModel.sendKey(KeyPress.char('a'))
+        advanceUntilIdle()
+
+        // A keyboard is a MORE loaded gun than a pointer: the same second
+        // gate must hold it back.
+        assertEquals(0, fake.screenInputs.size)
+    }
+
+    @Test
+    fun `a keystroke travels the moment it is pressed, one wire event per key`() = runTest {
+        val fake = FakeIduPiClient()
+        fake.screenConfigToReturn = ScreenRemoteConfig(remoteInputEnabled = true)
+        val viewModel = RemoteScreenViewModel(
+            clientSource = FakeClientSource(fake),
+            decodeJpeg = { stubBitmap },
+        )
+        viewModel.refreshConfig()
+        advanceUntilIdle()
+
+        val presses = keyboardDiffs("", "hi\n")
+        presses.forEach { viewModel.sendKey(it) }
+        advanceUntilIdle()
+
+        assertEquals(3, fake.screenInputs.size)
+        assertEquals("keychar", fake.screenInputs[0].type)
+        assertEquals('h'.code, fake.screenInputs[0].code)
+        assertEquals("keychar", fake.screenInputs[1].type)
+        assertEquals('i'.code, fake.screenInputs[1].code)
+        // Control keys ride virtual keys, not unicode.
+        assertEquals("keyvk", fake.screenInputs[2].type)
+        assertEquals(SpecialKey.ENTER.vk, fake.screenInputs[2].code)
+    }
 }

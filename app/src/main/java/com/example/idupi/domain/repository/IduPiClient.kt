@@ -87,4 +87,10 @@ interface IduPiClient {
 
     /** Must be called AFTER a frame is rendered; the server paces on it. */
     suspend fun acknowledgeScreenFrame(sid: String, frameId: Int, bytes: Int, renderMs: Long)
+
+    /** What the server allows: remote input ships OFF behind an explicit opt-in. */
+    suspend fun getScreenConfig(): ScreenRemoteConfig
+
+    /** Sends one mouse event with NORMALISED coordinates (hito 6). */
+    suspend fun sendScreenInput(event: ScreenInputEvent)
 }

@@ -377,6 +377,16 @@ class RealIduPiClient : IduPiClient {
         }
     }
 
+    override suspend fun getScreenConfig(): ScreenRemoteConfig =
+        send(HttpMethod.Get, "/api/v1/screen/config").body()
+
+    /** Normalised coordinates only -- pixel maths lives in the Go helper. */
+    override suspend fun sendScreenInput(event: ScreenInputEvent) {
+        send(HttpMethod.Post, "/api/v1/screen/input") {
+            contentType(ContentType.Application.Json)
+            setBody(event)
+        }
+    }
     override fun connectChat(): Flow<ChatEvent> = merge(chatEventFlow.asSharedFlow(), sseChatFlow())
 
     private fun sseChatFlow(): Flow<ChatEvent> = flow {

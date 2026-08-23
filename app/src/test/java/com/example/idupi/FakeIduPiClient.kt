@@ -19,6 +19,8 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import com.example.idupi.domain.model.ScreenMonitor
 import com.example.idupi.domain.model.ScreenFrameMeta
+import com.example.idupi.domain.model.ScreenRemoteConfig
+import com.example.idupi.domain.model.ScreenInputEvent
 import com.example.idupi.domain.model.ScreenStreamRequest
 import com.example.idupi.domain.model.ScreenWireMessage
 import kotlinx.coroutines.awaitCancellation
@@ -394,6 +396,18 @@ class FakeIduPiClient : IduPiClient {
     /** When > 0, that many next acks throw (transient-failure simulation). */
     var failNextAcks: Int = 0
 
+    var screenConfigToReturn: ScreenRemoteConfig = ScreenRemoteConfig(remoteInputEnabled = false)
+    val screenInputs = mutableListOf<ScreenInputEvent>()
+
+    override suspend fun getScreenConfig(): ScreenRemoteConfig {
+        maybeFail()
+        return screenConfigToReturn
+    }
+
+    override suspend fun sendScreenInput(event: ScreenInputEvent) {
+        maybeFail()
+        screenInputs.add(event)
+    }
     override suspend fun acknowledgeScreenFrame(sid: String, frameId: Int, bytes: Int, renderMs: Long) {
         maybeFail()
         if (failNextAcks > 0) {

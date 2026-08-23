@@ -7,6 +7,8 @@ import com.example.idupi.data.IduPiClientProvider
 import com.example.idupi.domain.model.ScreenMonitor
 import com.example.idupi.domain.model.frameRate
 import com.example.idupi.domain.model.recentArrivals
+import com.example.idupi.domain.model.KeyPress
+import com.example.idupi.domain.model.ScreenInputEvent
 import com.example.idupi.domain.model.ScreenStreamRequest
 import com.example.idupi.domain.model.ScreenWireMessage
 import com.example.idupi.domain.repository.IduPiClientSource
@@ -32,7 +34,9 @@ data class RemoteScreenUiState(
     val frameCount: Long = 0,
     /** Rate over the last couple of seconds -- what says the stream is healthy. */
     val fps: Int = 0,
-    val error: String? = null
+    val error: String? = null,
+    /** Server-side opt-in for remote input; ships OFF. */
+    val remoteInputEnabled: Boolean = false,
 )
 
 /**
@@ -180,6 +184,54 @@ class RemoteScreenViewModel(
         }
     }
 
+    fun refreshConfig() {
+        viewModelScope.launch {
+            try {
+                val config = client.getScreenConfig()
+                _uiState.value = _uiState.value.copy(remoteInputEnabled = config.remoteInputEnabled)
+            } catch (_: Exception) {
+                // Config is advisory: the server 403s input regardless.
+            }
+        }
+    }
+
+    /**
+     * Second gate of remote input, behind the server's own 403: without the
+     * opt-in nothing leaves the phone. Coordinates are normalised 0..1 --
+     * pixel maths lives in the Go helper (the left monitor starts at x=-1920).
+     */
+    fun sendInput(event: ScreenInputEvent) {
+        if (!_uiState.value.remoteInputEnabled) return
+        viewModelScope.launch {
+            try {
+                client.sendScreenInput(event)
+            } catch (e: Exception) {
+                if (e !is CancellationException) {
+                    _uiState.value = _uiState.value.copy(error = e.message)
+                }
+            }
+        }
+    }
+
+    /**
+     * Realtime typing (hito 7): every keystroke leaves the phone THE MOMENT
+     * it is pressed, never on IME commit. Same double gate as the mouse --
+     * a keyboard is an even more loaded gun than a pointer.
+     */
+    fun sendKey(press: KeyPress) {
+        if (!_uiState.value.remoteInputEnabled) return
+        viewModelScope.launch {
+            try {
+                client.sendScreenInput(
+                    ScreenInputEvent(type = press.wireAction, code = press.code)
+                )
+            } catch (e: Exception) {
+                if (e !is CancellationException) {
+                    _uiState.value = _uiState.value.copy(error = e.message)
+                }
+            }
+        }
+    }
     fun stopStreaming() {
         streamJob?.cancel()
         streamJob = null

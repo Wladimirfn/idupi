@@ -50,3 +50,25 @@ data class ScreenStreamRequest(
     val viewportH: Int,
     val quality: String = "55"
 )
+
+/** What the server allows over this bridge (remote input opt-in). */
+@Serializable
+data class ScreenRemoteConfig(
+    val remoteInputEnabled: Boolean = false,
+)
+
+/** One mouse event; coordinates are normalised 0..1 against ONE monitor. */
+@Serializable
+data class ScreenInputEvent(
+    val type: String, // "move" | "down" | "up" | "scroll" | "relmove"
+    val monitor: Int = 0,
+    val x: Double? = null,
+    val y: Double? = null,
+    val button: String = "left",
+    /** relmove: cursor pixels to travel -- pad mode's relative movement. */
+    val dx: Double? = null,
+    val dy: Double? = null,
+    /** keychar: UTF-16 unit | keyvk: Windows virtual-key code. */
+    val code: Int? = null,
+    val delta: Int? = null,
+)
