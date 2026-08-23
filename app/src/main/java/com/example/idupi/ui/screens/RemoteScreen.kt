@@ -162,6 +162,21 @@ fun RemoteScreen(
                 }
 
                 if (frame != null && meta != null) {
+                    // Tracks whether a remote press is currently held: leaving
+                    // this screen mid-drag cancels the gesture coroutine
+                    // WITHOUT firing onDragEnd/onDragCancel, so disposal is
+                    // the last line of defence against wedging the user's
+                    // physical mouse.
+                    var buttonHeld by remember { mutableStateOf(false) }
+                    val heldMonitor = state.selectedMonitorId ?: 0
+                    DisposableEffect(Unit) {
+                        onDispose {
+                            if (buttonHeld) {
+                                viewModel.sendInput(ScreenInputEvent(type = "up", monitor = heldMonitor))
+                                buttonHeld = false
+                            }
+                        }
+                    }
                     val imageModifier = Modifier
                         .fillMaxWidth()
                         .aspectRatio(aspect)
@@ -185,9 +200,11 @@ fun RemoteScreen(
                             detectTapGestures(
                                 onTap = { pos ->
                                     val f = fractionAt(pos)
-                                    send("move", f, "left")
-                                    send("down", f, "left")
-                                    send("up", f, "left")
+                                    // Atomic click: down+up inside ONE helper
+                                    // command -- separate wire events wedged
+                                    // the user's physical mouse when the
+                                    // release was lost.
+                                    send("click", f, "left")
                                 },
                                 onLongPress = { pos ->
                                     val f = fractionAt(pos)
@@ -205,6 +222,7 @@ fun RemoteScreen(
                                     val f = touchToMonitorFraction(pos.x, pos.y, size.width.toFloat(), size.height.toFloat()) ?: return@detectDragGestures
                                     viewModel.sendInput(ScreenInputEvent(type = "move", monitor = monitor, x = f.first, y = f.second))
                                     viewModel.sendInput(ScreenInputEvent(type = "down", monitor = monitor, x = f.first, y = f.second))
+                                    buttonHeld = true
                                 },
                                 onDrag = { change, _ ->
                                     val f = touchToMonitorFraction(change.position.x, change.position.y, size.width.toFloat(), size.height.toFloat()) ?: return@detectDragGestures
@@ -212,6 +230,15 @@ fun RemoteScreen(
                                 },
                                 onDragEnd = {
                                     viewModel.sendInput(ScreenInputEvent(type = "up", monitor = monitor))
+                                    buttonHeld = false
+                                },
+                                onDragCancel = {
+                                    // A cancelled drag MUST release the button:
+                                    // this exact missing 'up' wedged the user's
+                                    // physical mouse in a permanently-pressed
+                                    // state.
+                                    viewModel.sendInput(ScreenInputEvent(type = "up", monitor = monitor))
+                                    buttonHeld = false
                                 },
                             )
                         }
@@ -346,10 +373,9 @@ fun RemoteScreen(
                         )
                     },
                     onClick = {
-                        // Coordless click: press/release at the cursor's CURRENT
-                        // position inside the Go helper.
-                        viewModel.sendInput(ScreenInputEvent(type = "down", monitor = padMonitor))
-                        viewModel.sendInput(ScreenInputEvent(type = "up", monitor = padMonitor))
+                        // Atomic coordless click: press AND release inside one
+                        // helper command -- never two wire events apart.
+                        viewModel.sendInput(ScreenInputEvent(type = "click", monitor = padMonitor))
                     },
                     onScroll = { notches ->
                         viewModel.sendInput(
