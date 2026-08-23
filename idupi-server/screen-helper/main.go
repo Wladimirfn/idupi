@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 )
 
 type request struct {
@@ -27,6 +28,19 @@ type request struct {
 	Width   *int   `json:"width"`
 	Height  *int   `json:"height"`
 	Quality *int   `json:"quality"`
+	// Remote input commands (hito 6): coordinates are normalised 0..1
+	// against the chosen monitor; pixels never cross the wire -- EXCEPT
+	// relmove deltas and keyboard scan codes (hito 7), which are relative
+	// or symbolic by nature.
+	Action       string   `json:"action"`
+	Button       string   `json:"button"`
+	MonitorIndex int      `json:"monitorIndex"`
+	NX           *float64 `json:"x"`
+	NY           *float64 `json:"y"`
+	DX           *float64 `json:"dx"`
+	DY           *float64 `json:"dy"`
+	Delta        *int     `json:"delta"`
+	Code         *int     `json:"code"` // keychar: UTF-16 unit | keyvk: Windows VK
 }
 
 type frameMeta struct {
@@ -73,6 +87,8 @@ func dispatch(out *bufio.Writer, req *request) {
 		})
 	case "capture":
 		captureCommand(out, req)
+	case "input":
+		inputCommand(out, req)
 	default:
 		writeError(out, req.ID, fmt.Errorf("unknown cmd %q", req.Cmd))
 	}
@@ -148,4 +164,72 @@ func deref(p *int) int {
 		return -1
 	}
 	return *p
+}
+
+// inputCommand validates one mouse event and fires it through SendInput.
+func inputCommand(out *bufio.Writer, req *request) {
+	monitors, err := enumerateMonitors()
+	if err != nil {
+		writeError(out, req.ID, err)
+		return
+	}
+	delta := 0
+	if req.Delta != nil {
+		delta = *req.Delta
+	}
+	action := strings.ToLower(req.Action)
+	if action == "" {
+		writeError(out, req.ID, fmt.Errorf("input needs an action"))
+		return
+	}
+	hasPos := req.NX != nil && req.NY != nil
+	if hasPos && action != "scroll" && (*req.NX < 0 || *req.NX > 1 || *req.NY < 0 || *req.NY > 1) {
+		writeError(out, req.ID, fmt.Errorf("normalised coordinates must be within 0..1"))
+		return
+	}
+	if action == "relmove" && (req.DX == nil || req.DY == nil) {
+		writeError(out, req.ID, fmt.Errorf("relmove needs dx and dy"))
+		return
+	}
+	if action == "keychar" || action == "keyvk" {
+		// Keyboard path (hito 7): no coordinates, just the key code.
+		if req.Code == nil {
+			writeError(out, req.ID, fmt.Errorf("%s needs code", action))
+			return
+		}
+		in, err := buildKeyInput(action, *req.Code)
+		if err != nil {
+			writeError(out, req.ID, err)
+			return
+		}
+		if err := executeKeyInput(in); err != nil {
+			writeError(out, req.ID, err)
+			return
+		}
+		writeControl(out, req.ID, map[string]any{"ok": true})
+		return
+	}
+	inReq := inputRequest{
+		Action:       action,
+		Button:       strings.ToLower(req.Button),
+		MonitorIndex: deref(req.Monitor),
+		Delta:        delta,
+	}
+	if hasPos {
+		inReq.HasPos = true
+		inReq.NX, inReq.NY = *req.NX, *req.NY
+	}
+	if req.DX != nil && req.DY != nil {
+		inReq.DX, inReq.DY = *req.DX, *req.DY
+	}
+	in, err := buildMouseInput(inReq, monitors)
+	if err != nil {
+		writeError(out, req.ID, err)
+		return
+	}
+	if err := executeInput(in); err != nil {
+		writeError(out, req.ID, err)
+		return
+	}
+	writeControl(out, req.ID, map[string]any{"ok": true})
 }

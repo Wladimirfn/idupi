@@ -29,6 +29,7 @@ var (
 	procGetCursorInfo = user32.NewProc("GetCursorInfo")
 	procGetIconInfo   = user32.NewProc("GetIconInfo")
 	procDrawIconEx    = user32.NewProc("DrawIconEx")
+	procSendInput     = user32.NewProc("SendInput")
 
 	procGetDC            = user32.NewProc("GetDC")
 	procReleaseDC        = user32.NewProc("ReleaseDC")
