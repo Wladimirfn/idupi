@@ -17,7 +17,13 @@ import com.example.idupi.domain.repository.TerminalSessionItem
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
-
+import com.example.idupi.domain.model.ScreenMonitor
+import com.example.idupi.domain.model.ScreenFrameMeta
+import com.example.idupi.domain.model.ScreenStreamRequest
+import com.example.idupi.domain.model.ScreenWireMessage
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 /**
  * In-memory [IduPiClient] test double. Every suspend method returns a sensible
  * empty/default value unless a `*ToReturn` field is set, and throws [failWith]
@@ -349,6 +355,53 @@ class FakeIduPiClient : IduPiClient {
         maybeFail()
         lastDeletedProfileId = profileId
         return deleteSddProfileResult
+    }
+
+    // --- Remote screen module ---
+
+    var screenMonitorsToReturn: List<ScreenMonitor> = listOf(
+        ScreenMonitor(id = 0, name = "\\\\.\\DISPLAY2", primary = true, width = 1920, height = 1080)
+    )
+    var screenFramesToEmit: List<ScreenWireMessage.Frame> = emptyList()
+    var hangScreenStream: Boolean = false
+    var lastScreenStreamRequest: ScreenStreamRequest? = null
+
+    data class RecordedScreenAck(
+        val sid: String,
+        val frameId: Int,
+        val bytes: Int,
+        val renderMs: Long,
+        val frameViewportW: Int,
+    )
+    val screenAcks = mutableListOf<RecordedScreenAck>()
+
+    override suspend fun getScreenMonitors(): List<ScreenMonitor> {
+        maybeFail()
+        return screenMonitorsToReturn
+    }
+
+    override fun screenFrames(request: ScreenStreamRequest): Flow<ScreenWireMessage.Frame> {
+        maybeFail()
+        lastScreenStreamRequest = request
+        val frames = screenFramesToEmit
+        val hang = hangScreenStream
+        return flow {
+            frames.forEach { emit(it) }
+            if (hang) awaitCancellation()
+        }
+    }
+
+    override suspend fun acknowledgeScreenFrame(sid: String, frameId: Int, bytes: Int, renderMs: Long) {
+        maybeFail()
+        screenAcks.add(
+            RecordedScreenAck(
+                sid = sid,
+                frameId = frameId,
+                bytes = bytes,
+                renderMs = renderMs,
+                frameViewportW = lastScreenStreamRequest?.viewportW ?: -1,
+            )
+        )
     }
 }
 

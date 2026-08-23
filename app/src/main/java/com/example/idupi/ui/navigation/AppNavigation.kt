@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ScreenShare
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -37,6 +38,7 @@ enum class Screen(val title: String) {
     PROJECTS("Proyectos"),
     SESSIONS("Sesiones"),
     CONSOLE("Terminal"),
+    REMOTE("Escritorio Remoto"),
     SETTINGS("Ajustes")
 }
 
@@ -58,6 +60,7 @@ fun AppNavigation() {
     val projectsViewModel: ProjectsViewModel = viewModel()
     val sessionsViewModel: SessionsViewModel = viewModel()
     val consoleViewModel: ConsoleViewModel = viewModel()
+    val remoteViewModel: RemoteScreenViewModel = viewModel()
 
     // Central error surface: every ViewModel's errorMessage is observed here and
     // shown via a single shared snackbar, instead of wiring it in each screen.
@@ -171,6 +174,7 @@ fun AppNavigation() {
                                     Screen.PROJECTS to Icons.Default.Folder,
                                     Screen.SESSIONS to Icons.Default.History,
                                     Screen.CONSOLE to Icons.Default.Terminal,
+                                    Screen.REMOTE to Icons.AutoMirrored.Filled.ScreenShare,
                                     Screen.SETTINGS to Icons.Default.Settings
                                 )
 
@@ -253,6 +257,10 @@ fun AppNavigation() {
                             )
                             Screen.CONSOLE -> ConsoleScreen(
                                 viewModel = consoleViewModel,
+                                onMenuClick = { scope.launch { drawerState.open() } }
+                            )
+                            Screen.REMOTE -> RemoteScreen(
+                                viewModel = remoteViewModel,
                                 onMenuClick = { scope.launch { drawerState.open() } }
                             )
                             Screen.SETTINGS -> SettingsScreen(

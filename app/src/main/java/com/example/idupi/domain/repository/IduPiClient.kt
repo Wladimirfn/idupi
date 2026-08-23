@@ -75,4 +75,16 @@ interface IduPiClient {
     suspend fun applySddProfile(profileId: String): Boolean
     suspend fun saveSddProfile(profile: SddProfileItem): Boolean
     suspend fun deleteSddProfile(profileId: String): Boolean
+
+    // Remote screen module (docs/remote-screen-module.md)
+    suspend fun getScreenMonitors(): List<ScreenMonitor>
+
+    /**
+     * Opens the binary chunked frame stream for one monitor. Frames are raw
+     * JPEG with wire framing -- NOT SSE, NOT base64.
+     */
+    fun screenFrames(request: ScreenStreamRequest): Flow<ScreenWireMessage.Frame>
+
+    /** Must be called AFTER a frame is rendered; the server paces on it. */
+    suspend fun acknowledgeScreenFrame(sid: String, frameId: Int, bytes: Int, renderMs: Long)
 }

@@ -322,6 +322,61 @@ class RealIduPiClient : IduPiClient {
      * not fix itself by retrying, so it is surfaced once as [ChatEvent.ErrorOccurred]
      * and that side of the merge ends instead of looping forever against a 401.
      */
+    // --- Remote screen module ---
+
+    override suspend fun getScreenMonitors(): List<ScreenMonitor> =
+        send(HttpMethod.Get, "/api/v1/screen/monitors").body()
+
+    /**
+     * Opens /api/v1/screen/stream as binary chunked HTTP and decodes the helper
+     * wire framing incrementally. Mirrors [streamChatOnce]: plain `send` reads
+     * the whole response body first, which never completes on this stream.
+     * NOT SSE and NOT base64 -- base64 would add 33% to the hottest path.
+     */
+    override fun screenFrames(request: ScreenStreamRequest): Flow<ScreenWireMessage.Frame> = flow {
+        val url = "$baseUrl/api/v1/screen/stream"
+        client.prepareGet(url) {
+            authorize()
+            parameter("sid", request.sid)
+            parameter("monitor", request.monitor)
+            parameter("viewportW", request.viewportW)
+            parameter("viewportH", request.viewportH)
+            parameter("quality", request.quality)
+            timeout {
+                // Ack-paced stream: the server sends nothing while we render.
+                // A per-read idle bound turns a dead socket into an exception
+                // instead of a silent hang; total duration stays unbounded.
+                requestTimeoutMillis = HttpTimeout.INFINITE_TIMEOUT_MS
+                socketTimeoutMillis = 30_000
+            }
+        }.execute { response ->
+            if (!response.status.isSuccess()) {
+                Log.w(TAG, "GET /api/v1/screen/stream -> ${response.status.value}")
+                throw IduPiHttpException(response.status.value, url, describeHttpFailure(response.status.value))
+            }
+            val channel = response.bodyAsChannel()
+            val codec = ScreenFrameCodec()
+            val buf = ByteArray(64 * 1024)
+            while (!channel.isClosedForRead) {
+                val n = channel.readAvailable(buf, 0, buf.size)
+                if (n == -1) break
+                if (n <= 0) continue
+                for (message in codec.feed(buf.copyOfRange(0, n))) {
+                    if (message is ScreenWireMessage.Frame) emit(message)
+                    // Control messages (quality_changed, ...): hito 9.
+                }
+            }
+        }
+    }
+
+    /** Called only AFTER the frame is rendered; the server paces captures on it. */
+    override suspend fun acknowledgeScreenFrame(sid: String, frameId: Int, bytes: Int, renderMs: Long) {
+        send(HttpMethod.Post, "/api/v1/screen/ack") {
+            contentType(ContentType.Application.Json)
+            setBody(ScreenAckPayload(sid = sid, frameId = frameId, bytes = bytes, renderMs = renderMs))
+        }
+    }
+
     override fun connectChat(): Flow<ChatEvent> = merge(chatEventFlow.asSharedFlow(), sseChatFlow())
 
     private fun sseChatFlow(): Flow<ChatEvent> = flow {
