@@ -61,6 +61,7 @@ func captureJPEG(m Monitor, targetW, targetH, quality int) ([]byte, error) {
 		srcCopy); r == 0 {
 		return nil, fmt.Errorf("StretchBlt failed: %v", err)
 	}
+	drawCursor(memDC, m, int(tw), int(th)) // composite the pointer Windows never blits
 
 	src := unsafe.Slice((*byte)(bits), uintptr(tw)*uintptr(th)*4)
 	img := image.NewRGBA(image.Rect(0, 0, int(tw), int(th)))

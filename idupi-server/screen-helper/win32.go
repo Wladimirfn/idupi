@@ -26,6 +26,10 @@ var (
 	procDeleteObject       = gdi32.NewProc("DeleteObject")
 	procDeleteDC           = gdi32.NewProc("DeleteDC")
 
+	procGetCursorInfo = user32.NewProc("GetCursorInfo")
+	procGetIconInfo   = user32.NewProc("GetIconInfo")
+	procDrawIconEx    = user32.NewProc("DrawIconEx")
+
 	procGetDC            = user32.NewProc("GetDC")
 	procReleaseDC        = user32.NewProc("ReleaseDC")
 	procGetDpiForMonitor = shcore.NewProc("GetDpiForMonitor")
@@ -35,7 +39,29 @@ const (
 	srcCopy      = 0x00CC0020
 	halftoneMode = 4 // smooth scaling; COLORONCOLOR (3) drops pixels instead
 	dpiEffective = 0 // MDT_EFFECTIVE_DPI for GetDpiForMonitor
+
+	cursorShowing = 0x00000001 // CURSORINFO.flags: the pointer is visible
+	diNormal      = 0x0003     // DrawIconEx: image and mask, the usual draw
 )
+
+// CURSORINFO / ICONINFO, laid out to match the Win32 headers exactly --
+// the padding after YHotspot is what aligns the handles on 64-bit.
+type cursorInfo struct {
+	CbSize      uint32
+	Flags       uint32
+	HCursor     uintptr
+	PtScreenPos point
+}
+
+type iconInfo struct {
+	FIcon    int32
+	XHotspot uint32
+	YHotspot uint32
+	HbmMask  uintptr
+	HbmColor uintptr
+}
+
+type point struct{ X, Y int32 }
 
 type rect struct{ Left, Top, Right, Bottom int32 }
 
