@@ -853,7 +853,11 @@ const VERBATIM_OPENCODE_SHIM_CONTENT =
     "CALL :find_dp0\r\n" +
     '"%dp0%\\node_modules\\opencode-ai\\bin\\opencode.exe"   %*\r\n';
 
-test("resolveOpenCodeExePath parses the verbatim captured shim content and resolves the real exe path", () => {
+test("resolveOpenCodeExePath parses the verbatim captured shim content and resolves the real exe path",
+    // The .cmd shim is a WINDOWS artifact: its backslash path segments only
+    // round-trip through join() on win32, so the assertion is meaningless
+    // (and false-failing) on posix runners.
+    { skip: process.platform !== "win32" }, () => {
     _resetOpenCodeExePathCacheForTests();
     const shimPath = "C:\\Users\\fakeuser\\AppData\\Roaming\\npm\\opencode.cmd";
     const expected = join(

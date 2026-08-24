@@ -27,7 +27,7 @@ process.env.IDUPI_NO_LISTEN = "1";
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdtempSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import os from "node:os";
 
@@ -242,7 +242,13 @@ test("route-row metadata: Claude/Pi messageCount is null (never fabricated); Ope
 // ---------------------------------------------------------------------------
 // Gap 5: OpenCode/SSE concurrency — a delayed OpenCode query must not stall SSE
 // ---------------------------------------------------------------------------
-test("delayed OpenCode sessions query does not stall an active SSE event flow", async () => {
+// This is the ONE deliberately environment-bound proof in the suite: it drives
+// the REAL OpenCode CLI against the REAL projects DB. On a fresh clone (CI,
+// new contributor) neither exists -- skip with the reason instead of crashing.
+const OPENCODE_PREREQS_PRESENT = existsSync(join(process.cwd(), "idupi-server", "projects.json"));
+test("delayed OpenCode sessions query does not stall an active SSE event flow",
+    { skip: !OPENCODE_PREREQS_PRESENT && "requires a local OpenCode install and projects DB" },
+    async () => {
     const writes = [];
     const reqHandlers = {};
     const res = {

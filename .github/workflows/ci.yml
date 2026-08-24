@@ -24,6 +24,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # The screen routes compile the capture helper on first use; without a
+      # toolchain they answer 503 and the integration tests rightly fail.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
       - name: Run each server test file
         run: |
           fail=0
