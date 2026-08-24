@@ -24,7 +24,9 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -55,6 +57,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import com.example.idupi.domain.model.PadMode
 import com.example.idupi.domain.model.KeyPress
@@ -335,17 +339,18 @@ fun RemoteScreen(
             }
 
             // Realtime typing (hito 7): every keystroke travels AS IT IS
-            // PRESSED, never on IME commit. The field is a visible buffer:
-            // each change is diffed into presses (backspace works because
-            // the text shrinks), special keys are intercepted BEFORE the IME.
+            // PRESSED, never on IME commit. The field is a ONE-CHARACTER
+            // conduit over a space sentinel: diffs against the shadow send
+            // the keys, then the value resets -- so nothing the user typed
+            // ever stays behind, and soft-keyboard BACKSPACE still works
+            // because removing the sentinel IS a deletion to the diff.
             if (state.remoteInputEnabled) {
-                val keyBuffer = remember { mutableStateOf("") }
+                val keyField = remember { mutableStateOf(TextFieldValue(" ", TextRange(1))) }
                 OutlinedTextField(
-                    value = keyBuffer.value,
-                    onValueChange = { newText ->
-                        keyboardDiffs(keyBuffer.value, newText).forEach { viewModel.sendKey(it) }
-                        // Keys were already sent; only the display is trimmed.
-                        keyBuffer.value = if (newText.length > 60) "" else newText
+                    value = keyField.value,
+                    onValueChange = { new ->
+                        keyboardDiffs(keyField.value.text, new.text).forEach { viewModel.sendKey(it) }
+                        keyField.value = TextFieldValue(" ", TextRange(1))
                     },
                     modifier = Modifier
                         .fillMaxWidth()
@@ -369,8 +374,10 @@ fun RemoteScreen(
                                 false
                             }
                         },
-                    label = { Text("Escribí acá — cada tecla viaja al toque") },
-                    textStyle = MaterialTheme.typography.bodySmall,
+                    label = { Text("Escribí acá — viaja al toque y no queda nada") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                    textStyle = MaterialTheme.typography.bodyMedium,
                 )
             }
 
@@ -387,6 +394,11 @@ fun RemoteScreen(
                         // Atomic coordless click: press AND release inside one
                         // helper command -- never two wire events apart.
                         viewModel.sendInput(ScreenInputEvent(type = "click", monitor = padMonitor))
+                    },
+                    onRightClick = {
+                        viewModel.sendInput(
+                            ScreenInputEvent(type = "click", monitor = padMonitor, button = "right")
+                        )
                     },
                     onScroll = { notches ->
                         viewModel.sendInput(
@@ -416,116 +428,146 @@ private fun monitorLabel(monitor: ScreenMonitor): String =
     "${monitor.name} (${monitor.width}x${monitor.height})" + if (monitor.primary) " ★" else ""
 
 /**
- * The floating trackpad surface. Gesture contract (owner decision):
- * one finger drag = relative cursor movement, tap = click at the current
- * cursor position, two fingers = wheel scroll, two-finger pinch = LOCAL
- * zoom of the streamed image. Mode arbitration maths lives in the domain
- * model (ScreenPad.kt) so it is testable without a screen.
+ * The floating trackpad surface, styled as one contained card: gesture pad on
+ * top (1 finger moves, tap clicks at the current cursor position, two fingers
+ * scroll, pinch zooms the LOCAL image), explicit click buttons below -- a tap
+ * is easy to miss; a labelled button never is. Mode arbitration maths lives
+ * in the domain model (ScreenPad.kt) so it is testable without a screen.
  */
 @Composable
 private fun Trackpad(
     enabled: Boolean,
     onRelativeMove: (Double, Double) -> Unit,
     onClick: () -> Unit,
+    onRightClick: () -> Unit,
     onScroll: (Int) -> Unit,
     onZoom: (Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(190.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
-            .pointerInput(enabled) {
-                if (!enabled) return@pointerInput
-                val padW = size.width.toFloat()
-                val tapSlopPx = viewConfiguration.touchSlop * 2f
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    var lastX = down.position.x
-                    var lastY = down.position.y
-                    var maxTravelFromDown = 0f
-                    var sawSecondFinger = false
-                    var mode = PadMode.MOVE
-                    var startDist = 0f
-                    var lastDist = 0f
-                    var lastCentroidY = 0f
-                    var scrollAccumPx = 0f
-                    var emittedNotches = 0
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val pressed = event.changes.filter { it.pressed }
-                        if (pressed.isEmpty()) break
+    OutlinedCard(modifier = modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(150.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f))
+                    .pointerInput(enabled) {
+                        if (!enabled) return@pointerInput
+                        val padW = size.width.toFloat()
+                        val tapSlopPx = viewConfiguration.touchSlop * 2f
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            var lastX = down.position.x
+                            var lastY = down.position.y
+                            var maxTravelFromDown = 0f
+                            var sawSecondFinger = false
+                            var mode = PadMode.MOVE
+                            var startDist = 0f
+                            var lastDist = 0f
+                            var lastCentroidY = 0f
+                            var scrollAccumPx = 0f
+                            var emittedNotches = 0
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val pressed = event.changes.filter { it.pressed }
+                                if (pressed.isEmpty()) break
 
-                        if (!sawSecondFinger && pressed.size >= 2) {
-                            sawSecondFinger = true
-                            val a = pressed[0].position
-                            val b = pressed[1].position
-                            startDist = hypot(a.x - b.x, a.y - b.y)
-                            lastDist = startDist
-                            lastCentroidY = (a.y + b.y) / 2f
-                            scrollAccumPx = 0f
-                            emittedNotches = 0
-                        }
-
-                        if (sawSecondFinger && pressed.size >= 2) {
-                            val a = pressed[0].position
-                            val b = pressed[1].position
-                            val dist = hypot(a.x - b.x, a.y - b.y)
-                            val centroidY = (a.y + b.y) / 2f
-                            // Fingers travelling UP scroll UP (Windows wheel:
-                            // positive delta scrolls away from the user).
-                            scrollAccumPx += lastCentroidY - centroidY
-                            lastCentroidY = centroidY
-                            mode = padTwoFingerMode(
-                                current = mode,
-                                distanceRatio = if (startDist > 0f) dist / startDist else 1f,
-                                travelledPx = scrollAccumPx,
-                            )
-                            when (mode) {
-                                PadMode.PINCH -> {
-                                    if (lastDist > 0f) onZoom(dist / lastDist)
-                                    lastDist = dist
+                                if (!sawSecondFinger && pressed.size >= 2) {
+                                    sawSecondFinger = true
+                                    val a = pressed[0].position
+                                    val b = pressed[1].position
+                                    startDist = hypot(a.x - b.x, a.y - b.y)
+                                    lastDist = startDist
+                                    lastCentroidY = (a.y + b.y) / 2f
+                                    scrollAccumPx = 0f
+                                    emittedNotches = 0
                                 }
-                                PadMode.SCROLL -> {
-                                    val notches = padScrollNotches(scrollAccumPx)
-                                    if (notches != emittedNotches) {
-                                        onScroll(notches - emittedNotches)
-                                        emittedNotches = notches
+
+                                if (sawSecondFinger && pressed.size >= 2) {
+                                    val a = pressed[0].position
+                                    val b = pressed[1].position
+                                    val dist = hypot(a.x - b.x, a.y - b.y)
+                                    val centroidY = (a.y + b.y) / 2f
+                                    // Fingers travelling UP scroll UP (Windows wheel:
+                                    // positive delta scrolls away from the user).
+                                    scrollAccumPx += lastCentroidY - centroidY
+                                    lastCentroidY = centroidY
+                                    mode = padTwoFingerMode(
+                                        current = mode,
+                                        distanceRatio = if (startDist > 0f) dist / startDist else 1f,
+                                        travelledPx = scrollAccumPx,
+                                    )
+                                    when (mode) {
+                                        PadMode.PINCH -> {
+                                            if (lastDist > 0f) onZoom(dist / lastDist)
+                                            lastDist = dist
+                                        }
+                                        PadMode.SCROLL -> {
+                                            val notches = padScrollNotches(scrollAccumPx)
+                                            if (notches != emittedNotches) {
+                                                onScroll(notches - emittedNotches)
+                                                emittedNotches = notches
+                                            }
+                                        }
+                                        PadMode.MOVE -> Unit
                                     }
+                                } else if (!sawSecondFinger) {
+                                    val change = pressed[0]
+                                    val pos = change.position
+                                    val (dx, dy) = padCursorDelta(pos.x - lastX, pos.y - lastY, padW)
+                                    lastX = pos.x
+                                    lastY = pos.y
+                                    maxTravelFromDown = maxOf(
+                                        maxTravelFromDown,
+                                        hypot(pos.x - down.position.x, pos.y - down.position.y),
+                                    )
+                                    onRelativeMove(dx, dy)
                                 }
-                                PadMode.MOVE -> Unit
-                            }
-                        } else if (!sawSecondFinger) {
-                            val change = pressed[0]
-                            val pos = change.position
-                            val (dx, dy) = padCursorDelta(pos.x - lastX, pos.y - lastY, padW)
-                            lastX = pos.x
-                            lastY = pos.y
-                            maxTravelFromDown = maxOf(
-                                maxTravelFromDown,
-                                hypot(pos.x - down.position.x, pos.y - down.position.y),
-                            )
-                            onRelativeMove(dx, dy)
-                        }
 
-                        event.changes.forEach { it.consume() }
+                                event.changes.forEach { it.consume() }
+                            }
+                            // A quick single-finger touch with no travel is a click at
+                            // wherever the cursor already sits -- never a move first,
+                            // or precise aiming would be undone by the click itself.
+                            if (!sawSecondFinger && maxTravelFromDown <= tapSlopPx) onClick()
+                        }
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = if (enabled) "Deslizá para mover el cursor"
+                        else "Input apagado en el server",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = if (enabled) MaterialTheme.colorScheme.onSurface
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (enabled) {
+                        Text(
+                            text = "tap = clic · 2 dedos = scroll · pellizco = zoom",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
-                    // A quick single-finger touch with no travel is a click at
-                    // wherever the cursor already sits -- never a move first,
-                    // or precise aiming would be undone by the click itself.
-                    if (!sawSecondFinger && maxTravelFromDown <= tapSlopPx) onClick()
                 }
-            },
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = if (enabled) "Trackpad · 1 dedo mueve · tap clickea · 2 dedos scrollean · pellizco zoom"
-            else "Input apagado en el server",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilledTonalButton(
+                    onClick = onClick,
+                    enabled = enabled,
+                    modifier = Modifier.weight(1f),
+                ) { Text("Clic") }
+                FilledTonalButton(
+                    onClick = onRightClick,
+                    enabled = enabled,
+                    modifier = Modifier.weight(1f),
+                ) { Text("Clic derecho") }
+            }
+        }
     }
 }
 
