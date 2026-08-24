@@ -210,6 +210,10 @@ const holdLimit = 30 * time.Second
 // heldButtons is the watchdog's state, fed by every mouse send below.
 var heldButtons holdTracker
 
+// frameCacheStore holds the previous capture per signature for dirty-tile
+// diffing (hito 8); one entry per monitor:size:quality, overwritten in place.
+var frameCacheStore frameCache
+
 type holdTracker struct {
 	mu        sync.Mutex
 	left      bool
