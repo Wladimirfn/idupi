@@ -44,6 +44,11 @@ type request struct {
 	Code         *int     `json:"code"` // keychar: UTF-16 unit | keyvk: Windows VK
 }
 
+type tileRef struct {
+	I   int `json:"i"`
+	Len int `json:"len"`
+}
+
 type frameMeta struct {
 	ID      int    `json:"id"`
 	W       int32  `json:"w"`
@@ -51,6 +56,12 @@ type frameMeta struct {
 	Bytes   int    `json:"bytes"`
 	Quality int    `json:"quality"`
 	Monitor string `json:"monitor"`
+	// Tile frames only (hito 8); keyframes OMIT these so the meta stays
+	// byte-compatible with what every existing client parses.
+	Type  string    `json:"type,omitempty"` // "tiles"; absent = legacy full JPEG
+	Tw    int       `json:"tw,omitempty"`
+	Th    int       `json:"th,omitempty"`
+	Tiles []tileRef `json:"tiles,omitempty"`
 }
 
 func main() {
@@ -135,21 +146,35 @@ func captureCommand(out *bufio.Writer, req *request) {
 		return
 	}
 
-	jpegBytes, err := captureJPEG(m, int(tw), int(th), quality)
+	img, err := captureRGBA(m, int(tw), int(th))
 	if err != nil {
 		writeError(out, req.ID, err)
 		return
 	}
 
-	meta, err := json.Marshal(frameMeta{
-		ID: deref(req.ID), W: tw, H: th,
-		Bytes: len(jpegBytes), Quality: quality, Monitor: m.Name,
-	})
+	// Dirty tiles (hito 8): diff against the PREVIOUS capture of this exact
+	// signature. Any change of monitor/size/quality misses the cache and
+	// comes out as a clean keyframe (brief §4.3).
+	cacheKey := fmt.Sprintf("%d:%d:%d:%d", idx, tw, th, quality)
+	prevPix := frameCacheStore.lookup(cacheKey)
+	if os.Getenv("IDUPI_DEBUG_TILES") == "1" {
+		dirtyDbg := DirtyTiles(img.Pix, prevPix, int(tw), int(th), 64)
+		fmt.Fprintf(os.Stderr, "[tiles] dirty=%d/%d prevKnown=%v\n", len(dirtyDbg), TileCount(int(tw), int(th), 64), prevPix != nil)
+	}
+	meta, payload, err := buildTileFrame(deref(req.ID), img, prevPix, 64, quality)
 	if err != nil {
 		writeError(out, req.ID, err)
 		return
 	}
-	out.Write(EncodeFrame(meta, jpegBytes))
+	meta.Monitor = m.Name
+	frameCacheStore.store(cacheKey, append([]byte(nil), img.Pix...))
+
+	metaJSON, err := json.Marshal(meta)
+	if err != nil {
+		writeError(out, req.ID, err)
+		return
+	}
+	out.Write(EncodeFrame(metaJSON, payload))
 	out.Flush()
 }
 

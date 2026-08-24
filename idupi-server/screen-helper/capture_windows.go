@@ -10,12 +10,27 @@ import (
 	"unsafe"
 )
 
-// captureJPEG captures the monitor rect scaled to the target size in a
-// single StretchBlt (HALFTONE, so downscaling averages instead of dropping
-// pixels) and encodes JPEG at the requested quality. Scaling at capture time
-// shrinks the BGRA read, the conversion and the encode together — never send
-// more pixels than the receiver displays.
+// captureJPEG captures the monitor rect scaled to the target size and
+// encodes it as ONE JPEG at the requested quality -- the legacy path, still
+// used anywhere a full frame is wanted without tile bookkeeping.
 func captureJPEG(m Monitor, targetW, targetH, quality int) ([]byte, error) {
+	img, err := captureRGBA(m, targetW, targetH)
+	if err != nil {
+		return nil, err
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
+		return nil, fmt.Errorf("jpeg encode failed: %v", err)
+	}
+	return buf.Bytes(), nil
+}
+
+// captureRGBA captures the monitor rect scaled to the target size in a
+// single StretchBlt (HALFTONE, so downscaling averages instead of dropping
+// pixels) and returns top-down RGBA pixels. Scaling at capture time shrinks
+// the BGRA read, the conversion and every later encode together — never
+// touch more pixels than the receiver displays.
+func captureRGBA(m Monitor, targetW, targetH int) (*image.RGBA, error) {
 	screenDC, _, _ := procGetDC.Call(0)
 	if screenDC == 0 {
 		return nil, fmt.Errorf("GetDC failed")
@@ -67,9 +82,5 @@ func captureJPEG(m Monitor, targetW, targetH, quality int) ([]byte, error) {
 	img := image.NewRGBA(image.Rect(0, 0, int(tw), int(th)))
 	copy(img.Pix, BGRAToRGBA(src))
 
-	var buf bytes.Buffer
-	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: quality}); err != nil {
-		return nil, fmt.Errorf("jpeg encode failed: %v", err)
-	}
-	return buf.Bytes(), nil
+	return img, nil
 }
