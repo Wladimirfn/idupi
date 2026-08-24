@@ -55,34 +55,19 @@ En casa, si los dos están en el mismo WiFi, podés usar la IP local (ej. `192.1
 - [ ] En *Pantalla Remota* elegís monitor → "Ver pantalla" y ves tu escritorio en vivo
 - [ ] El botón **Trackpad** mueve el cursor de tu PC
 
-## Cómo se desarrolla: Gentle AI + SDD
+## Motores de IA en tu PC
 
-Este repo se construye con **desarrollo dirigido por especificaciones** (Spec-Driven Development), orquestado por [Gentle AI](https://github.com/Gentleman-Programming/gentle-ai) dentro de OpenCode. Nada entra al código sin pasar por artefactos revisables.
+La app no trae IA propia: chatea con los **agentes de código CLI que ya tengas instalados en la PC**. Elegís el motor en la app y tu mensaje se ejecuta con ese agente sobre tus proyectos reales, viendo su actividad en vivo.
 
-**El flujo de cada cambio** (`openspec/changes/<nombre>/`):
+| Motor | Instalalo con |
+|-------|---------------|
+| Pi CLI (default) | `npm install -g @earendil-works/pi-coding-agent` |
+| OpenCode | `npm install -g opencode-ai` |
+| Claude Code | `npm install -g @anthropic-ai/claude-code` |
 
-```
-exploración → propuesta → spec → diseño → tareas → implementación → verificación → archivo
-```
+Ninguno es obligatorio para arrancar — instalá el que quieras usar. Cada uno mantiene sus propias sesiones y modelos; el server los detecta solos.
 
-| Fase | Qué produce |
-|------|-------------|
-| Propuesta | Qué se cambia y por qué |
-| Spec | Requisitos y escenarios, en lenguaje verificable |
-| Diseño | Decisiones técnicas antes del código |
-| Tareas | Pasos chicos, cada uno testeable |
-| Verificación | Prueba de que la implementación cumple la spec |
-
-Los cambios terminados quedan archivados en `openspec/changes/archive/` como historia auditable.
-
-**Reglas innegociables del repo**, aplicadas en cada hito:
-
-1. Tests **antes** del código, probados en ROJO.
-2. Lógica decidible sin pantalla va a `domain/model/` con test propio.
-3. Cero dependencias npm en `idupi-server`; Go stdlib only.
-4. Conventional commits, sin atribución a IA.
-
-Para contribuir con el mismo flujo necesitás OpenCode con gentle-ai instalado: los comandos `/sdd-new`, `/sdd-continue`, `/sdd-apply` y `/sdd-verify` manejan el ciclo completo.
+> Este repo se desarrolla a sí mismo con SDD (spec-driven development) orquestado por gentle-ai: cada cambio pasa por propuesta → spec → tareas → verificación antes de tocar código.
 
 ## Seguridad
 
