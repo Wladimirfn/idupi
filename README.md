@@ -69,6 +69,12 @@ Ninguno es obligatorio para arrancar — instalá el que quieras usar. Cada uno 
 
 > Este repo se desarrolla a sí mismo con SDD (spec-driven development) orquestado por gentle-ai: cada cambio pasa por propuesta → spec → tareas → verificación antes de tocar código.
 
+## Apoyá el proyecto
+
+IDUPI es libre y gratis para siempre. Si te sirve y querés colaborar con el mantenimiento, podés invitarme un café:
+
+**[paypal.me/wladimirfn](https://paypal.me/wladimirfn)** — cualquier suma suma 🙂
+
 ## Seguridad
 
 - El token es la única barrera de entrada: no lo compartas, no pegues capturas donde se lea.
