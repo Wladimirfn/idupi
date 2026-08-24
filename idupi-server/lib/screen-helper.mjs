@@ -62,8 +62,6 @@ export class ScreenHelper {
     this.nextId = 1;
     // id -> { resolve, reject, timer, wantFrame }
     this.pending = new Map();
-    const decode = createFrameDecoder();
-    this.decode = decode;
   }
 
   ensureStarted() {
@@ -75,6 +73,21 @@ export class ScreenHelper {
       windowsHide: true,
     });
     this.child = child;
+
+    // A FRESH decoder per spawn: bytes buffered for a dead child's stream
+    // are poison -- parsing a new session as their continuation produced
+    // "frame length out of range" garbage after every respawn.
+    const decode = createFrameDecoder();
+    this.decode = decode;
+
+    // A write into a pipe whose reader already died surfaces ASYNC as an
+    // 'error' event on the socket; without listeners Node tears down the
+    // WHOLE SERVER (production: write EPIPE mid-session while the user was
+    // streaming). Pending requests get rejected by the close handler below
+    // -- these only keep the process alive long enough to do that.
+    child.stdin.on("error", () => {});
+    child.stdout.on("error", () => {});
+    child.stderr.on("error", () => {});
 
     child.stdout.on("data", (chunk) => {
       for (const message of this.decode(chunk)) this.onMessage(message);

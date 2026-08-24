@@ -39,5 +39,13 @@ function handle(req) {
     case "hang":
       // Never respond: exercises the timeout path.
       return;
+    case "halfframe":
+      // Write HALF a framed message and go silent: whatever bytes a frame
+      // decoder carries across a respawn are poisoning, not state.
+      {
+        const wire = encodeFrame({ id: req.id, w: 8, h: 8 }, Buffer.from([0xff, 0xd8, 1]));
+        process.stdout.write(wire.subarray(0, Math.ceil(wire.length / 2)));
+      }
+      return;
   }
 }

@@ -95,6 +95,74 @@ test("stop() refuses further work while shutting down", async () => {
   await stopping;
 });
 
+test(
+  "a request racing a killed child settles instead of crashing the server",
+  async () => {
+    const helper = makeHelper();
+    try {
+      await Promise.race([helper.list(), failAfter(SPAWN_WAIT_MS, "warmup")]);
+
+      // The production crash: a write into a pipe whose reader had already
+      // died surfaced as an UNHANDLED 'error' event (EPIPE) that tore down
+      // the whole Node server mid-session. The request must merely reject.
+      helper.child.kill();
+      const outcome = await Promise.race([
+        helper.request({ cmd: "list" }).then(
+          () => null,
+          (err) => err,
+        ),
+        failAfter(SPAWN_WAIT_MS, "racing request"),
+      ]);
+      assert.ok(
+        outcome === null || outcome instanceof Error,
+        "racing request must settle, never throw unhandled",
+      );
+
+      // And the supervisor keeps serving afterwards.
+      const monitors = await Promise.race([
+        helper.list(),
+        failAfter(SPAWN_WAIT_MS, "post-crash respawn"),
+      ]);
+      assert.equal(monitors[0].name, "FAKE");
+    } finally {
+      await helper.stop();
+    }
+  },
+  SPAWN_WAIT_MS * 3,
+);
+
+test(
+  "a respawned helper starts with a clean frame decoder",
+  async () => {
+    const helper = makeHelper({ requestTimeoutMs: 400 });
+    try {
+      await Promise.race([helper.list(), failAfter(SPAWN_WAIT_MS, "warmup")]);
+
+      // Half a frame poisons any DECODER THAT SURVIVES THE CHILD: the next
+      // spawn's bytes would be parsed as a continuation of a dead stream.
+      await assert.rejects(
+        Promise.race([
+          helper.request({ cmd: "halfframe" }),
+          failAfter(SPAWN_WAIT_MS, "halfframe"),
+        ]),
+        /timeout/i,
+      );
+      const doomed = helper.child;
+      doomed.kill();
+      await new Promise((resolve) => doomed.once("close", resolve));
+
+      const frame = await Promise.race([
+        helper.capture({ monitor: 0, width: 800, height: 450 }),
+        failAfter(SPAWN_WAIT_MS, "capture after respawn"),
+      ]);
+      assert.equal(frame.meta.w, 8);
+    } finally {
+      await helper.stop();
+    }
+  },
+  SPAWN_WAIT_MS * 3,
+);
+
 function failAfter(ms, label) {
   return new Promise((_, reject) =>
     setTimeout(
