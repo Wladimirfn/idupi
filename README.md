@@ -75,6 +75,10 @@ IDUPI es libre y gratis para siempre. Si te sirve y querés colaborar con el man
 
 **[paypal.me/wladimirfn](https://paypal.me/wladimirfn)** — cualquier suma suma 🙂
 
+## Licencia
+
+[MIT](LICENSE) — libre para usar, modificar y distribuir, siempre. Si el proyecto te sirve, [un café se agradece](https://paypal.me/wladimirfn).
+
 ## Seguridad
 
 - El token es la única barrera de entrada: no lo compartas, no pegues capturas donde se lea.
