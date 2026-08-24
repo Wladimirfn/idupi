@@ -51,7 +51,7 @@ It is scratch code, not production code — read it for the Win32 call
 signatures and struct layouts, then write the real thing:
 
 ```
-%TEMP%/claude/C--Users-elmas-AndroidStudioProjects-IDUPI/<session>/scratchpad/spike/main.go
+%TEMP%/claude/<project-sandbox>/<session>/scratchpad/spike/main.go
 ```
 
 If it is gone, the call sequence is: `GetDC(0)` →
