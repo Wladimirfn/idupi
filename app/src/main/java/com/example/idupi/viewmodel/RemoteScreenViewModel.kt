@@ -1,6 +1,8 @@
 package com.example.idupi.viewmodel
 
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.idupi.data.IduPiClientProvider
@@ -11,6 +13,9 @@ import com.example.idupi.domain.model.KeyPress
 import com.example.idupi.domain.model.ScreenInputEvent
 import com.example.idupi.domain.model.ScreenStreamRequest
 import com.example.idupi.domain.model.ScreenWireMessage
+import com.example.idupi.domain.model.isTileFrame
+import com.example.idupi.domain.model.tileRect
+import com.example.idupi.domain.model.tileSlices
 import com.example.idupi.domain.repository.IduPiClientSource
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -48,6 +53,10 @@ data class RemoteScreenUiState(
 class RemoteScreenViewModel(
     private val clientSource: IduPiClientSource = IduPiClientProvider,
     private val decodeJpeg: (ByteArray) -> ImageBitmap? = ::decodeJpegToBitmap,
+    /** Draws decoded tiles onto the cached frame; injectable for tests. */
+    private val compositeTiles:
+        (base: ImageBitmap, tiles: List<Triple<ImageBitmap, Int, Int>>) -> ImageBitmap =
+        ::drawTilesOn,
     private val clockMs: () -> Long = System::currentTimeMillis
 ) : ViewModel() {
 
@@ -58,6 +67,9 @@ class RemoteScreenViewModel(
 
     private var streamJob: Job? = null
     private var sid: String? = null
+
+    /** Last fully-known picture: keyframes replace it, tiles patch it. */
+    private var frameCache: ImageBitmap? = null
 
     /** Arrival times of the frames actually shown, pruned to the rate window. */
     private var arrivals: List<Long> = emptyList()
@@ -133,10 +145,45 @@ class RemoteScreenViewModel(
      * Decode, expose to the UI, THEN ack with real telemetry. The ordering is
      * the whole point: an unrendered-but-acked frame lets the server capture
      * ahead of what the user actually sees.
+     *
+     * Tile frames (hito 8) patch the CACHED picture instead of replacing it:
+     * each declared tile is decoded separately and drawn at its rectangle.
+     * A frame we cannot render is still acknowledged -- withholding it stalls
+     * the receiver-paced session, while showing one stale frame costs a beat
+     * nobody perceives.
      */
     private suspend fun renderAndAcknowledge(sid: String, frame: ScreenWireMessage.Frame) {
         val startedAt = System.nanoTime()
-        val bitmap = decodeJpeg(frame.jpeg)
+        val bitmap: ImageBitmap?
+        if (isTileFrame(frame.meta)) {
+            val base = frameCache
+            bitmap = when {
+                // Unchanged screen: an empty tile set keeps the pacing loop
+                // alive at near-zero wire cost and changes nothing visually.
+                frame.meta.tiles.isEmpty() -> base
+                // No cached keyframe to patch (shouldn't happen -- servers
+                // lead with a keyframe) -- show nothing new rather than a
+                // half-patched picture.
+                base == null -> null
+                else -> try {
+                    val tiles = tileSlices(frame.jpeg, frame.meta.tiles)
+                        .mapNotNull { (ref, chunk) ->
+                            decodeJpeg(chunk)?.let { decoded ->
+                                val rect = tileRect(ref.i, frame.meta.w, frame.meta.h, frame.meta.tw)
+                                Triple(decoded, rect.left, rect.top)
+                            }
+                        }
+                    compositeTiles(base, tiles).also { frameCache = it }
+                } catch (_: IllegalStateException) {
+                    // Malformed tile map: keep the previous picture; the next
+                    // keyframe (monitor switch, quality change) heals us.
+                    null
+                }
+            }
+        } else {
+            bitmap = decodeJpeg(frame.jpeg)
+            if (bitmap != null) frameCache = bitmap
+        }
         val renderMs = (System.nanoTime() - startedAt) / 1_000_000
 
         if (bitmap != null) {
@@ -236,6 +283,8 @@ class RemoteScreenViewModel(
         streamJob?.cancel()
         streamJob = null
         sid = null
+        // Tiles of a dead stream must never patch the next stream's picture.
+        frameCache = null
         // A stopped stream has no rate. Keeping the last one would leave a
         // frozen picture claiming to be live.
         arrivals = emptyList()
@@ -260,3 +309,20 @@ class RemoteScreenViewModel(
 
 private fun viewportFor(monitor: ScreenMonitor?, boxW: Int, boxH: Int): Pair<Int, Int> =
     com.example.idupi.domain.model.viewportFor(monitor, boxW, boxH)
+
+/**
+ * Real tile compositing: copies the cached frame once per tiles-frame and
+ * draws each decoded tile at its destination rectangle. The copy keeps the
+ * UI's currently-drawn bitmap untouched while we patch.
+ */
+private fun drawTilesOn(
+    base: ImageBitmap,
+    tiles: List<Triple<ImageBitmap, Int, Int>>,
+): ImageBitmap {
+    val out = base.asAndroidBitmap().copy(android.graphics.Bitmap.Config.ARGB_8888, true)
+    val canvas = android.graphics.Canvas(out)
+    for ((tile, x, y) in tiles) {
+        canvas.drawBitmap(tile.asAndroidBitmap(), x.toFloat(), y.toFloat(), null)
+    }
+    return out.asImageBitmap()
+}

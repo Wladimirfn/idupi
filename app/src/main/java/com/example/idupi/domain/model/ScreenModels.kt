@@ -15,6 +15,13 @@ data class ScreenMonitor(
     val scaleFactor: Double = 1.0
 )
 
+/** One dirty tile inside a "tiles" frame: its index and JPEG byte length. */
+@Serializable
+data class ScreenTileRef(
+    val i: Int,
+    val len: Int,
+)
+
 /** Meta JSON that travels inside every framed screen message. */
 @Serializable
 data class ScreenFrameMeta(
@@ -23,7 +30,13 @@ data class ScreenFrameMeta(
     val h: Int,
     val bytes: Int = 0,
     val quality: Int = 55,
-    val monitor: String = ""
+    val monitor: String = "",
+    // Dirty-tile frames only (hito 8); keyframes OMIT these so the meta stays
+    // compatible with what older clients parse.
+    val type: String? = null, // "tiles"; null = legacy full-frame JPEG
+    val tw: Int = 0,
+    val th: Int = 0,
+    val tiles: List<ScreenTileRef> = emptyList(),
 )
 
 /**

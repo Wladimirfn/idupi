@@ -5,9 +5,11 @@ import com.example.idupi.MainDispatcherRule
 import com.example.idupi.FakeClientSource
 import com.example.idupi.FakeIduPiClient
 import com.example.idupi.domain.model.KeyPress
+import com.example.idupi.domain.model.ScreenFrameMeta
 import com.example.idupi.domain.model.ScreenInputEvent
 import com.example.idupi.domain.model.ScreenMonitor
 import com.example.idupi.domain.model.ScreenRemoteConfig
+import com.example.idupi.domain.model.ScreenTileRef
 import com.example.idupi.domain.model.ScreenWireMessage
 import com.example.idupi.domain.model.SpecialKey
 import com.example.idupi.domain.model.keyboardDiffs
@@ -260,5 +262,81 @@ class RemoteScreenViewModelTest {
         // Control keys ride virtual keys, not unicode.
         assertEquals("keyvk", fake.screenInputs[2].type)
         assertEquals(SpecialKey.ENTER.vk, fake.screenInputs[2].code)
+    }
+
+    // --- dirty tiles (hito 8): compositing on the cached frame ---
+
+    private fun keyframe(id: Int) = ScreenWireMessage.Frame(
+        meta = ScreenFrameMeta(id = id, w = 800, h = 450),
+        jpeg = byteArrayOf(0x11)
+    )
+
+    @Test
+    fun `a tile frame is decoded and composited onto the cached keyframe`() = runTest {
+        val fake = FakeIduPiClient()
+        fake.screenFramesToEmit = listOf(
+            keyframe(1),
+            ScreenWireMessage.Frame(
+                meta = ScreenFrameMeta(
+                    id = 2, w = 800, h = 450, type = "tiles", tw = 64, th = 64,
+                    tiles = listOf(ScreenTileRef(i = 5, len = 3)),
+                ),
+                jpeg = byteArrayOf(0x22, 0x22, 0x22),
+            ),
+        )
+        val decoded = mutableListOf<ByteArray>()
+        val compositions = mutableListOf<Pair<ImageBitmap, List<Triple<ImageBitmap, Int, Int>>>>()
+        val composed = stubBitmap
+        val viewModel = RemoteScreenViewModel(
+            clientSource = FakeClientSource(fake),
+            decodeJpeg = { bytes -> decoded.add(bytes); stubBitmap },
+            compositeTiles = { base, tiles -> compositions.add(base to tiles); composed },
+        )
+        viewModel.refreshMonitors()
+        advanceUntilIdle()
+        viewModel.startStreaming(viewportW = 800, viewportH = 450)
+        advanceUntilIdle()
+
+        // Keyframe decoded whole; the tile chunk decoded separately.
+        assertEquals(2, decoded.size)
+        assertTrue(decoded[1].contentEquals(byteArrayOf(0x22, 0x22, 0x22)))
+        // Compositing received the cached keyframe as base and the tile at
+        // tile 5's rectangle: cols=ceil(800/64)=13, so index 5 sits at
+        // col 5, row 0 -> x=320, y=0.
+        assertEquals(1, compositions.size)
+        val (base, tiles) = compositions.single()
+        assertEquals(stubBitmap, base)
+        assertEquals(Triple(stubBitmap, 320, 0), tiles.single())
+        assertEquals(composed, viewModel.uiState.value.currentFrame)
+        // Both frames were acknowledged: the pacing loop keeps turning.
+        assertEquals(listOf(1, 2), fake.screenAcks.map { it.frameId })
+    }
+
+    @Test
+    fun `an empty tile set keeps the picture alive without touching it`() = runTest {
+        val fake = FakeIduPiClient()
+        fake.screenFramesToEmit = listOf(
+            keyframe(1),
+            ScreenWireMessage.Frame(
+                meta = ScreenFrameMeta(id = 2, w = 800, h = 450, type = "tiles", tw = 64, th = 64),
+                jpeg = ByteArray(0),
+            ),
+        )
+        var decodes = 0
+        val viewModel = RemoteScreenViewModel(
+            clientSource = FakeClientSource(fake),
+            decodeJpeg = { decodes++; stubBitmap },
+        )
+        viewModel.refreshMonitors()
+        advanceUntilIdle()
+        viewModel.startStreaming(viewportW = 800, viewportH = 450)
+        advanceUntilIdle()
+
+        // Only the keyframe was ever decoded; nothing changed on screen.
+        assertEquals(1, decodes)
+        assertEquals(stubBitmap, viewModel.uiState.value.currentFrame)
+        // But the ack still flowed: this is what keeps a static desktop's
+        // pacing loop from stalling.
+        assertEquals(listOf(1, 2), fake.screenAcks.map { it.frameId })
     }
 }
