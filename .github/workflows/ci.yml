@@ -12,7 +12,10 @@ on:
 
 jobs:
   server-tests:
-    runs-on: ubuntu-latest
+    # The product targets Windows PCs: the capture/input helper is built from
+    # //go:build windows sources and cannot compile anywhere else, so testing
+    # the real routes on ubuntu would only prove 503s.
+    runs-on: windows-latest
     # The whole loop runs in ~3 minutes locally; if a test deadlocks on the
     # runner this stops the job from hanging for hours and names the file.
     timeout-minutes: 20
