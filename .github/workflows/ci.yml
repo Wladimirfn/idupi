@@ -33,6 +33,9 @@ jobs:
         with:
           go-version: stable
       - name: Run each server test file
+        # Windows runners default to pwsh; this loop is bash -- and Git Bash
+        # brings the coreutils `timeout` with it.
+        shell: bash
         run: |
           fail=0
           for f in idupi-server/test/*.test.mjs; do
