@@ -21,10 +21,15 @@ function startServer(port) {
     [join(repoRoot, "idupi-server", "index.mjs")],
     {
       env: { ...process.env, PORT: String(port) },
-      stdio: "ignore",
+      stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
     },
   );
+  // A startup failure must carry the child's own words, not just silence.
+  let output = "";
+  child.stdout.on("data", (c) => { output += c; });
+  child.stderr.on("data", (c) => { output += c; });
+  child.__output = () => output.slice(-2_000);
   return child;
 }
 
@@ -32,8 +37,11 @@ function killTree(pid) {
   if (process.platform === "win32") {
     execFile("taskkill", ["/F", "/T", "/PID", String(pid)], () => {});
   } else {
+    // The child is a direct node process (no detached group), so -pid would
+    // fail with ESRCH and the swallowed error left ORPHAN SERVERS piling up
+    // across a CI run until ports and memory gave out.
     try {
-      process.kill(-pid, "SIGKILL");
+      process.kill(pid, "SIGKILL");
     } catch {
       /* already gone */
     }
@@ -59,7 +67,7 @@ test("screen routes reject requests without a bearer token", async () => {
   const port = 18_000 + Math.floor(Math.random() * 2_000);
   const child = startServer(port);
   try {
-    await waitForServer(port);
+    await waitForServer(port, 20_000, child.__output);
     const cases = [
       ["GET", `/api/v1/screen/monitors`],
       ["GET", `/api/v1/screen/stream?sid=t&viewportW=800&viewportH=450`],
@@ -79,7 +87,7 @@ test("screen routes still answer with a valid token", async () => {
   const port = 19_000 + Math.floor(Math.random() * 2_000);
   const child = startServer(port);
   try {
-    await waitForServer(port);
+    await waitForServer(port, 20_000, child.__output);
     // /monitors exercises the full path: auth -> helper build -> list.
     const res = await fetch(`http://127.0.0.1:${port}/api/v1/screen/monitors`, {
       headers: { Authorization: `Bearer ${TOKEN}` },
