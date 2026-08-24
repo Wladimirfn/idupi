@@ -16,7 +16,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Card
@@ -29,6 +31,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -57,8 +60,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import com.example.idupi.domain.model.PadMode
 import com.example.idupi.domain.model.KeyPress
@@ -135,6 +136,7 @@ fun RemoteScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .verticalScroll(rememberScrollState())
                 .padding(padding)
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -281,6 +283,8 @@ fun RemoteScreen(
                 viewModel.updateViewport(boxWpx, boxHpx)
             }
 
+            // Two separate rows: controls on their own line, metrics below as
+            // quiet pills -- cramming them into one row made them collide.
             Row(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -305,18 +309,34 @@ fun RemoteScreen(
                     onClick = { qualityAuto = !qualityAuto },
                     label = { Text("Auto") }
                 )
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
                 Text(
                     text = statusLine(state.lastRenderMs, state.lastFrameBytes, state.fps),
-                    style = MaterialTheme.typography.bodySmall
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Text(
-                    text = buildString {
-                        append(if (state.remoteInputEnabled) "· input activo" else "· input apagado en el server")
-                        state.activeQuality?.let { append(" · calidad: $it") }
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = if (state.remoteInputEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = if (state.remoteInputEnabled)
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                ) {
+                    Text(
+                        text = buildString {
+                            append(if (state.remoteInputEnabled) "input activo" else "input apagado")
+                            state.activeQuality?.let { append(" · $it") }
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (state.remoteInputEnabled) MaterialTheme.colorScheme.onPrimaryContainer
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                    )
+                }
             }
 
             // Pad toggle + local zoom reset: the pad docks BELOW the picture
@@ -339,18 +359,20 @@ fun RemoteScreen(
             }
 
             // Realtime typing (hito 7): every keystroke travels AS IT IS
-            // PRESSED, never on IME commit. The field is a ONE-CHARACTER
-            // conduit over a space sentinel: diffs against the shadow send
-            // the keys, then the value resets -- so nothing the user typed
-            // ever stays behind, and soft-keyboard BACKSPACE still works
-            // because removing the sentinel IS a deletion to the diff.
+            // PRESSED, never on IME commit. The buffer SHOWS what was typed --
+            // the user wants to see it -- and ENTER both sends and cleans:
+            // that is the natural end of a sentence. Past seven lines the
+            // field scrolls instead of growing forever.
             if (state.remoteInputEnabled) {
-                val keyField = remember { mutableStateOf(TextFieldValue(" ", TextRange(1))) }
+                var keyText by remember { mutableStateOf("") }
                 OutlinedTextField(
-                    value = keyField.value,
+                    value = keyText,
                     onValueChange = { new ->
-                        keyboardDiffs(keyField.value.text, new.text).forEach { viewModel.sendKey(it) }
-                        keyField.value = TextFieldValue(" ", TextRange(1))
+                        val presses = keyboardDiffs(keyText, new)
+                        presses.forEach { viewModel.sendKey(it) }
+                        keyText =
+                            if (presses.any { it == KeyPress.special(SpecialKey.ENTER) }) ""
+                            else new
                     },
                     modifier = Modifier
                         .fillMaxWidth()
@@ -369,13 +391,15 @@ fun RemoteScreen(
                             }
                             if (special != null) {
                                 viewModel.sendKey(KeyPress.special(special))
+                                if (special == SpecialKey.ENTER) keyText = ""
                                 true
                             } else {
                                 false
                             }
                         },
-                    label = { Text("Escribí acá — viaja al toque y no queda nada") },
-                    singleLine = true,
+                    label = { Text("Teclado") },
+                    minLines = 1,
+                    maxLines = 7,
                     shape = RoundedCornerShape(12.dp),
                     textStyle = MaterialTheme.typography.bodyMedium,
                 )
