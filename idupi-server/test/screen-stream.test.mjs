@@ -128,3 +128,70 @@ test("setQuality applies to subsequent captures without pushing a frame", async 
     await new Promise((r) => setTimeout(r, 20));
     assert.equal(helper.calls[helper.calls.length - 1].quality, 75);
 });
+
+// --- Auto quality ladder (hito 9, brief §4.4) ---
+
+test("auto starts at MEDIA: scaled capture dimensions and its jpeg quality", async () => {
+    const helper = fakeHelper();
+    const stream = createScreenStream({
+        helper,
+        monitor: 0,
+        width: 800,
+        height: 450,
+        quality: "auto",
+    });
+    await stream.start();
+    const call = helper.calls[0];
+    assert.equal(call.width, Math.round(800 * 0.7)); // 560
+    assert.equal(call.height, Math.round(450 * 0.7)); // 315
+    assert.equal(call.quality, 55);
+});
+
+test("one congested ack steps down fast and announces it as a control", async () => {
+    const helper = fakeHelper();
+    const stream = createScreenStream({
+        helper,
+        monitor: 0,
+        width: 800,
+        height: 450,
+        quality: "auto",
+    });
+    const frames = [];
+    const controls = [];
+    stream.onFrame((f) => frames.push(f));
+    stream.onControl((c) => controls.push(c));
+    await stream.start();
+
+    // The client rendered too slowly: one bad ack must fall to BAJA NOW.
+    await stream.onAck({ frameId: frames[0].meta.id, renderMs: 400 });
+    await new Promise((r) => setTimeout(r, 20));
+
+    const lastCall = helper.calls.at(-1);
+    assert.equal(lastCall.width, Math.round(800 * 0.4)); // 320
+    assert.equal(lastCall.height, Math.round(450 * 0.4)); // 180
+    assert.equal(lastCall.quality, 40);
+    const changed = controls.find((c) => c.type === "quality_changed");
+    assert.ok(changed, "a quality_changed control must be announced");
+    assert.equal(changed.name, "baja");
+});
+
+test("manual numeric quality keeps the legacy fixed behaviour", async () => {
+    const helper = fakeHelper();
+    const stream = createScreenStream({
+        helper,
+        monitor: 0,
+        width: 800,
+        height: 450,
+        quality: 75,
+    });
+    const controls = [];
+    stream.onControl((c) => controls.push(c));
+    await stream.start();
+    await stream.onAck({ frameId: 1, renderMs: 900 });
+    await new Promise((r) => setTimeout(r, 20));
+
+    assert.equal(helper.calls[0].width, 800); // unscaled
+    assert.equal(helper.calls[0].quality, 75);
+    // Manual mode never moves and never announces: the human owns it.
+    assert.equal(controls.length, 0);
+});

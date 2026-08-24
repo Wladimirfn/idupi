@@ -7,6 +7,8 @@
 
 import { EventEmitter } from "node:events";
 
+import { createLadderController } from "./screen-quality.mjs";
+
 export function createScreenStream({
   helper,
   monitor = 0,
@@ -19,16 +21,49 @@ export function createScreenStream({
   let capturing = false;
   let ackedFrameId = null;
   let lastFrameId = null;
-  let currentQuality = quality;
+
+  // Quality: a number is MANUAL (fixed, human-owned). "auto" hands the ladder
+  // controller the wheel -- it picks jpeg quality AND capture scale from the
+  // preset, and paces captures to the preset's max fps.
+  const auto = quality === "auto";
+  const baseWidth = width;
+  const baseHeight = height;
+  const ladder = auto
+    ? createLadderController()
+    : null;
+  let currentQuality = auto ? ladder.preset().jpegQuality : quality;
+  let capW = width;
+  let capH = height;
+  let minIntervalMs = 0;
+  let lastCaptureStartedAt = 0;
+
+  function applyPreset() {
+    const p = ladder.preset();
+    currentQuality = p.jpegQuality;
+    capW = Math.round(baseWidth * p.scale);
+    capH = Math.round(baseHeight * p.scale);
+    minIntervalMs = 1000 / p.maxFps;
+    events.emit("control", { type: "quality_changed", ...p });
+  }
+
+  if (auto) applyPreset();
 
   async function captureOnce() {
     if (stopped || capturing) return;
     capturing = true;
     try {
+      // Receiver-paced (brief §4.1), but never faster than the preset's fps:
+      // pacing waits BEFORE capturing so latency lands between frames, not on
+      // the wire.
+      const elapsed = Date.now() - lastCaptureStartedAt;
+      if (elapsed < minIntervalMs) {
+        await new Promise((r) => setTimeout(r, minIntervalMs - elapsed));
+      }
+      lastCaptureStartedAt = Date.now();
       const frame = await helper.capture({
         monitor,
-        width,
-        height,
+        width: capW,
+        height: capH,
         quality: currentQuality,
       });
       if (stopped) return; // receiver left mid-capture: discard, never queue
@@ -57,12 +92,18 @@ export function createScreenStream({
      * The receiver finished rendering a frame: only now may we capture one
      * fresh frame. Duplicate or stale acks are idempotent no-ops.
      */
-    async onAck({ frameId }) {
+    async onAck({ frameId, renderMs }) {
       if (stopped) throw new Error("screen stream is stopped");
       // Only the most recent frame's ack matters; replays of older ids and
       // double-acks for the current one must not queue extra captures.
       if (frameId !== lastFrameId || ackedFrameId === frameId) return;
       ackedFrameId = frameId;
+      // Auto feeds every real ack to the ladder BEFORE scheduling the next
+      // capture, so congestion changes what we capture, not just when.
+      if (ladder) {
+        const decision = ladder.observe({ renderMs });
+        if (decision.direction !== "stay") applyPreset();
+      }
       try {
         await captureOnce();
       } catch (err) {

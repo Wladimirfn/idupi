@@ -64,6 +64,16 @@ data class ScreenStreamRequest(
     val quality: String = "55"
 )
 
+/** One server-announced auto-quality step (control "quality_changed"). */
+@Serializable
+data class ScreenQualityChanged(
+    val type: String? = null,
+    val name: String? = null,
+    val scale: Double = 1.0,
+    val jpegQuality: Int = 55,
+    val maxFps: Int = 0,
+)
+
 /** What the server allows over this bridge (remote input opt-in). */
 @Serializable
 data class ScreenRemoteConfig(

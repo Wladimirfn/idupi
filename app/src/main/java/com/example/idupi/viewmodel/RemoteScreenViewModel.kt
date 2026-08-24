@@ -11,6 +11,7 @@ import com.example.idupi.domain.model.frameRate
 import com.example.idupi.domain.model.recentArrivals
 import com.example.idupi.domain.model.KeyPress
 import com.example.idupi.domain.model.ScreenInputEvent
+import com.example.idupi.domain.model.ScreenQualityChanged
 import com.example.idupi.domain.model.ScreenStreamRequest
 import com.example.idupi.domain.model.ScreenWireMessage
 import com.example.idupi.domain.model.isTileFrame
@@ -42,6 +43,8 @@ data class RemoteScreenUiState(
     val error: String? = null,
     /** Server-side opt-in for remote input; ships OFF. */
     val remoteInputEnabled: Boolean = false,
+    /** Auto-ladder's current preset name, as announced by the server (hito 9). */
+    val activeQuality: String? = null,
 )
 
 /**
@@ -112,14 +115,15 @@ class RemoteScreenViewModel(
         viewportForCurrentBox = viewportFor(monitor, boxW, boxH)
     }
 
-    fun startStreaming(viewportW: Int, viewportH: Int) {
+    fun startStreaming(viewportW: Int, viewportH: Int, quality: String = "55") {
         stopStreaming()
         val monitorId = _uiState.value.selectedMonitorId ?: return
         val request = ScreenStreamRequest(
             sid = UUID.randomUUID().toString(),
             monitor = monitorId,
             viewportW = viewportW,
-            viewportH = viewportH
+            viewportH = viewportH,
+            quality = quality
         )
         sid = request.sid
         viewportForCurrentBox = viewportW to viewportH
@@ -130,7 +134,7 @@ class RemoteScreenViewModel(
                 client.screenFrames(request).collect { message ->
                     when (message) {
                         is ScreenWireMessage.Frame -> renderAndAcknowledge(request.sid, message)
-                        is ScreenWireMessage.Control -> Unit // quality_changed etc.: hito 9
+                        is ScreenWireMessage.Control -> applyControl(message.json)
                     }
                 }
                 // Stream ended cleanly (server closed): surface it as stopped.
@@ -140,6 +144,23 @@ class RemoteScreenViewModel(
             }
         }
     }
+
+    /**
+     * Server-announced controls (hito 9): today only quality_changed -- the
+     * auto ladder's public step. Unknown controls are ignored, never errors.
+     */
+    private fun applyControl(json: ByteArray) {
+        val event = try {
+            controlJson.decodeFromString<ScreenQualityChanged>(json.decodeToString())
+        } catch (_: Exception) {
+            return
+        }
+        if (event.type == "quality_changed" && event.name != null) {
+            _uiState.value = _uiState.value.copy(activeQuality = event.name)
+        }
+    }
+
+    private val controlJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
 
     /**
      * Decode, expose to the UI, THEN ack with real telemetry. The ordering is

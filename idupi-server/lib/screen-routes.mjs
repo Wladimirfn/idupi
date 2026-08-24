@@ -127,13 +127,19 @@ export async function handleScreenRoute(req, res, pathname) {
                 "Cache-Control": "no-cache, no-transform",
                 Connection: "keep-alive",
             });
-            const quality = qualityParam === "auto" ? 55 : Number(qualityParam);
+            const quality = qualityParam === "auto"
+                ? "auto"
+                : Number(qualityParam);
             const stream = createScreenStream({
                 helper: screenHelper,
                 monitor: monitor,
                 width: Math.round(width),
                 height: Math.round(height),
-                quality: Number.isFinite(quality) ? quality : 55,
+                // "auto" hands the ladder the wheel; anything non-numeric
+                // falls back to the manual default.
+                quality: Number.isFinite(quality) || quality === "auto"
+                    ? quality
+                    : 55,
             });
             screenSessions.set(sid, { stream: stream, res: res });
             stream.onFrame((frame) => {

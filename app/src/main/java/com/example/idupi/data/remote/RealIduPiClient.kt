@@ -333,7 +333,7 @@ class RealIduPiClient : IduPiClient {
      * the whole response body first, which never completes on this stream.
      * NOT SSE and NOT base64 -- base64 would add 33% to the hottest path.
      */
-    override fun screenFrames(request: ScreenStreamRequest): Flow<ScreenWireMessage.Frame> = flow {
+    override fun screenFrames(request: ScreenStreamRequest): Flow<ScreenWireMessage> = flow {
         val url = "$baseUrl/api/v1/screen/stream"
         client.prepareGet(url) {
             authorize()
@@ -362,8 +362,8 @@ class RealIduPiClient : IduPiClient {
                 if (n == -1) break
                 if (n <= 0) continue
                 for (message in codec.feed(buf.copyOfRange(0, n))) {
-                    if (message is ScreenWireMessage.Frame) emit(message)
-                    // Control messages (quality_changed, ...): hito 9.
+                    // Frames render; controls (quality_changed) update state.
+                    emit(message)
                 }
             }
         }

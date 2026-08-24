@@ -83,7 +83,7 @@ interface IduPiClient {
      * Opens the binary chunked frame stream for one monitor. Frames are raw
      * JPEG with wire framing -- NOT SSE, NOT base64.
      */
-    fun screenFrames(request: ScreenStreamRequest): Flow<ScreenWireMessage.Frame>
+    fun screenFrames(request: ScreenStreamRequest): Flow<ScreenWireMessage>
 
     /** Must be called AFTER a frame is rendered; the server paces on it. */
     suspend fun acknowledgeScreenFrame(sid: String, frameId: Int, bytes: Int, renderMs: Long)

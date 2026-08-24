@@ -94,6 +94,8 @@ fun RemoteScreen(
     // covering the picture they are watching. Zoom is LOCAL image scaling.
     var padVisible by remember { mutableStateOf(false) }
     var imageScale by remember { mutableStateOf(1f) }
+    // Auto hands the server's ladder the wheel (hito 9); off = manual 55.
+    var qualityAuto by remember { mutableStateOf(true) }
 
     // A paused render stops the acks, the ack-paced server goes silent, and
     // the socket dies at its idle timeout: watching this screen must keep the
@@ -287,18 +289,27 @@ fun RemoteScreen(
                         } else {
                             viewModel.startStreaming(
                                 viewportW = viewModel.viewportForCurrentBox.first,
-                                viewportH = viewModel.viewportForCurrentBox.second
+                                viewportH = viewModel.viewportForCurrentBox.second,
+                                quality = if (qualityAuto) "auto" else "55",
                             )
                         }
                     },
                     label = { Text(if (state.streaming) "Detener" else "Ver pantalla") }
+                )
+                FilterChip(
+                    selected = qualityAuto,
+                    onClick = { qualityAuto = !qualityAuto },
+                    label = { Text("Auto") }
                 )
                 Text(
                     text = statusLine(state.lastRenderMs, state.lastFrameBytes, state.fps),
                     style = MaterialTheme.typography.bodySmall
                 )
                 Text(
-                    text = if (state.remoteInputEnabled) "· input activo" else "· input apagado en el server",
+                    text = buildString {
+                        append(if (state.remoteInputEnabled) "· input activo" else "· input apagado en el server")
+                        state.activeQuality?.let { append(" · calidad: $it") }
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = if (state.remoteInputEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )

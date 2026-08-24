@@ -364,7 +364,7 @@ class FakeIduPiClient : IduPiClient {
     var screenMonitorsToReturn: List<ScreenMonitor> = listOf(
         ScreenMonitor(id = 0, name = "\\\\.\\DISPLAY2", primary = true, width = 1920, height = 1080)
     )
-    var screenFramesToEmit: List<ScreenWireMessage.Frame> = emptyList()
+    var screenFramesToEmit: List<ScreenWireMessage> = emptyList()
     var hangScreenStream: Boolean = false
     var lastScreenStreamRequest: ScreenStreamRequest? = null
 
@@ -382,7 +382,7 @@ class FakeIduPiClient : IduPiClient {
         return screenMonitorsToReturn
     }
 
-    override fun screenFrames(request: ScreenStreamRequest): Flow<ScreenWireMessage.Frame> {
+    override fun screenFrames(request: ScreenStreamRequest): Flow<ScreenWireMessage> {
         maybeFail()
         lastScreenStreamRequest = request
         val frames = screenFramesToEmit

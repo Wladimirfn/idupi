@@ -266,6 +266,47 @@ class RemoteScreenViewModelTest {
 
     // --- dirty tiles (hito 8): compositing on the cached frame ---
 
+    @Test
+    fun `a quality_changed control surfaces the active preset`() = runTest {
+        val fake = FakeIduPiClient()
+        fake.screenFramesToEmit = listOf(
+            keyframe(1),
+            ScreenWireMessage.Control(
+                """{"type":"quality_changed","name":"baja","scale":0.4,"jpegQuality":40,"maxFps":10}"""
+                    .encodeToByteArray(),
+            ),
+        )
+        val viewModel = RemoteScreenViewModel(
+            clientSource = FakeClientSource(fake),
+            decodeJpeg = { stubBitmap },
+        )
+        viewModel.refreshMonitors()
+        advanceUntilIdle()
+        viewModel.startStreaming(viewportW = 800, viewportH = 450)
+        advanceUntilIdle()
+
+        assertEquals("baja", viewModel.uiState.value.activeQuality)
+        // The frame itself was still rendered and acked normally.
+        assertEquals(stubBitmap, viewModel.uiState.value.currentFrame)
+        assertEquals(listOf(1), fake.screenAcks.map { it.frameId })
+    }
+
+    @Test
+    fun `starting with auto quality requests the ladder over the wire`() = runTest {
+        val fake = FakeIduPiClient()
+        fake.screenMonitorsToReturn = listOf(primaryMonitor)
+        val viewModel = RemoteScreenViewModel(
+            clientSource = FakeClientSource(fake),
+            decodeJpeg = { stubBitmap },
+        )
+        viewModel.refreshMonitors()
+        advanceUntilIdle()
+        viewModel.startStreaming(viewportW = 800, viewportH = 450, quality = "auto")
+        advanceUntilIdle()
+
+        assertEquals("auto", requireNotNull(fake.lastScreenStreamRequest).quality)
+    }
+
     private fun keyframe(id: Int) = ScreenWireMessage.Frame(
         meta = ScreenFrameMeta(id = id, w = 800, h = 450),
         jpeg = byteArrayOf(0x11)
