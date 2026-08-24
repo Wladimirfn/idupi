@@ -1,0 +1,48 @@
+# Quality gate: the repo carries hundreds of tests; these jobs make them a
+# door, not a diary. App (gradle) unit tests are intentionally NOT here yet --
+# they need an Android SDK on the runner; add that job when the project has
+# a release cadence to protect.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  server-tests:
+    runs-on: ubuntu-latest
+    env:
+      # loadToken() prefers this over the generated .idupi-token file.
+      IDUPI_TOKEN: ci-local-token-not-a-real-secret
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run each server test file
+        run: |
+          fail=0
+          for f in idupi-server/test/*.test.mjs; do
+            echo "::group::$f"
+            node --test "$f" || fail=1
+            echo "::endgroup::"
+          done
+          exit $fail
+
+  go-helper-tests:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: idupi-server/screen-helper
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: idupi-server/screen-helper/go.mod
+      - name: vet + test (windows-only build tags)
+        run: |
+          gofmt -l .
+          go vet ./...
+          go test ./...

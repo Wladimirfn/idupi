@@ -2,7 +2,7 @@
 
 IDUPI es un servidor que vive en tu PC y una app Android que se conecta a él. Desde el teléfono podés **chatear con agentes de IA** (Pi, Claude, OpenCode) que trabajan sobre tus proyectos reales, y además **ver y controlar la pantalla de tu PC**: mover el mouse, tipear, hacer scroll y zoom, como un VNC pero liviano.
 
-Todo corre en TU hardware: ningún dato pasa por servidores de terceros. Fuera de casa se conecta por Tailscale, así que no abrís puertos del router.
+Todo corre en TU hardware. IDUPI **no requiere servidores cloud propios ni relay externo**: la comunicación IDUPI puede permanecer entre tu PC y tu dispositivo. Tené en cuenta que los agentes de IA que uses (Claude, Pi con OpenAI/Kimi/MiniMax, etc.) se comunican con sus respectivos proveedores de modelos según su propia configuración. Fuera de casa se conecta por Tailscale, así que no abrís puertos del router.
 
 ## Requisitos
 
