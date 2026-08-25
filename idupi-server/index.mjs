@@ -5,7 +5,7 @@
 // ============================================================================
 
 import http from "node:http";
-import { spawn, execSync, execFile } from "node:child_process";
+import { spawn, execSync, execFile, execFileSync } from "node:child_process";
 import { readdirSync, statSync, readFileSync, writeFileSync, existsSync, rmSync, openSync, readSync, closeSync } from "node:fs";
 import { homedir, networkInterfaces } from "node:os";
 import { join, basename, relative, dirname } from "node:path";
@@ -41,6 +41,8 @@ import {
 // own module so this monolith stops growing.
 import { handleScreenRoute, shutdownScreen } from "./lib/screen-routes.mjs";
 import { resolveProjectFilePath } from "./lib/project-files.mjs";
+import { isProtectedSystemPath } from "./lib/system-paths.mjs";
+import { claudeArgs, openCodeArgs } from "./lib/agent-cmdline.mjs";
 
 const PORT = process.env.PORT || 8788;
 const requireAuth = createAuthGuard(loadToken());
@@ -3108,21 +3110,10 @@ const handleRequest = async (req, res) => {
                     return;
                 }
 
-                // Helper de seguridad para evitar borrar carpetas del sistema
-                function isProtectedSystemPath(dirPath) {
-                    if (!dirPath) return true;
-                    const norm = dirPath.replace(/[/\\]+$/, "").toLowerCase();
-                    const home = homedir().replace(/[/\\]+$/, "").toLowerCase();
-                    // Raíces de discos (ej: C:, C:\, D:, /)
-                    if (/^[a-z]:[/\\]?$/.test(norm) || norm === "" || norm === "/") return true;
-                    // Directorios críticos de Windows / Linux
-                    const forbidden = [
-                        home,
-                        "c:\\windows", "c:\\program files", "c:\\program files (x86)",
-                        "c:\\programdata", "c:\\users", "/usr", "/etc", "/var", "/bin", "/sbin", "/home"
-                    ];
-                    return forbidden.some(f => norm === f || (norm.startsWith(f + "\\") && norm.split("\\").length <= 3));
-                }
+                // Helper de seguridad para evitar borrar carpetas del sistema.
+                // Vive en lib/system-paths.mjs (testeado): protege raíces de
+                // sistema a CUALQUIER profundidad y deja deletable el territorio
+                // del usuario donde viven los proyectos.
 
                 const removedList = [];
                 for (const pid of targetIds) {
@@ -3841,18 +3832,52 @@ function getModelsForProvider(providerId) {
         return;
     }
 
+/**
+ * Resolves WHAT to spawn for the Claude CLI, without a shell: the native
+ * installer's claude.exe when present, else the real cli.js parsed out of the
+ * npm .cmd shim (spawning .cmd requires shell:true -- exactly the injection
+ * surface removed here). Cached; throws with a clear message if neither exists.
+ */
+let claudeSpawnTargetCache = null;
+function resolveClaudeSpawnTarget() {
+    if (claudeSpawnTargetCache) return claudeSpawnTargetCache;
+    const native = join(homedir(), ".local", "bin", "claude.exe");
+    if (existsSync(native)) {
+        claudeSpawnTargetCache = { exe: native };
+        return claudeSpawnTargetCache;
+    }
+    const hits = execFileSync("where", ["claude"], { encoding: "utf8", maxBuffer: EXEC_MAX_BUFFER })
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+    const cmdShim = hits.find((h) => h.toLowerCase().endsWith(".cmd"));
+    if (cmdShim) {
+        const shim = readFileSync(cmdShim, "utf8");
+        const m = shim.match(/"([^"]+@anthropic-ai[\\]+claude-code[\\]+cli\.js)"/i)
+            ?? shim.match(/([A-Za-z]:[^\s"]*node_modules[\\]+@anthropic-ai[\\]+claude-code[\\]+cli\.js)/i);
+        if (m) {
+            claudeSpawnTargetCache = { js: m[1] };
+            return claudeSpawnTargetCache;
+        }
+    }
+    throw new Error(
+        "No se encontró el ejecutable de Claude (ni .exe nativo ni shim .cmd parseable). Instalá Claude Code y reiniciá el server."
+    );
+}
+
 // Ejecución Asíncrona en Streaming para Claude CLI (Soporta tareas largas, subagentes en vivo y no se corta)
 function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
     return new Promise((resolve, reject) => {
         publishChatEvent(CHAT_EVENTS.THINKING, { active: true });
 
-        const modelArgs = modelId ? `--model ${JSON.stringify(modelId)} ` : "";
-        const sessionArgs = sessionId
-            ? (isNewSession ? `--session-id ${sessionId} ` : `-r ${sessionId} `)
-            : "";
-        const cmdLine = `claude ${modelArgs}${sessionArgs}--output-format stream-json --verbose --permission-mode bypassPermissions -p ${JSON.stringify(message)}`;
+        // Security fix: the command used to be one interpolated STRING under
+        // shell:true -- JSON.stringify's \" closes cmd.exe's quoted region,
+        // so `& calc.exe` after it executed. Arguments now travel as an
+        // ARRAY to a resolved executable: data can never become syntax.
+        const target = resolveClaudeSpawnTarget();
+        const args = claudeArgs({ modelId, sessionId, isNewSession, message });
 
-        console.log(`[Claude CLI Spawn] Iniciando Claude en ${projPath}: ${cmdLine}...`);
+        console.log(`[Claude CLI Spawn] Iniciando Claude en ${projPath}: ${target.exe ?? `node ${target.js}`}`);
 
         let fullOutput = "";
         let buffer = "";
@@ -3868,17 +3893,22 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
         let settled = false;
         let timedOut = false;
 
-        const child = spawn(cmdLine, {
-            cwd: projPath,
-            shell: true,
-            windowsHide: true,
-            stdio: ["ignore", "pipe", "pipe"],
-            env: process.env
-        });
+        const child = target.exe
+            ? spawn(target.exe, args, {
+                cwd: projPath,
+                windowsHide: true,
+                stdio: ["ignore", "pipe", "pipe"],
+                env: process.env
+            })
+            : spawn(process.execPath, [target.js, ...args], {
+                cwd: projPath,
+                windowsHide: true,
+                stdio: ["ignore", "pipe", "pipe"],
+                env: process.env
+            });
 
-        // See AGENT_CLI_TIMEOUT_MS at module scope: `shell: true` makes
-        // `child` the cmd.exe wrapper, so a tree-kill (not child.kill()) is
-        // required to reach Claude CLI itself and any MCP servers it spawns.
+        // Without a shell wrapper `child` IS Claude itself, but MCP servers it
+        // spawns are its children -- a tree-kill still reaches everything.
         const timeoutTimer = setTimeout(() => {
             if (settled) return;
             timedOut = true;
@@ -4093,10 +4123,13 @@ function runOpenCodeCli(projPath, sessionId, message) {
     return new Promise((resolve, reject) => {
         publishChatEvent(CHAT_EVENTS.THINKING, { active: true });
 
-        const sessionArgs = sessionId ? `-s ${sessionId} ` : "";
-        const cmdLine = `opencode run --format json --auto ${sessionArgs}${JSON.stringify(message)}`;
+        // Security fix (same class as Claude's): arguments travel as an ARRAY
+        // to the resolved real executable -- a crafted sessionId or message
+        // can no longer become cmd.exe syntax.
+        const opencodeExe = resolveOpenCodeExePath();
+        const args = openCodeArgs({ sessionId, message });
 
-        console.log(`[OpenCode CLI Spawn] Iniciando OpenCode en ${projPath}: ${cmdLine}...`);
+        console.log(`[OpenCode CLI Spawn] Iniciando OpenCode en ${projPath}: ${opencodeExe}`);
 
         let fullOutput = "";
         let buffer = "";
@@ -4107,20 +4140,15 @@ function runOpenCodeCli(projPath, sessionId, message) {
         let settled = false;
         let timedOut = false;
 
-        const child = spawn(cmdLine, {
+        const child = spawn(opencodeExe, args, {
             cwd: projPath,
-            shell: true,
             windowsHide: true,
             stdio: ["ignore", "pipe", "pipe"],
             env: process.env
         });
 
-        // `shell: true` on Windows makes `child` the cmd.exe wrapper, not
-        // `opencode` itself -- child.kill() only terminates that wrapper and
-        // orphans opencode.exe plus any MCP servers it spawns (observed live:
-        // a hung `npx @playwright/mcp` left running 9+ minutes after the
-        // wrapper alone would have been killed). `taskkill /T` walks the real
-        // process tree by PID instead, so every descendant actually dies.
+        // MCP servers OpenCode spawns are its children -- the tree-kill still
+        // reaches every descendant from the real root.
         const timeoutTimer = setTimeout(() => {
             if (settled) return;
             timedOut = true;

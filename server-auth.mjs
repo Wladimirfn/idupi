@@ -23,28 +23,47 @@ const TOKEN_FILE = join(REPO_ROOT, ".idupi-token");
  * restart leaves the operator scrolling back through old output to find it,
  * which is how a truncated value gets pasted into the app.
  */
-function announceToken(token, origin) {
+function maskToken(token) {
+    if (token.length <= 12) return "…";
+    return token.slice(0, 6) + "…" + token.slice(-4);
+}
+
+/**
+ * The full token prints ONLY on first generation or with IDUPI_SHOW_TOKEN=1:
+ * a secret sitting in every terminal scrollback is shoulder-surfing bait.
+ * The complete value always lives in the .idupi-token file for whoever
+ * legitimately needs it.
+ */
+function announceToken(token, origin, { reveal = false } = {}) {
     console.log("=================================================");
-    console.log(`🔑 Token de acceso (${origin}):`);
-    console.log("");
-    console.log("   " + token);
-    console.log("");
-    console.log(`   ${token.length} caracteres. Copialo COMPLETO.`);
-    console.log("   Pegalo en IDUPI Android → Conexión → Token.");
+    if (reveal) {
+        console.log(`🔑 Token de acceso (${origin}):`);
+        console.log("");
+        console.log("   " + token);
+        console.log("");
+        console.log(`   ${token.length} caracteres. Copialo COMPLETO.`);
+        console.log("   Pegalo en IDUPI Android → Conexión → Token.");
+    } else {
+        console.log(`🔑 Token de acceso (${origin}): ${maskToken(token)} (oculto)`);
+        console.log(`   Completo en el archivo .idupi-token`);
+        console.log(`   Para mostrarlo acá: IDUPI_SHOW_TOKEN=1`);
+    }
     console.log("=================================================");
 }
 
 export function loadToken() {
+    const reveal = process.env.IDUPI_SHOW_TOKEN === "1";
+
     const fromEnv = (process.env.IDUPI_TOKEN || "").trim();
     if (fromEnv) {
-        announceToken(fromEnv, "variable de entorno IDUPI_TOKEN");
+        announceToken(fromEnv, "variable de entorno IDUPI_TOKEN", { reveal });
         return fromEnv;
     }
 
     if (existsSync(TOKEN_FILE)) {
         const fromFile = readFileSync(TOKEN_FILE, "utf8").trim();
         if (fromFile) {
-            announceToken(fromFile, TOKEN_FILE);
+            announceToken(fromFile, TOKEN_FILE, { reveal });
             return fromFile;
         }
     }
@@ -54,7 +73,9 @@ export function loadToken() {
     // Best effort: POSIX permissions are a no-op on Windows.
     try { chmodSync(TOKEN_FILE, 0o600); } catch { /* ignored */ }
 
-    announceToken(generated, "nuevo, guardado en " + TOKEN_FILE);
+    // First generation DOES reveal: this is the moment the operator must
+    // paste it into the app, and hiding it would break onboarding.
+    announceToken(generated, "nuevo, guardado en " + TOKEN_FILE, { reveal: true });
     return generated;
 }
 
