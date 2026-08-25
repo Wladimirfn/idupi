@@ -68,6 +68,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.ContentScale
@@ -82,6 +83,7 @@ import com.example.idupi.domain.model.ScreenInputEvent
 import com.example.idupi.domain.model.ScreenMonitor
 import com.example.idupi.domain.model.SpecialKey
 import com.example.idupi.domain.model.padCursorDelta
+import com.example.idupi.domain.model.padIsPinchStep
 import com.example.idupi.domain.model.padScrollNotches
 import com.example.idupi.domain.model.padTwoFingerMode
 import com.example.idupi.domain.model.padWheelDelta
@@ -413,62 +415,44 @@ private fun RemoteImageArea(
             }
             val imageModifier = baseImageModifier
                 .clipToBounds()
-                // Local pan/zoom (hito 10): TWO fingers transform, ONE finger
-                // stays remote. Slop arbitration mirrors detectTransformGestures
-                // but never fires for a single finger.
+                // Touchpad navigation (owner model, like a notebook's panel):
+                // the moment a SECOND finger lands, the gesture belongs to the
+                // view -- sliding both fingers pans in ANY direction, pinching
+                // zooms. Listens on the INITIAL pass: being first-declared,
+                // Main pass would reach the remote drag detector first and the
+                // mouse would move instead. Consuming here makes every
+                // later handler see the changes as taken. ONE finger stays
+                // remote -- its events pass through unconsumed.
                 .pointerInput(state.remoteInputEnabled, state.selectedMonitorId) {
                     if (!state.remoteInputEnabled) return@pointerInput
-                    val touchSlop = viewConfiguration.touchSlop
                     val nodeW = size.width.toFloat()
                     val nodeH = size.height.toFloat()
                     awaitEachGesture {
-                        var zoomAccum = 1f
-                        var panAccum = Offset.Zero
-                        var pastTouchSlop = false
-                        awaitFirstDown(requireUnconsumed = false)
+                        awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                         do {
-                            val event = awaitPointerEvent()
-                            val canceled = event.changes.any { it.isConsumed }
-                            if (!canceled) {
-                                val multiTouch = event.changes.count { it.pressed } >= 2
-                                if (multiTouch) {
-                                    val zoomChange = event.calculateZoom()
-                                    val panChange = event.calculatePan()
-                                    if (!pastTouchSlop) {
-                                        zoomAccum *= zoomChange
-                                        panAccum += panChange
-                                        val centroidSize = event.calculateCentroidSize(useCurrent = false)
-                                        val zoomMotion = abs(1f - zoomAccum) * centroidSize
-                                        val panMotion = hypot(panAccum.x, panAccum.y)
-                                        if (zoomMotion > touchSlop || panMotion > touchSlop) {
-                                            pastTouchSlop = true
-                                        }
-                                    }
-                                    if (pastTouchSlop) {
-                                        val centroid = event.calculateCentroid(useCurrent = false)
-                                        val scale = currentScale
-                                        val pan = currentPan
-                                        val newScale = (scale * zoomChange).coerceIn(1f, 5f)
-                                        val ratio = if (scale > 0f) newScale / scale else 1f
-                                        // Keep the point under the fingers fixed:
-                                        // graphicsLayer scales about the node
-                                        // centre, so the pan must compensate for
-                                        // the centroid's distance from it.
-                                        val pivotX = nodeW / 2f
-                                        val pivotY = nodeH / 2f
-                                        val newPan = Offset(
-                                            x = (centroid.x - pivotX) * (1f - ratio) + pan.x * ratio + panChange.x,
-                                            y = (centroid.y - pivotY) * (1f - ratio) + pan.y * ratio + panChange.y,
-                                        )
-                                        currentOnTransform(newScale, clampPan(newPan, newScale, nodeW, nodeH))
-                                        // Own every change of a two-finger event:
-                                        // this is what cancels the remote drag
-                                        // detector declared below.
-                                        event.changes.forEach { it.consume() }
-                                    }
-                                }
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            if (event.changes.count { it.pressed } >= 2) {
+                                val zoomChange = event.calculateZoom()
+                                val panChange = event.calculatePan()
+                                val centroid = event.calculateCentroid(useCurrent = false)
+                                val scale = currentScale
+                                val pan = currentPan
+                                val newScale = (scale * zoomChange).coerceIn(1f, 5f)
+                                val ratio = if (scale > 0f) newScale / scale else 1f
+                                // Keep the point under the fingers fixed:
+                                // graphicsLayer scales about the node centre,
+                                // so the pan must compensate for the centroid's
+                                // distance from it.
+                                val pivotX = nodeW / 2f
+                                val pivotY = nodeH / 2f
+                                val newPan = Offset(
+                                    x = (centroid.x - pivotX) * (1f - ratio) + pan.x * ratio + panChange.x,
+                                    y = (centroid.y - pivotY) * (1f - ratio) + pan.y * ratio + panChange.y,
+                                )
+                                currentOnTransform(newScale, clampPan(newPan, newScale, nodeW, nodeH))
+                                event.changes.forEach { it.consume() }
                             }
-                        } while (!canceled && event.changes.any { it.pressed })
+                        } while (event.changes.any { it.pressed })
                     }
                 }
                 .pointerInput(state.remoteInputEnabled, state.selectedMonitorId) {
@@ -778,9 +762,14 @@ private fun ScreenControls(
                     ScreenInputEvent(type = "click", monitor = padMonitor, button = "right")
                 )
             },
-            onScroll = { notches ->
+            onScroll = { notches, axis ->
                 viewModel.sendInput(
-                    ScreenInputEvent(type = "scroll", monitor = padMonitor, delta = padWheelDelta(notches))
+                    ScreenInputEvent(
+                        type = "scroll",
+                        monitor = padMonitor,
+                        delta = padWheelDelta(notches),
+                        axis = axis,
+                    )
                 )
             },
             onZoom = onZoom,
@@ -802,11 +791,11 @@ private fun monitorLabel(monitor: ScreenMonitor): String =
     "${monitor.name} (${monitor.width}x${monitor.height})" + if (monitor.primary) " ★" else ""
 
 /**
- * The floating trackpad surface, styled as one contained card: gesture pad on
- * top (1 finger moves, tap clicks at the current cursor position, two fingers
- * scroll, pinch zooms the LOCAL image), explicit click buttons below -- a tap
- * is easy to miss; a labelled button never is. Mode arbitration maths lives
- * in the domain model (ScreenPad.kt) so it is testable without a screen.
+ * The floating trackpad surface, styled as one contained card: a NOTEBOOK
+ * touchpad (owner model, mirroring the Windows precision-touchpad table) --
+ * one finger moves, tap clicks, two-finger slide scrolls BOTH axes, pinch
+ * zooms the LOCAL image, two-finger tap right-clicks. Mode maths lives in
+ * the domain model (ScreenPad.kt) so it is testable without a screen.
  */
 @Composable
 private fun Trackpad(
@@ -814,7 +803,7 @@ private fun Trackpad(
     onRelativeMove: (Double, Double) -> Unit,
     onClick: () -> Unit,
     onRightClick: () -> Unit,
-    onScroll: (Int) -> Unit,
+    onScroll: (Int, String) -> Unit,
     onZoom: (Float) -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -839,12 +828,17 @@ private fun Trackpad(
                             var lastY = down.position.y
                             var maxTravelFromDown = 0f
                             var sawSecondFinger = false
-                            var mode = PadMode.MOVE
-                            var startDist = 0f
-                            var lastDist = 0f
-                            var lastCentroidY = 0f
-                            var scrollAccumPx = 0f
-                            var emittedNotches = 0
+                            // Two-finger state: notebook-scroll accumulators for
+                            // BOTH axes, and pinch tracked by ABSOLUTE distance
+                            // steps rather than a latched mode -- real pads let
+                            // you slide and pinch within one continuous gesture.
+                            var prevDist = 0f
+                            var prevCx = 0f
+                            var prevCy = 0f
+                            var accVUp = 0f
+                            var accHRight = 0f
+                            var emittedV = 0
+                            var emittedH = 0
                             while (true) {
                                 val event = awaitPointerEvent()
                                 val pressed = event.changes.filter { it.pressed }
@@ -854,40 +848,50 @@ private fun Trackpad(
                                     sawSecondFinger = true
                                     val a = pressed[0].position
                                     val b = pressed[1].position
-                                    startDist = hypot(a.x - b.x, a.y - b.y)
-                                    lastDist = startDist
-                                    lastCentroidY = (a.y + b.y) / 2f
-                                    scrollAccumPx = 0f
-                                    emittedNotches = 0
+                                    prevDist = hypot(a.x - b.x, a.y - b.y)
+                                    prevCx = (a.x + b.x) / 2f
+                                    prevCy = (a.y + b.y) / 2f
+                                    accVUp = 0f
+                                    accHRight = 0f
+                                    emittedV = 0
+                                    emittedH = 0
                                 }
 
                                 if (sawSecondFinger && pressed.size >= 2) {
                                     val a = pressed[0].position
                                     val b = pressed[1].position
                                     val dist = hypot(a.x - b.x, a.y - b.y)
-                                    val centroidY = (a.y + b.y) / 2f
-                                    // Fingers travelling UP scroll UP (Windows wheel:
-                                    // positive delta scrolls away from the user).
-                                    scrollAccumPx += lastCentroidY - centroidY
-                                    lastCentroidY = centroidY
-                                    mode = padTwoFingerMode(
-                                        current = mode,
-                                        distanceRatio = if (startDist > 0f) dist / startDist else 1f,
-                                        travelledPx = scrollAccumPx,
-                                    )
-                                    when (mode) {
-                                        PadMode.PINCH -> {
-                                            if (lastDist > 0f) onZoom(dist / lastDist)
-                                            lastDist = dist
+                                    val cx = (a.x + b.x) / 2f
+                                    val cy = (a.y + b.y) / 2f
+                                    if (padIsPinchStep(prevDist, dist)) {
+                                        // Pinch step wins over scroll: zoom about
+                                        // the fingers, then reset the scroll
+                                        // accumulators so one gesture does not
+                                        // double-report.
+                                        if (prevDist > 0f) onZoom(dist / prevDist)
+                                        prevDist = dist
+                                        accVUp = 0f
+                                        accHRight = 0f
+                                        emittedV = 0
+                                        emittedH = 0
+                                    } else {
+                                        // Fingers travelling UP scroll UP; fingers
+                                        // travelling RIGHT scroll RIGHT (Windows
+                                        // natural direction off).
+                                        accVUp += prevCy - cy
+                                        accHRight += cx - prevCx
+                                        prevCx = cx
+                                        prevCy = cy
+                                        val notchesV = padScrollNotches(accVUp)
+                                        if (notchesV != emittedV) {
+                                            onScroll(notchesV - emittedV, "v")
+                                            emittedV = notchesV
                                         }
-                                        PadMode.SCROLL -> {
-                                            val notches = padScrollNotches(scrollAccumPx)
-                                            if (notches != emittedNotches) {
-                                                onScroll(notches - emittedNotches)
-                                                emittedNotches = notches
-                                            }
+                                        val notchesH = padScrollNotches(accHRight)
+                                        if (notchesH != emittedH) {
+                                            onScroll(notchesH - emittedH, "h")
+                                            emittedH = notchesH
                                         }
-                                        PadMode.MOVE -> Unit
                                     }
                                 } else if (!sawSecondFinger) {
                                     val change = pressed[0]
@@ -904,10 +908,13 @@ private fun Trackpad(
 
                                 event.changes.forEach { it.consume() }
                             }
-                            // A quick single-finger touch with no travel is a click at
-                            // wherever the cursor already sits -- never a move first,
-                            // or precise aiming would be undone by the click itself.
-                            if (!sawSecondFinger && maxTravelFromDown <= tapSlopPx) onClick()
+                            // Release semantics: single finger tap = left click;
+                            // TWO-FINGER TAP = right click (Windows convention).
+                            if (sawSecondFinger) {
+                                if (maxTravelFromDown <= tapSlopPx) onRightClick()
+                            } else if (maxTravelFromDown <= tapSlopPx) {
+                                onClick()
+                            }
                         }
                     },
                 contentAlignment = Alignment.Center,

@@ -38,6 +38,25 @@ func TestBuildMouseInputRelativeMoveUsesPlainMoveFlag(t *testing.T) {
 	}
 }
 
+// Notebook-touchpad model (owner request): two-finger HORIZONTAL slide must
+// ride MOUSEEVENTF_HWHEEL -- vertical wheel alone cannot scroll sideways.
+func TestBuildMouseInputHorizontalScrollUsesHWheel(t *testing.T) {
+	in, err := buildMouseInput(inputRequest{
+		Action: "scroll",
+		Axis:   "h",
+		Delta:  120,
+	}, []Monitor{{ID: 0, Primary: true, Width: 1920, Height: 1080}})
+	if err != nil {
+		t.Fatalf("hscroll: %v", err)
+	}
+	if in.DwFlags != meHWheel {
+		t.Fatalf("flags: got %#x, want %#x", in.DwFlags, meHWheel)
+	}
+	if int32(in.MouseData) != 120 {
+		t.Fatalf("delta: got %d, want 120", int32(in.MouseData))
+	}
+}
+
 // A pad tap is a click at the cursor's CURRENT position: no x/y on the wire,
 // so the event must carry only the button flag -- never a stray absolute move.
 func TestBuildMouseInputCoordlessClickKeepsCursorPosition(t *testing.T) {

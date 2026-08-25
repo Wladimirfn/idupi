@@ -21,6 +21,7 @@ const (
 	meRightDown = 0x0008
 	meRightUp   = 0x0010
 	meWheel     = 0x0800
+	meHWheel    = 0x1000 // MOUSEEVENTF_HWHEEL: horizontal two-finger slide
 	meAbsolute  = 0x8000
 	meVirtual   = 0x4000
 )
@@ -64,6 +65,7 @@ type inputRequest struct {
 	NY           float64
 	DX           float64 // relmove: cursor pixels to travel horizontally
 	DY           float64 // relmove: cursor pixels to travel vertically
+	Axis         string  // scroll: "" | "v" | "h" (horizontal wheel)
 	MonitorIndex int
 	Delta        int
 }
@@ -121,7 +123,11 @@ func buildMouseInput(req inputRequest, monitors []Monitor) (*mouseInput, error) 
 		}
 	case "scroll":
 		in.MouseData = uint32(int32(req.Delta))
-		in.DwFlags = meWheel
+		if req.Axis == "h" {
+			in.DwFlags = meHWheel
+		} else {
+			in.DwFlags = meWheel
+		}
 	default:
 		return nil, fmt.Errorf("unknown input action %q", req.Action)
 	}

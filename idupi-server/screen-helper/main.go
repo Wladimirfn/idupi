@@ -40,6 +40,7 @@ type request struct {
 	NY           *float64 `json:"y"`
 	DX           *float64 `json:"dx"`
 	DY           *float64 `json:"dy"`
+	Axis         *string  `json:"axis"` // scroll axis: "" | "v" | "h"
 	Delta        *int     `json:"delta"`
 	Code         *int     `json:"code"` // keychar: UTF-16 unit | keyvk: Windows VK
 }
@@ -279,6 +280,9 @@ func inputCommand(out *bufio.Writer, req *request) {
 		Button:       strings.ToLower(req.Button),
 		MonitorIndex: deref(req.Monitor),
 		Delta:        delta,
+	}
+	if req.Axis != nil {
+		inReq.Axis = strings.ToLower(*req.Axis)
 	}
 	if hasPos {
 		inReq.HasPos = true

@@ -94,4 +94,6 @@ data class ScreenInputEvent(
     /** keychar: UTF-16 unit | keyvk: Windows virtual-key code. */
     val code: Int? = null,
     val delta: Int? = null,
+    /** scroll axis: null/"v" = vertical wheel, "h" = horizontal wheel. */
+    val axis: String? = null,
 )

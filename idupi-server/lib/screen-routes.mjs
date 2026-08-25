@@ -61,11 +61,12 @@ export async function handleScreenRoute(req, res, pathname) {
                     monitor: parsed.monitor ?? 0,
                     x: parsed.x,
                     y: parsed.y,
-                    // Pad-mode relative travel and realtime keyboard codes
-                    // ride the same dedicated input helper.
+                    // Pad-mode relative travel, realtime keyboard codes and
+                    // scroll axis ride the same dedicated input helper.
                     dx: parsed.dx,
                     dy: parsed.dy,
                     code: parsed.code,
+                    axis: parsed.axis,
                     delta: parsed.delta,
                 });
                 res.writeHead(200, { "Content-Type": "application/json" });

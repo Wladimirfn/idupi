@@ -47,6 +47,16 @@ fun padScrollNotches(dyUpPx: Float): Int = (dyUpPx / PAD_SCROLL_PX_PER_NOTCH).ro
 /** Windows wheel units for N notches -- one physical notch is 120. */
 fun padWheelDelta(notches: Int): Int = notches * 120
 
+/** Finger-distance change (px) that counts as ONE deliberate pinch step. */
+const val PAD_PINCH_STEP_PX = 8f
+
+/**
+ * True when the two-finger distance moved far enough since the last event to
+ * be a deliberate pinch step rather than fingers resting on the pad.
+ */
+fun padIsPinchStep(lastDist: Float, distNow: Float): Boolean =
+    abs(distNow - lastDist) >= PAD_PINCH_STEP_PX
+
 /**
  * Mode arbitration between two fingers: distance growth or shrink beyond the
  * threshold is a pinch-zoom and latches PINCH; parallel travel past the

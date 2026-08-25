@@ -68,6 +68,17 @@ class ScreenPadTest {
         assertEquals(-240, padWheelDelta(-2))
     }
 
+    // --- notebook-touchpad two-finger behaviour (owner model) ---
+
+    @Test
+    fun `a pinch step is distance change over the absolute threshold`() {
+        // 10px closer on a 300px base is a deliberate pinch.
+        assertEquals(true, padIsPinchStep(lastDist = 300f, distNow = 290f))
+        // 3px of jitter is fingers resting, not pinching.
+        assertEquals(false, padIsPinchStep(lastDist = 300f, distNow = 297f))
+        assertEquals(false, padIsPinchStep(lastDist = 300f, distNow = 303f))
+    }
+
     // --- two-finger mode arbitration ---
 
     @Test
