@@ -40,6 +40,7 @@ import {
 // Remote screen module (docs/remote-screen-module.md): routes live in their
 // own module so this monolith stops growing.
 import { handleScreenRoute, shutdownScreen } from "./lib/screen-routes.mjs";
+import { resolveProjectFilePath } from "./lib/project-files.mjs";
 
 const PORT = process.env.PORT || 8788;
 const requireAuth = createAuthGuard(loadToken());
@@ -3804,8 +3805,17 @@ function getModelsForProvider(providerId) {
         const projId = parts[4];
         const filePathParam = parsedUrl.searchParams.get("path") || "";
         const proj = resolveProject(projId);
-        
-        const fullFilePath = join(proj.path, filePathParam);
+
+        // Containment guard (security fix): join(root, userPath) alone let
+        // dot-dot escapes AND absolute paths read arbitrary files on this
+        // machine with nothing but the bearer token.
+        const resolvedFile = resolveProjectFilePath(proj.path, filePathParam);
+        if (!resolvedFile.ok) {
+            res.writeHead(403, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "path escapes the project root" }));
+            return;
+        }
+        const fullFilePath = resolvedFile.path;
         console.log(`[File Reader] Leyendo contenido real de: ${fullFilePath}`);
 
         try {
