@@ -647,7 +647,7 @@ private fun ScreenControls(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = statusLine(state.lastRenderMs, state.lastFrameBytes, state.fps),
+                text = statusLine(state.lastRenderMs, state.lastFrameBytes, state.fps, state.frameMeta?.helperMs ?: 0),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -939,6 +939,8 @@ private fun Trackpad(
                                             val change = pressed[0]
                                             val pos = change.position
                                             val (dx, dy) = padCursorDelta(pos.x - lastX, pos.y - lastY, padW)
+                                            lastX = pos.x
+                                            lastY = pos.y
                                             maxTravelFromDown = maxOf(
                                                 maxTravelFromDown,
                                                 hypot(pos.x - down.position.x, pos.y - down.position.y),
@@ -1032,8 +1034,8 @@ private fun Trackpad(
  * seconds or ten minutes. The rate is what says whether the stream is healthy,
  * and it drops the moment the stream does.
  */
-private fun statusLine(renderMs: Long, bytes: Int, fps: Int): String =
-    "$fps fps · ${bytes / 1024} KB · $renderMs ms decode"
+private fun statusLine(renderMs: Long, bytes: Int, fps: Int, helperMs: Int): String =
+    "$fps fps · ${bytes / 1024} KB · srv ${helperMs} ms · decode ${renderMs} ms"
 
 /**
  * Bounds for a panned/scaled picture: at scale S the image sticks out

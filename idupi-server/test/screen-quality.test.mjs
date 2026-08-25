@@ -11,10 +11,10 @@ import {
 // after sustained headroom, because climbing eagerly re-breaks it. Same shape
 // as TCP congestion control / adaptive bitrate.
 
-test("the ladder carries the three documented presets", () => {
+test("the ladder carries the four documented presets", () => {
     assert.deepEqual(
         QUALITY_LADDER.map((p) => p.name),
-        ["baja", "media", "alta"],
+        ["baja", "media", "alta", "ultra"],
     );
     assert.deepEqual(
         QUALITY_LADDER.map((p) => [p.scale, p.jpegQuality, p.maxFps]),
@@ -22,6 +22,7 @@ test("the ladder carries the three documented presets", () => {
             [0.4, 40, 10],
             [0.7, 55, 15],
             [1.0, 75, 24],
+            [1.0, 80, 30],
         ],
     );
 });
@@ -53,10 +54,10 @@ test("stepping up requires several consecutive good frames", () => {
     assert.equal(c.preset().name, "alta");
 });
 
-test("alta is the ceiling and baja is the floor", () => {
+test("ultra is the ceiling and baja is the floor", () => {
     const c = createLadderController({ startIndex: QUALITY_LADDER.length - 1 });
     for (let i = 0; i < 20; i++) c.observe({ renderMs: 5 });
-    assert.equal(c.preset().name, "alta"); // never climbs past the top
+    assert.equal(c.preset().name, "ultra"); // never climbs past the top
 
     for (let i = 0; i < 20; i++) c.observe({ renderMs: 900 });
     assert.equal(c.preset().name, "baja"); // never falls below the bottom

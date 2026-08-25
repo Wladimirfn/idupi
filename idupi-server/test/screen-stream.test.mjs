@@ -195,3 +195,43 @@ test("manual numeric quality keeps the legacy fixed behaviour", async () => {
     // Manual mode never moves and never announces: the human owns it.
     assert.equal(controls.length, 0);
 });
+
+// --- Instrumentation (hito 9 optimization phase B) ---
+
+test("stats() exposes frame count and average helper latency", async () => {
+    const helper = fakeHelper(); // ~5ms simulated helper latency
+    const stream = createScreenStream({
+        helper,
+        monitor: 0,
+        width: 800,
+        height: 450,
+    });
+    const frames = [];
+    stream.onFrame((f) => frames.push(f));
+    await stream.start();
+    for (const f of frames.slice()) {
+        await stream.onAck({ frameId: f.meta.id, renderMs: 10 });
+        await new Promise((r) => setTimeout(r, 15));
+    }
+
+    const stats = stream.stats();
+    assert.equal(stats.frames, frames.length);
+    assert.ok(stats.avgHelperMs >= 4, `avgHelperMs should reflect the ~5ms fake delay, got ${stats.avgHelperMs}`);
+});
+
+test("each frame's meta carries the measured helper latency", async () => {
+    const helper = fakeHelper();
+    const stream = createScreenStream({
+        helper,
+        monitor: 0,
+        width: 800,
+        height: 450,
+    });
+    const frames = [];
+    stream.onFrame((f) => frames.push(f));
+    await stream.start();
+
+    const f = frames[0];
+    assert.equal(typeof f.meta.helperMs, "number");
+    assert.ok(f.meta.helperMs >= 0);
+});

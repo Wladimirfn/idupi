@@ -37,6 +37,8 @@ data class ScreenFrameMeta(
     val tw: Int = 0,
     val th: Int = 0,
     val tiles: List<ScreenTileRef> = emptyList(),
+    /** Server-measured capture+diff+encode latency for this frame (ms). */
+    val helperMs: Int = 0,
 )
 
 /**

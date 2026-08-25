@@ -36,6 +36,10 @@ export function createScreenStream({
   let capH = height;
   let minIntervalMs = 0;
   let lastCaptureStartedAt = 0;
+  // Instrumentation (optimization phase B): where do the milliseconds go?
+  // helperMs = capture+diff+encode round trip inside the Go helper.
+  let framesEmitted = 0;
+  let helperMsTotal = 0;
 
   function applyPreset() {
     const p = ladder.preset();
@@ -60,6 +64,7 @@ export function createScreenStream({
         await new Promise((r) => setTimeout(r, minIntervalMs - elapsed));
       }
       lastCaptureStartedAt = Date.now();
+      const captureStartedAt = lastCaptureStartedAt;
       const frame = await helper.capture({
         monitor,
         width: capW,
@@ -68,6 +73,12 @@ export function createScreenStream({
       });
       if (stopped) return; // receiver left mid-capture: discard, never queue
       lastFrameId = frame.meta.id;
+      // Per-frame latency of the Go helper round trip (capture+diff+encode),
+      // surfaced in the frame meta and rolled into stats() -- optimization
+      // phase B decides with data, not guesses.
+      frame.meta.helperMs = Date.now() - captureStartedAt;
+      framesEmitted += 1;
+      helperMsTotal += frame.meta.helperMs;
       events.emit("frame", frame);
     } finally {
       capturing = false;
@@ -119,6 +130,13 @@ export function createScreenStream({
     /** Applies to subsequent captures; never triggers an unsolicited frame. */
     setQuality(q) {
       currentQuality = q;
+    },
+    /** Rolling pipeline telemetry (optimization phase B). */
+    stats() {
+      return {
+        frames: framesEmitted,
+        avgHelperMs: framesEmitted > 0 ? helperMsTotal / framesEmitted : 0,
+      };
     },
     setMonitor(id) {
       monitor = id;

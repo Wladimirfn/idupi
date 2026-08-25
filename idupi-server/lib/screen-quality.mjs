@@ -6,6 +6,9 @@ export const QUALITY_LADDER = [
     { name: "baja", scale: 0.4, jpegQuality: 40, maxFps: 10 },
     { name: "media", scale: 0.7, jpegQuality: 55, maxFps: 15 },
     { name: "alta", scale: 1.0, jpegQuality: 75, maxFps: 24 },
+    // Owner target: 30fps sustained on a good link. Same viewport as alta --
+    // the extra headroom goes to frame RATE, not to more pixels.
+    { name: "ultra", scale: 1.0, jpegQuality: 80, maxFps: 30 },
 ];
 
 export function createLadderController({ startIndex = 1 } = {}) {
