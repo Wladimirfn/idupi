@@ -79,6 +79,40 @@ class ScreenPadTest {
         assertEquals(false, padIsPinchStep(lastDist = 300f, distNow = 303f))
     }
 
+    // --- edge scroll zones (owner request): right = vertical, bottom = horiz ---
+
+    @Test
+    fun `the right edge zone scrolls vertically`() {
+        assertEquals(
+            PadZone.SCROLL_V,
+            padZoneAt(x = 340f, y = 100f, w = 360f, h = 150f, edgePx = 44f),
+        )
+    }
+
+    @Test
+    fun `the bottom edge zone scrolls horizontally`() {
+        assertEquals(
+            PadZone.SCROLL_H,
+            padZoneAt(x = 180f, y = 140f, w = 360f, h = 150f, edgePx = 44f),
+        )
+    }
+
+    @Test
+    fun `the centre is cursor territory`() {
+        assertEquals(
+            PadZone.CURSOR,
+            padZoneAt(x = 180f, y = 75f, w = 360f, h = 150f, edgePx = 44f),
+        )
+    }
+
+    @Test
+    fun `bottom-right corner resolves to the vertical zone`() {
+        assertEquals(
+            PadZone.SCROLL_V,
+            padZoneAt(x = 350f, y = 145f, w = 360f, h = 150f, edgePx = 44f),
+        )
+    }
+
     // --- two-finger mode arbitration ---
 
     @Test

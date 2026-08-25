@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -78,13 +79,16 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import com.example.idupi.domain.model.PadMode
+import com.example.idupi.domain.model.PadZone
 import com.example.idupi.domain.model.KeyPress
+import com.example.idupi.domain.model.PAD_EDGE_ZONE_DP
 import com.example.idupi.domain.model.ScreenInputEvent
 import com.example.idupi.domain.model.ScreenMonitor
 import com.example.idupi.domain.model.SpecialKey
 import com.example.idupi.domain.model.padCursorDelta
 import com.example.idupi.domain.model.padIsPinchStep
 import com.example.idupi.domain.model.padScrollNotches
+import com.example.idupi.domain.model.padZoneAt
 import com.example.idupi.domain.model.padTwoFingerMode
 import com.example.idupi.domain.model.padWheelDelta
 import com.example.idupi.domain.model.keyboardDiffs
@@ -821,104 +825,175 @@ private fun Trackpad(
                     .pointerInput(enabled) {
                         if (!enabled) return@pointerInput
                         val padW = size.width.toFloat()
+                        val padH = size.height.toFloat()
+                        val edgePx = PAD_EDGE_ZONE_DP * density
                         val tapSlopPx = viewConfiguration.touchSlop * 2f
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
+                            val zone = padZoneAt(down.position.x, down.position.y, padW, padH, edgePx)
                             var lastX = down.position.x
                             var lastY = down.position.y
                             var maxTravelFromDown = 0f
-                            var sawSecondFinger = false
-                            // Two-finger state: notebook-scroll accumulators for
-                            // BOTH axes, and pinch tracked by ABSOLUTE distance
-                            // steps rather than a latched mode -- real pads let
-                            // you slide and pinch within one continuous gesture.
-                            var prevDist = 0f
-                            var prevCx = 0f
-                            var prevCy = 0f
-                            var accVUp = 0f
-                            var accHRight = 0f
+                            var accUp = 0f
+                            var accRight = 0f
                             var emittedV = 0
                             var emittedH = 0
-                            while (true) {
-                                val event = awaitPointerEvent()
-                                val pressed = event.changes.filter { it.pressed }
-                                if (pressed.isEmpty()) break
 
-                                if (!sawSecondFinger && pressed.size >= 2) {
-                                    sawSecondFinger = true
-                                    val a = pressed[0].position
-                                    val b = pressed[1].position
-                                    prevDist = hypot(a.x - b.x, a.y - b.y)
-                                    prevCx = (a.x + b.x) / 2f
-                                    prevCy = (a.y + b.y) / 2f
-                                    accVUp = 0f
-                                    accHRight = 0f
-                                    emittedV = 0
-                                    emittedH = 0
-                                }
-
-                                if (sawSecondFinger && pressed.size >= 2) {
-                                    val a = pressed[0].position
-                                    val b = pressed[1].position
-                                    val dist = hypot(a.x - b.x, a.y - b.y)
-                                    val cx = (a.x + b.x) / 2f
-                                    val cy = (a.y + b.y) / 2f
-                                    if (padIsPinchStep(prevDist, dist)) {
-                                        // Pinch step wins over scroll: zoom about
-                                        // the fingers, then reset the scroll
-                                        // accumulators so one gesture does not
-                                        // double-report.
-                                        if (prevDist > 0f) onZoom(dist / prevDist)
-                                        prevDist = dist
-                                        accVUp = 0f
-                                        accHRight = 0f
-                                        emittedV = 0
-                                        emittedH = 0
-                                    } else {
-                                        // Fingers travelling UP scroll UP; fingers
-                                        // travelling RIGHT scroll RIGHT (Windows
-                                        // natural direction off).
-                                        accVUp += prevCy - cy
-                                        accHRight += cx - prevCx
-                                        prevCx = cx
-                                        prevCy = cy
-                                        val notchesV = padScrollNotches(accVUp)
-                                        if (notchesV != emittedV) {
-                                            onScroll(notchesV - emittedV, "v")
-                                            emittedV = notchesV
+                            when (zone) {
+                                PadZone.SCROLL_V -> {
+                                    // Slide along the right strip: vertical wheel.
+                                    while (true) {
+                                        val event = awaitPointerEvent()
+                                        val pressed = event.changes.filter { it.pressed }
+                                        if (pressed.isEmpty()) break
+                                        val pos = pressed[0].position
+                                        accUp += lastY - pos.y
+                                        lastX = pos.x
+                                        lastY = pos.y
+                                        val notches = padScrollNotches(accUp)
+                                        if (notches != emittedV) {
+                                            onScroll(notches - emittedV, "v")
+                                            emittedV = notches
                                         }
-                                        val notchesH = padScrollNotches(accHRight)
-                                        if (notchesH != emittedH) {
-                                            onScroll(notchesH - emittedH, "h")
-                                            emittedH = notchesH
-                                        }
+                                        event.changes.forEach { it.consume() }
                                     }
-                                } else if (!sawSecondFinger) {
-                                    val change = pressed[0]
-                                    val pos = change.position
-                                    val (dx, dy) = padCursorDelta(pos.x - lastX, pos.y - lastY, padW)
-                                    lastX = pos.x
-                                    lastY = pos.y
-                                    maxTravelFromDown = maxOf(
-                                        maxTravelFromDown,
-                                        hypot(pos.x - down.position.x, pos.y - down.position.y),
-                                    )
-                                    onRelativeMove(dx, dy)
                                 }
+                                PadZone.SCROLL_H -> {
+                                    // Slide along the bottom strip: horizontal wheel.
+                                    while (true) {
+                                        val event = awaitPointerEvent()
+                                        val pressed = event.changes.filter { it.pressed }
+                                        if (pressed.isEmpty()) break
+                                        val pos = pressed[0].position
+                                        accRight += pos.x - lastX
+                                        lastX = pos.x
+                                        lastY = pos.y
+                                        val notches = padScrollNotches(accRight)
+                                        if (notches != emittedH) {
+                                            onScroll(notches - emittedH, "h")
+                                            emittedH = notches
+                                        }
+                                        event.changes.forEach { it.consume() }
+                                    }
+                                }
+                                PadZone.CURSOR -> {
+                                    // The notebook-touchpad centre: one finger moves,
+                                    // two fingers scroll both axes / pinch zoom,
+                                    // two-finger tap right-clicks.
+                                    var sawSecondFinger = false
+                                    var prevDist = 0f
+                                    var prevCx = 0f
+                                    var prevCy = 0f
+                                    var accVUp = 0f
+                                    var accHRight = 0f
+                                    var emittedV2 = 0
+                                    var emittedH2 = 0
+                                    while (true) {
+                                        val event = awaitPointerEvent()
+                                        val pressed = event.changes.filter { it.pressed }
+                                        if (pressed.isEmpty()) break
 
-                                event.changes.forEach { it.consume() }
-                            }
-                            // Release semantics: single finger tap = left click;
-                            // TWO-FINGER TAP = right click (Windows convention).
-                            if (sawSecondFinger) {
-                                if (maxTravelFromDown <= tapSlopPx) onRightClick()
-                            } else if (maxTravelFromDown <= tapSlopPx) {
-                                onClick()
+                                        if (!sawSecondFinger && pressed.size >= 2) {
+                                            sawSecondFinger = true
+                                            val a = pressed[0].position
+                                            val b = pressed[1].position
+                                            prevDist = hypot(a.x - b.x, a.y - b.y)
+                                            prevCx = (a.x + b.x) / 2f
+                                            prevCy = (a.y + b.y) / 2f
+                                            accVUp = 0f
+                                            accHRight = 0f
+                                            emittedV2 = 0
+                                            emittedH2 = 0
+                                        }
+
+                                        if (sawSecondFinger && pressed.size >= 2) {
+                                            val a = pressed[0].position
+                                            val b = pressed[1].position
+                                            val dist = hypot(a.x - b.x, a.y - b.y)
+                                            val cx = (a.x + b.x) / 2f
+                                            val cy = (a.y + b.y) / 2f
+                                            if (padIsPinchStep(prevDist, dist)) {
+                                                if (prevDist > 0f) onZoom(dist / prevDist)
+                                                prevDist = dist
+                                                accVUp = 0f
+                                                accHRight = 0f
+                                                emittedV2 = 0
+                                                emittedH2 = 0
+                                            } else {
+                                                accVUp += prevCy - cy
+                                                accHRight += cx - prevCx
+                                                prevCx = cx
+                                                prevCy = cy
+                                                val notchesV = padScrollNotches(accVUp)
+                                                if (notchesV != emittedV2) {
+                                                    onScroll(notchesV - emittedV2, "v")
+                                                    emittedV2 = notchesV
+                                                }
+                                                val notchesH = padScrollNotches(accHRight)
+                                                if (notchesH != emittedH2) {
+                                                    onScroll(notchesH - emittedH2, "h")
+                                                    emittedH2 = notchesH
+                                                }
+                                            }
+                                        } else if (!sawSecondFinger) {
+                                            val change = pressed[0]
+                                            val pos = change.position
+                                            val (dx, dy) = padCursorDelta(pos.x - lastX, pos.y - lastY, padW)
+                                            maxTravelFromDown = maxOf(
+                                                maxTravelFromDown,
+                                                hypot(pos.x - down.position.x, pos.y - down.position.y),
+                                            )
+                                            onRelativeMove(dx, dy)
+                                        }
+
+                                        event.changes.forEach { it.consume() }
+                                    }
+                                    // Release semantics for the cursor zone only:
+                                    // single tap left-clicks, two-finger tap right-
+                                    // clicks -- Windows precision-touchpad table.
+                                    if (maxTravelFromDown <= tapSlopPx) {
+                                        if (sawSecondFinger) onRightClick() else onClick()
+                                    }
+                                }
                             }
                         }
                     },
                 contentAlignment = Alignment.Center,
             ) {
+                // Edge-zone stripes: quiet but discoverable affordances.
+                Column(
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .fillMaxHeight()
+                        .padding(vertical = 6.dp, horizontal = 4.dp),
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+                    ) {
+                        Text(
+                            text = "⇕",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 34.dp),
+                        )
+                    }
+                }
+                Row(modifier = Modifier.align(Alignment.BottomCenter)) {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+                        modifier = Modifier.padding(horizontal = 52.dp, vertical = 5.dp),
+                    ) {
+                        Text(
+                            text = "⇔",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 24.dp, vertical = 3.dp),
+                        )
+                    }
+                }
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
                         text = if (enabled) "Deslizá para mover el cursor"
@@ -929,7 +1004,7 @@ private fun Trackpad(
                     )
                     if (enabled) {
                         Text(
-                            text = "tap = clic · 2 dedos = scroll · pellizco = zoom",
+                            text = "tap = clic · bordes ⇕ ⇔ = scroll · 2 dedos = pellizco",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

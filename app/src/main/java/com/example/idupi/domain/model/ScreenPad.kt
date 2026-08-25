@@ -57,6 +57,29 @@ const val PAD_PINCH_STEP_PX = 8f
 fun padIsPinchStep(lastDist: Float, distNow: Float): Boolean =
     abs(distNow - lastDist) >= PAD_PINCH_STEP_PX
 
+// --- edge scroll zones (owner request) ---------------------------------------
+//
+// Two-finger horizontal scroll demands precision small pads don't have, so
+// the pad gains dedicated STRIPS: sliding along the right edge scrolls
+// vertically, along the bottom edge horizontally -- one finger, no ambiguity.
+
+/** Width/height of an edge strip, in dp (converted by the caller). */
+const val PAD_EDGE_ZONE_DP = 44
+
+enum class PadZone { CURSOR, SCROLL_V, SCROLL_H }
+
+/**
+ * Which behaviour a touch landing at (x, y) on a w x h pad activates. The
+ * right edge wins the bottom-right corner: vertical scrolling is the more
+ * common need and a corner misfire is the most jarring.
+ */
+fun padZoneAt(x: Float, y: Float, w: Float, h: Float, edgePx: Float): PadZone =
+    when {
+        x >= w - edgePx -> PadZone.SCROLL_V
+        y >= h - edgePx -> PadZone.SCROLL_H
+        else -> PadZone.CURSOR
+    }
+
 /**
  * Mode arbitration between two fingers: distance growth or shrink beyond the
  * threshold is a pinch-zoom and latches PINCH; parallel travel past the
