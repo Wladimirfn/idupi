@@ -1,13 +1,24 @@
-// Ack-paced screen streaming session (brief §4.1): the receiver paces, the
-// sender never pushes. At most one frame is in flight per session; every
-// frame the client renders is the newest screen state, never a queued stale
-// one. Frames travel to the client as chunked binary using the same wire
-// framing as the helper pipe — NOT SSE, because SSE's text lines would force
-// base64 (+33%) on the single hottest path in the system.
+// Screen streaming session -- PHASE D PACING (owner-approved redesign).
+//
+// The original design was strictly receiver-paced: one frame in flight, next
+// capture only after its ack. That pays the network round trip TWICE per
+// frame, which on a 157ms-ping link capped sessions at ~5fps no matter how
+// fast the helper, the encoder or the phone were.
+//
+// Captures now ride a TIMER at the active preset's fps and are sent as soon
+// as they exist. Acks no longer gate anything: they feed the quality ladder
+// (congestion telemetry) and bound an unacked WINDOW -- when K frames have
+// been sent without any ack coming back, captures SKIP instead of queueing,
+// so what reaches the phone is always fresh content, never a stale backlog.
+// The client keeps acking exactly as before; nothing changes on the wire
+// format or the app side.
 
 import { EventEmitter } from "node:events";
 
-import { createLadderController } from "./screen-quality.mjs";
+import { createLadderController, QUALITY_LADDER } from "./screen-quality.mjs";
+
+/** Max frames sent without any ack returning before captures skip. */
+const UNACKED_WINDOW = 4;
 
 export function createScreenStream({
   helper,
@@ -15,12 +26,13 @@ export function createScreenStream({
   width,
   height,
   quality = 55,
+  /** Test hook: overrides the preset-derived pacing interval. */
+  paceIntervalMs = null,
 }) {
   const events = new EventEmitter();
   let stopped = false;
   let capturing = false;
-  let ackedFrameId = null;
-  let lastFrameId = null;
+  let timerHandle = null;
 
   // Quality: a number is MANUAL (fixed, human-owned). "auto" hands the ladder
   // controller the wheel -- it picks jpeg quality AND capture scale from the
@@ -28,16 +40,18 @@ export function createScreenStream({
   const auto = quality === "auto";
   const baseWidth = width;
   const baseHeight = height;
-  const ladder = auto
-    ? createLadderController()
-    : null;
-  let currentQuality = auto ? ladder.preset().jpegQuality : quality;
+  const ladder = auto ? createLadderController() : null;
+  let currentQuality = auto ? QUALITY_LADDER[1].jpegQuality : quality;
   let capW = width;
   let capH = height;
-  let minIntervalMs = 0;
+  // Manual mode gets a sane 30fps ceiling too: unbounded pacing would flood
+  // the socket with duplicate static-screen frames for zero benefit.
+  let minIntervalMs = paceIntervalMs ?? 33;
   let lastCaptureStartedAt = 0;
+
+  const outstanding = new Set(); // frame ids sent but not yet acked
+
   // Instrumentation (optimization phase B): where do the milliseconds go?
-  // helperMs = capture+diff+encode round trip inside the Go helper.
   let framesEmitted = 0;
   let helperMsTotal = 0;
 
@@ -46,7 +60,7 @@ export function createScreenStream({
     currentQuality = p.jpegQuality;
     capW = Math.round(baseWidth * p.scale);
     capH = Math.round(baseHeight * p.scale);
-    minIntervalMs = 1000 / p.maxFps;
+    if (paceIntervalMs === null) minIntervalMs = 1000 / p.maxFps;
     events.emit("control", { type: "quality_changed", ...p });
   }
 
@@ -56,15 +70,7 @@ export function createScreenStream({
     if (stopped || capturing) return;
     capturing = true;
     try {
-      // Receiver-paced (brief §4.1), but never faster than the preset's fps:
-      // pacing waits BEFORE capturing so latency lands between frames, not on
-      // the wire.
-      const elapsed = Date.now() - lastCaptureStartedAt;
-      if (elapsed < minIntervalMs) {
-        await new Promise((r) => setTimeout(r, minIntervalMs - elapsed));
-      }
       lastCaptureStartedAt = Date.now();
-      const captureStartedAt = lastCaptureStartedAt;
       const frame = await helper.capture({
         monitor,
         width: capW,
@@ -74,15 +80,38 @@ export function createScreenStream({
       if (stopped) return; // receiver left mid-capture: discard, never queue
       lastFrameId = frame.meta.id;
       // Per-frame latency of the Go helper round trip (capture+diff+encode),
-      // surfaced in the frame meta and rolled into stats() -- optimization
-      // phase B decides with data, not guesses.
-      frame.meta.helperMs = Date.now() - captureStartedAt;
+      // surfaced in the frame meta and rolled into stats().
+      frame.meta.helperMs = Date.now() - lastCaptureStartedAt;
       framesEmitted += 1;
       helperMsTotal += frame.meta.helperMs;
+      outstanding.add(frame.meta.id);
       events.emit("frame", frame);
+    } catch (err) {
+      // One failed capture costs one frame; the timer brings the next one.
+      console.error("[screen-stream] capture failed:", err.message);
     } finally {
       capturing = false;
     }
+  }
+
+  let lastFrameId = null;
+
+  function scheduleNext() {
+    if (stopped) return;
+    const elapsed = Date.now() - lastCaptureStartedAt;
+    const wait = Math.max(15, minIntervalMs - elapsed);
+    timerHandle = setTimeout(tick, wait);
+  }
+
+  async function tick() {
+    if (stopped) return;
+    // Congestion brake: too many frames without a single ack back means the
+    // link cannot sustain this rate -- skipping keeps content FRESH (the next
+    // successful tick captures the screen as it is THEN).
+    if (outstanding.size < UNACKED_WINDOW) {
+      await captureOnce();
+    }
+    scheduleNext();
   }
 
   return {
@@ -93,37 +122,24 @@ export function createScreenStream({
       events.on("control", fn);
     },
 
-    /** Sends the first fresh frame. Nothing else flows until an ack arrives. */
+    /** Sends the first frame immediately, then starts the pace timer. */
     async start() {
       if (stopped) throw new Error("screen stream is stopped");
       await captureOnce();
+      scheduleNext();
     },
 
     /**
-     * The receiver finished rendering a frame: only now may we capture one
-     * fresh frame. Duplicate or stale acks are idempotent no-ops.
+     * Receiver telemetry, no longer a gate: stale/duplicate ids are no-ops,
+     * every real ack feeds the ladder so congestion changes what we capture
+     * (quality/scale/fps), and leaves the unacked window.
      */
     async onAck({ frameId, renderMs }) {
       if (stopped) throw new Error("screen stream is stopped");
-      // Only the most recent frame's ack matters; replays of older ids and
-      // double-acks for the current one must not queue extra captures.
-      if (frameId !== lastFrameId || ackedFrameId === frameId) return;
-      ackedFrameId = frameId;
-      // Auto feeds every real ack to the ladder BEFORE scheduling the next
-      // capture, so congestion changes what we capture, not just when.
+      if (!outstanding.delete(frameId)) return; // stale, duplicate or unknown
       if (ladder) {
         const decision = ladder.observe({ renderMs });
         if (decision.direction !== "stay") applyPreset();
-      }
-      try {
-        await captureOnce();
-      } catch (err) {
-        // Nothing was produced, so the acknowledgement was never spent. Give
-        // it back: with no timer underneath, a receiver whose retry we reject
-        // as a duplicate has no other way to ask, and the session hangs until
-        // its socket times out. One failed capture costs one frame.
-        ackedFrameId = null;
-        throw err;
       }
     },
 
@@ -138,15 +154,9 @@ export function createScreenStream({
         avgHelperMs: framesEmitted > 0 ? helperMsTotal / framesEmitted : 0,
       };
     },
-    setMonitor(id) {
-      monitor = id;
-      ackedFrameId = null; // next ack after a switch gets a full keyframe
-    },
-    get quality() {
-      return currentQuality;
-    },
     stop() {
       stopped = true;
+      if (timerHandle) clearTimeout(timerHandle);
       events.removeAllListeners();
     },
   };
