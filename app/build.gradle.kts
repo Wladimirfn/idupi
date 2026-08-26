@@ -20,8 +20,10 @@ android {
         targetSdk = 36
         // Owner-visible update marker: every shipped build bumps both, so
         // "which APK am I running" is answerable from the system settings.
-        versionCode = 3
-        versionName = "1.2-quality-fullscreen"
+        // Same-versionCode installs get silently skipped by some phone
+        // installers -- that is how a stale build masqueraded as the new one.
+        versionCode = 4
+        versionName = "1.3-fullscreen-clean"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
