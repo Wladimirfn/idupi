@@ -52,6 +52,9 @@ fun FloatingBubble(
     onKeyboard: () -> Unit,
     onPad: () -> Unit,
     onExitFullscreen: () -> Unit,
+    monitors: List<com.example.idupi.domain.model.ScreenMonitor> = emptyList(),
+    selectedMonitorId: Int? = null,
+    onSelectMonitor: ((Int) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     BoxWithConstraints(modifier) {
@@ -103,6 +106,19 @@ fun FloatingBubble(
                     leadingIcon = { Icon(Icons.Filled.Mouse, contentDescription = null) },
                     onClick = { menuOpen = false; onPad() },
                 )
+                if (monitors.size > 1 && onSelectMonitor != null) {
+                    androidx.compose.material3.HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    monitors.forEach { m ->
+                        DropdownMenuItem(
+                            text = { Text(m.name + if (m.primary) " ★" else "") },
+                            trailingIcon = if (m.id == selectedMonitorId) {
+                                { Icon(Icons.Filled.Close, contentDescription = null) }
+                            } else null,
+                            onClick = { menuOpen = false; onSelectMonitor(m.id) },
+                        )
+                    }
+                }
+                androidx.compose.material3.HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
                 DropdownMenuItem(
                     text = { Text("Salir pantalla completa") },
                     leadingIcon = { Icon(Icons.Filled.FullscreenExit, contentDescription = null) },
@@ -128,11 +144,14 @@ fun SplitKeyboard(
     }
     Surface(
         color = MaterialTheme.colorScheme.surfaceContainerHighest,
-        shadowElevation = 16.dp,
-        shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp),
+        shadowElevation = 8.dp,
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
         modifier = modifier,
     ) {
-        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+        Column(
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -143,8 +162,8 @@ fun SplitKeyboard(
                     Icon(Icons.Filled.Close, contentDescription = "Cerrar teclado")
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     KeyboardRow { for (c in "qwert") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
                     KeyboardRow { for (c in "asdfg") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
                     KeyboardRow {
@@ -156,7 +175,7 @@ fun SplitKeyboard(
                     }
                 }
                 Spacer(Modifier.width(6.dp))
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     KeyboardRow { for (c in "yuiop") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
                     KeyboardRow { for (c in "hjkñl") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
                     KeyboardRow {
@@ -168,12 +187,12 @@ fun SplitKeyboard(
                     }
                 }
             }
-            Row(modifier = Modifier.fillMaxWidth().padding(top = 10.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                KeyCap("Espacio", Modifier.weight(4f)) {
+            Row(modifier = Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                KeyCap("Espacio", Modifier.weight(2.5f)) {
                     haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
                     onKey(KeyPress.char(' '))
                 }
-                KeyCap("↵ Entrar", Modifier.weight(1.4f), highlighted = true) {
+                KeyCap("↵ Entrar", Modifier.weight(1f), highlighted = true) {
                     haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
                     onKey(KeyPress.special(SpecialKey.ENTER))
                 }
@@ -200,10 +219,10 @@ private fun KeyCap(
         color = if (highlighted) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
         tonalElevation = 3.dp,
         shadowElevation = 1.dp,
-        modifier = modifier.heightIn(min = 48.dp),
+        modifier = modifier.heightIn(min = 36.dp),
     ) {
         Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize().padding(horizontal = 2.dp)) {
-            Text(text = label, style = MaterialTheme.typography.titleSmall)
+            Text(text = label, style = MaterialTheme.typography.labelSmall)
         }
     }
 }
