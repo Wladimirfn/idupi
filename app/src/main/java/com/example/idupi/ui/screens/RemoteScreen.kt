@@ -23,14 +23,17 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -107,6 +110,8 @@ import kotlin.math.hypot
 
 import com.example.idupi.viewmodel.RemoteScreenUiState
 import com.example.idupi.viewmodel.RemoteScreenViewModel
+import com.example.idupi.ui.components.FloatingBubble
+import com.example.idupi.ui.components.SplitKeyboard
 
 /**
  * Remote screen viewer (brief hito 5): pick a monitor, watch it move.
@@ -283,6 +288,62 @@ fun RemoteScreen(
                     modifier = Modifier.fillMaxSize(),
                 )
 
+                if (immersive) {
+                    // CLEAN FULLSCREEN (owner correction): rotating shows
+                    // ONLY the picture -- no status pills, no trackpad card,
+                    // nothing riding on top. The corner toggle and the
+                    // draggable floating bubble are the only residents; the
+                    // bubble's menu summons the split keyboard or the mini
+                    // pad on demand, and "salir" hands orientation back.
+                    var keyboardOpen by remember { mutableStateOf(false) }
+                    var miniPadOpen by remember { mutableStateOf(false) }
+                    FullscreenToggleButton(
+                        locked = true,
+                        onToggle = {
+                            orientationLocked = false
+                            resetTransform()
+                        },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(6.dp),
+                    )
+                    FloatingBubble(
+                        onKeyboard = {
+                            keyboardOpen = !keyboardOpen
+                            if (keyboardOpen) miniPadOpen = false
+                        },
+                        onPad = {
+                            miniPadOpen = !miniPadOpen
+                            if (miniPadOpen) keyboardOpen = false
+                        },
+                        onExitFullscreen = {
+                            orientationLocked = false
+                            keyboardOpen = false
+                            miniPadOpen = false
+                            resetTransform()
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                    if (miniPadOpen) {
+                        MiniPad(
+                            viewModel = viewModel,
+                            padMonitor = state.selectedMonitorId ?: 0,
+                            onClose = { miniPadOpen = false },
+                            modifier = Modifier
+                                .align(Alignment.BottomEnd)
+                                .padding(10.dp),
+                        )
+                    }
+                    if (keyboardOpen) {
+                        SplitKeyboard(
+                            onKey = { viewModel.sendKey(it) },
+                            onClose = { keyboardOpen = false },
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth(),
+                        )
+                    }
+                } else {
                 Row(
                     modifier = Modifier
                         .align(Alignment.TopCenter)
@@ -370,6 +431,7 @@ fun RemoteScreen(
                             )
                         }
                     }
+                }
                 }
             }
         } else {
@@ -923,6 +985,58 @@ private fun FullscreenToggleButton(
                 if (locked) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
                 contentDescription = if (locked) "Volver a vertical" else "Pantalla completa horizontal",
                 tint = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+    }
+}
+
+/**
+ * Owner's fullscreen "Pad" option: a SMALL translucent touchpad whose only
+ * jobs are scrolling (both axes), left click and right click -- not a second
+ * control center. It reuses the same Trackpad gestures as the docked one.
+ */
+@Composable
+private fun MiniPad(
+    viewModel: RemoteScreenViewModel,
+    padMonitor: Int,
+    onClose: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
+        modifier = modifier.width(190.dp),
+    ) {
+        Column(modifier = Modifier.padding(10.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Pad",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                IconButton(onClick = onClose, modifier = Modifier.size(24.dp)) {
+                    Icon(Icons.Filled.Close, contentDescription = "Cerrar pad")
+                }
+            }
+            Trackpad(
+                enabled = true,
+                onRelativeMove = { dx, dy ->
+                    viewModel.sendInput(ScreenInputEvent(type = "relmove", monitor = padMonitor, dx = dx, dy = dy))
+                },
+                onClick = { viewModel.sendInput(ScreenInputEvent(type = "click", monitor = padMonitor)) },
+                onRightClick = {
+                    viewModel.sendInput(ScreenInputEvent(type = "click", monitor = padMonitor, button = "right"))
+                },
+                onScroll = { notches, axis ->
+                    viewModel.sendInput(
+                        ScreenInputEvent(type = "scroll", monitor = padMonitor, delta = padWheelDelta(notches), axis = axis)
+                    )
+                },
+                onZoom = {},
             )
         }
     }
