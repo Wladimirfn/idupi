@@ -280,30 +280,45 @@ fun RemoteScreen(
                     .then(outerPadding)
                     .imePadding()
             ) {
-                RemoteImageArea(
-                    state = state,
-                    viewModel = viewModel,
-                    density = density,
-                    fillAvailable = true,
-                    imageScale = imageScale,
-                    panOffset = panOffset,
-                    onTransform = { scale, pan ->
-                        imageScale = scale
-                        panOffset = pan
-                    },
-                    modifier = Modifier.fillMaxSize(),
-                    fillScreen = immersive,
-                )
-
                 if (immersive) {
-                    // CLEAN FULLSCREEN (owner correction): rotating shows
-                    // ONLY the picture -- no status pills, no trackpad card,
-                    // nothing riding on top. The corner toggle and the
-                    // draggable floating bubble are the only residents; the
-                    // bubble's menu summons the split keyboard or the mini
-                    // pad on demand, and "salir" hands orientation back.
+                    // CLEAN FULLSCREEN: stream 60% + keyboard 40% when open,
+                    // as owner specified. No cropping, black bars frame the
+                    // 19:9 PC inside 19.5:9 phone. Bubble is the only persistent
+                    // control; its menu handles monitor switch too.
                     var keyboardOpen by remember { mutableStateOf(false) }
                     var miniPadOpen by remember { mutableStateOf(false) }
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        Box(
+                            modifier = Modifier
+                                .weight(if (keyboardOpen) 0.6f else 1f)
+                                .fillMaxWidth(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            RemoteImageArea(
+                                state = state,
+                                viewModel = viewModel,
+                                density = density,
+                                fillAvailable = true,
+                                imageScale = imageScale,
+                                panOffset = panOffset,
+                                onTransform = { scale, pan ->
+                                    imageScale = scale
+                                    panOffset = pan
+                                },
+                                modifier = Modifier.fillMaxSize(),
+                                fillScreen = true,
+                            )
+                        }
+                        if (keyboardOpen) {
+                            SplitKeyboard(
+                                onKey = { viewModel.sendKey(it) },
+                                onClose = { keyboardOpen = false },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .weight(0.4f),
+                            )
+                        }
+                    }
                     FullscreenToggleButton(
                         locked = true,
                         onToggle = {
@@ -344,19 +359,24 @@ fun RemoteScreen(
                                 .padding(10.dp),
                         )
                     }
-                    if (keyboardOpen) {
-                        SplitKeyboard(
-                            onKey = { viewModel.sendKey(it) },
-                            onClose = { keyboardOpen = false },
-                            modifier = Modifier
-                                .align(Alignment.BottomCenter)
-                                .fillMaxWidth(),
-                        )
-                    }
                 } else {
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
+                    RemoteImageArea(
+                        state = state,
+                        viewModel = viewModel,
+                        density = density,
+                        fillAvailable = true,
+                        imageScale = imageScale,
+                        panOffset = panOffset,
+                        onTransform = { scale, pan ->
+                            imageScale = scale
+                            panOffset = pan
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                        fillScreen = false,
+                    )
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
                         .padding(6.dp),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,

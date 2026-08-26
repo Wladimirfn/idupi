@@ -22,8 +22,8 @@ android {
         // "which APK am I running" is answerable from the system settings.
         // Same-versionCode installs get silently skipped by some phone
         // installers -- that is how a stale build masqueraded as the new one.
-        versionCode = 11
-        versionName = "1.10-bubble-pad-kbd"
+        versionCode = 12
+        versionName = "1.11-60-40-kbd-pad"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

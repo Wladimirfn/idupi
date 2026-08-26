@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -63,6 +65,8 @@ fun FloatingBubble(
         val innerH = (constraints.maxHeight - bubbleSize).coerceAtLeast(0f)
         var pos by remember(innerW, innerH) { mutableStateOf(innerW to innerH * 0.55f) }
         var menuOpen by remember { mutableStateOf(false) }
+
+        // Draggable bubble handle
         Box(
             modifier = Modifier
                 .offset { IntOffset(pos.first.roundToInt(), pos.second.roundToInt()) }
@@ -95,36 +99,44 @@ fun FloatingBubble(
                     ) {}
                 }
             }
-            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                DropdownMenuItem(
-                    text = { Text("Teclado") },
-                    leadingIcon = { Icon(Icons.Filled.Keyboard, contentDescription = null) },
-                    onClick = { menuOpen = false; onKeyboard() },
-                )
-                DropdownMenuItem(
-                    text = { Text("Pad") },
-                    leadingIcon = { Icon(Icons.Filled.Mouse, contentDescription = null) },
-                    onClick = { menuOpen = false; onPad() },
-                )
-                if (monitors.size > 1 && onSelectMonitor != null) {
-                    androidx.compose.material3.HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                    monitors.forEach { m ->
-                        DropdownMenuItem(
-                            text = { Text(m.name + if (m.primary) " ★" else "") },
-                            trailingIcon = if (m.id == selectedMonitorId) {
-                                { Icon(Icons.Filled.Close, contentDescription = null) }
-                            } else null,
-                            onClick = { menuOpen = false; onSelectMonitor(m.id) },
-                        )
-                    }
-                }
+        }
+
+        // Menu as sibling - not inside draggable Box, so taps are not consumed
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            DropdownMenuItem(
+                text = { Text("Teclado") },
+                leadingIcon = { Icon(Icons.Filled.Keyboard, contentDescription = null) },
+                onClick = { menuOpen = false; onKeyboard() },
+            )
+            DropdownMenuItem(
+                text = { Text("Pad") },
+                leadingIcon = { Icon(Icons.Filled.Mouse, contentDescription = null) },
+                onClick = { menuOpen = false; onPad() },
+            )
+            if (monitors.isNotEmpty() && onSelectMonitor != null) {
                 androidx.compose.material3.HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
-                DropdownMenuItem(
-                    text = { Text("Salir pantalla completa") },
-                    leadingIcon = { Icon(Icons.Filled.FullscreenExit, contentDescription = null) },
-                    onClick = { menuOpen = false; onExitFullscreen() },
+                Text(
+                    text = "Monitores",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                 )
+                monitors.forEach { m ->
+                    DropdownMenuItem(
+                        text = { Text(m.name + if (m.primary) " ★" else "") },
+                        trailingIcon = if (m.id == selectedMonitorId) {
+                            { Icon(Icons.Filled.Close, contentDescription = null) }
+                        } else null,
+                        onClick = { menuOpen = false; onSelectMonitor(m.id) },
+                    )
+                }
             }
+            androidx.compose.material3.HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+            DropdownMenuItem(
+                text = { Text("Salir pantalla completa") },
+                leadingIcon = { Icon(Icons.Filled.FullscreenExit, contentDescription = null) },
+                onClick = { menuOpen = false; onExitFullscreen() },
+            )
         }
     }
 }
@@ -149,8 +161,10 @@ fun SplitKeyboard(
         modifier = modifier,
     ) {
         Column(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier
+                .padding(horizontal = 6.dp, vertical = 4.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -174,7 +188,7 @@ fun SplitKeyboard(
                         for (c in "zxcvb") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) }
                     }
                 }
-                Spacer(Modifier.width(6.dp))
+                Spacer(Modifier.width(4.dp))
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     KeyboardRow { for (c in "yuiop") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
                     KeyboardRow { for (c in "hjkñl") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
@@ -203,7 +217,7 @@ fun SplitKeyboard(
 
 @Composable
 private fun KeyboardRow(content: @Composable RowScope.() -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp), content = content)
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp), content = content)
 }
 
 @Composable
@@ -219,7 +233,7 @@ private fun KeyCap(
         color = if (highlighted) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
         tonalElevation = 3.dp,
         shadowElevation = 1.dp,
-        modifier = modifier.heightIn(min = 36.dp),
+        modifier = modifier.heightIn(min = 32.dp),
     ) {
         Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize().padding(horizontal = 2.dp)) {
             Text(text = label, style = MaterialTheme.typography.labelSmall)
