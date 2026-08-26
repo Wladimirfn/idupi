@@ -557,7 +557,12 @@ private fun RemoteImageArea(
             val currentOnTransform by rememberUpdatedState(onTransform)
 
             val baseImageModifier = when {
-                fillScreen -> Modifier.fillMaxSize()
+                // Fullscreen prioriza ver TODO el escritorio en 16:9 con
+                // borde negro (pillarbox/letterbox) -- nada recortado, como
+                // pide el dueño para el S24 Ultra 19.5:9. Es el mismo box
+                // que el landscape normal, solo que ocupa todo el alto
+                // disponible y se centra sobre fondo negro.
+                fillScreen -> Modifier.fillMaxSize().aspectRatio(aspect)
                 fillAvailable -> Modifier.fillMaxSize().aspectRatio(aspect)
                 else -> Modifier.fillMaxWidth().aspectRatio(aspect)
             }
@@ -606,16 +611,8 @@ private fun RemoteImageArea(
                 .pointerInput(state.remoteInputEnabled, state.selectedMonitorId) {
                     if (!state.remoteInputEnabled) return@pointerInput
                     val monitor = state.selectedMonitorId ?: 0
-                    fun fractionAt(pos: Offset): Pair<Double, Double>? {
-                        return if (fillScreen && meta != null) {
-                            frameFractionAtCropped(
-                                pos, size.width.toFloat(), size.height.toFloat(),
-                                currentScale, currentPan, meta.w.toFloat(), meta.h.toFloat()
-                            )
-                        } else {
-                            frameFractionAt(pos, size.width.toFloat(), size.height.toFloat(), currentScale, currentPan)
-                        }
-                    }
+                    fun fractionAt(pos: Offset) =
+                        frameFractionAt(pos, size.width.toFloat(), size.height.toFloat(), currentScale, currentPan)
                     fun send(type: String, f: Pair<Double, Double>?, button: String) {
                         if (f == null) return
                         viewModel.sendInput(
@@ -650,21 +647,13 @@ private fun RemoteImageArea(
                     val monitor = state.selectedMonitorId ?: 0
                     detectDragGestures(
                         onDragStart = { pos ->
-                            val f = if (fillScreen && meta != null) {
-                                frameFractionAtCropped(pos, size.width.toFloat(), size.height.toFloat(), currentScale, currentPan, meta.w.toFloat(), meta.h.toFloat())
-                            } else {
-                                frameFractionAt(pos, size.width.toFloat(), size.height.toFloat(), currentScale, currentPan)
-                            } ?: return@detectDragGestures
+                            val f = frameFractionAt(pos, size.width.toFloat(), size.height.toFloat(), currentScale, currentPan) ?: return@detectDragGestures
                             viewModel.sendInput(ScreenInputEvent(type = "move", monitor = monitor, x = f.first, y = f.second))
                             viewModel.sendInput(ScreenInputEvent(type = "down", monitor = monitor, x = f.first, y = f.second))
                             buttonHeld = true
                         },
                         onDrag = { change, _ ->
-                            val f = if (fillScreen && meta != null) {
-                                frameFractionAtCropped(change.position, size.width.toFloat(), size.height.toFloat(), currentScale, currentPan, meta.w.toFloat(), meta.h.toFloat())
-                            } else {
-                                frameFractionAt(change.position, size.width.toFloat(), size.height.toFloat(), currentScale, currentPan)
-                            } ?: return@detectDragGestures
+                            val f = frameFractionAt(change.position, size.width.toFloat(), size.height.toFloat(), currentScale, currentPan) ?: return@detectDragGestures
                             viewModel.sendInput(ScreenInputEvent(type = "move", monitor = monitor, x = f.first, y = f.second))
                         },
                         onDragEnd = {
@@ -684,7 +673,7 @@ private fun RemoteImageArea(
             Image(
                 bitmap = frame,
                 contentDescription = "Escritorio remoto",
-                contentScale = if (fillScreen) ContentScale.Crop else ContentScale.FillBounds,
+                contentScale = ContentScale.FillBounds,
                 modifier = imageModifier.graphicsLayer {
                     scaleX = imageScale
                     scaleY = imageScale
