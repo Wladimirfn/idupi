@@ -104,6 +104,7 @@ import com.example.idupi.domain.model.padTwoFingerMode
 import com.example.idupi.domain.model.padWheelDelta
 import com.example.idupi.domain.model.keyboardDiffs
 import com.example.idupi.domain.model.touchToMonitorFraction
+import com.example.idupi.domain.model.touchToMonitorFractionCropped
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -286,6 +287,7 @@ fun RemoteScreen(
                         panOffset = pan
                     },
                     modifier = Modifier.fillMaxSize(),
+                    fillScreen = immersive,
                 )
 
                 if (immersive) {
@@ -511,6 +513,7 @@ private fun RemoteImageArea(
     panOffset: Offset,
     onTransform: (Float, Offset) -> Unit,
     modifier: Modifier = Modifier,
+    fillScreen: Boolean = false,
 ) {
     BoxWithConstraints(
         modifier = modifier,
@@ -553,12 +556,10 @@ private fun RemoteImageArea(
             val currentPan by rememberUpdatedState(panOffset)
             val currentOnTransform by rememberUpdatedState(onTransform)
 
-            val baseImageModifier = if (fillAvailable) {
-                // Landscape: largest aspect-fit box inside the whole area.
-                Modifier.fillMaxSize().aspectRatio(aspect)
-            } else {
-                // Portrait: width-driven, exactly as before.
-                Modifier.fillMaxWidth().aspectRatio(aspect)
+            val baseImageModifier = when {
+                fillScreen -> Modifier.fillMaxSize()
+                fillAvailable -> Modifier.fillMaxSize().aspectRatio(aspect)
+                else -> Modifier.fillMaxWidth().aspectRatio(aspect)
             }
             val imageModifier = baseImageModifier
                 .clipToBounds()
@@ -605,8 +606,16 @@ private fun RemoteImageArea(
                 .pointerInput(state.remoteInputEnabled, state.selectedMonitorId) {
                     if (!state.remoteInputEnabled) return@pointerInput
                     val monitor = state.selectedMonitorId ?: 0
-                    fun fractionAt(pos: Offset) =
-                        frameFractionAt(pos, size.width.toFloat(), size.height.toFloat(), currentScale, currentPan)
+                    fun fractionAt(pos: Offset): Pair<Double, Double>? {
+                        return if (fillScreen && meta != null) {
+                            frameFractionAtCropped(
+                                pos, size.width.toFloat(), size.height.toFloat(),
+                                currentScale, currentPan, meta.w.toFloat(), meta.h.toFloat()
+                            )
+                        } else {
+                            frameFractionAt(pos, size.width.toFloat(), size.height.toFloat(), currentScale, currentPan)
+                        }
+                    }
                     fun send(type: String, f: Pair<Double, Double>?, button: String) {
                         if (f == null) return
                         viewModel.sendInput(
@@ -641,13 +650,21 @@ private fun RemoteImageArea(
                     val monitor = state.selectedMonitorId ?: 0
                     detectDragGestures(
                         onDragStart = { pos ->
-                            val f = frameFractionAt(pos, size.width.toFloat(), size.height.toFloat(), currentScale, currentPan) ?: return@detectDragGestures
+                            val f = if (fillScreen && meta != null) {
+                                frameFractionAtCropped(pos, size.width.toFloat(), size.height.toFloat(), currentScale, currentPan, meta.w.toFloat(), meta.h.toFloat())
+                            } else {
+                                frameFractionAt(pos, size.width.toFloat(), size.height.toFloat(), currentScale, currentPan)
+                            } ?: return@detectDragGestures
                             viewModel.sendInput(ScreenInputEvent(type = "move", monitor = monitor, x = f.first, y = f.second))
                             viewModel.sendInput(ScreenInputEvent(type = "down", monitor = monitor, x = f.first, y = f.second))
                             buttonHeld = true
                         },
                         onDrag = { change, _ ->
-                            val f = frameFractionAt(change.position, size.width.toFloat(), size.height.toFloat(), currentScale, currentPan) ?: return@detectDragGestures
+                            val f = if (fillScreen && meta != null) {
+                                frameFractionAtCropped(change.position, size.width.toFloat(), size.height.toFloat(), currentScale, currentPan, meta.w.toFloat(), meta.h.toFloat())
+                            } else {
+                                frameFractionAt(change.position, size.width.toFloat(), size.height.toFloat(), currentScale, currentPan)
+                            } ?: return@detectDragGestures
                             viewModel.sendInput(ScreenInputEvent(type = "move", monitor = monitor, x = f.first, y = f.second))
                         },
                         onDragEnd = {
@@ -667,7 +684,7 @@ private fun RemoteImageArea(
             Image(
                 bitmap = frame,
                 contentDescription = "Escritorio remoto",
-                contentScale = ContentScale.FillBounds,
+                contentScale = if (fillScreen) ContentScale.Crop else ContentScale.FillBounds,
                 modifier = imageModifier.graphicsLayer {
                     scaleX = imageScale
                     scaleY = imageScale
@@ -1322,6 +1339,23 @@ private fun frameFractionAt(
     val fx = pivotX + (pos.x - clamped.x - pivotX) / scale
     val fy = pivotY + (pos.y - clamped.y - pivotY) / scale
     return touchToMonitorFraction(fx, fy, nodeW, nodeH)
+}
+
+private fun frameFractionAtCropped(
+    pos: Offset,
+    nodeW: Float,
+    nodeH: Float,
+    scale: Float,
+    pan: Offset,
+    frameW: Float,
+    frameH: Float,
+): Pair<Double, Double>? {
+    val clamped = clampPan(pan, scale, nodeW, nodeH)
+    val pivotX = nodeW / 2f
+    val pivotY = nodeH / 2f
+    val fx = pivotX + (pos.x - clamped.x - pivotX) / scale
+    val fy = pivotY + (pos.y - clamped.y - pivotY) / scale
+    return touchToMonitorFractionCropped(fx, fy, nodeW, nodeH, frameW, frameH)
 }
 
 /** Unwraps ContextWrapper chains to the Activity, for window flag changes. */
