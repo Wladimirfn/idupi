@@ -154,22 +154,13 @@ fun RemoteScreen(
     var orientationLocked by remember { mutableStateOf(false) }
     val useLandscape = isLandscape || orientationLocked
     // Fullscreen owns everything when watching wide -- by physical rotation
-    // or by the corner button. Debounced so the brief streaming=false gap
-    // during the orientation-triggered restart (stop+start) doesn't flash
-    // the touchpad over the picture -- that's the bug the owner just saw
-    // where fullscreen sometimes opens with the pad on top.
-    var immersiveDebounced by remember { mutableStateOf(false) }
-    androidx.compose.runtime.LaunchedEffect(useLandscape, state.streaming) {
-        if (useLandscape && state.streaming) {
-            immersiveDebounced = true
-        } else if (!useLandscape) {
-            immersiveDebounced = false
-        } else {
-            kotlinx.coroutines.delay(1200)
-            if (!state.streaming) immersiveDebounced = false
-        }
-    }
-    val immersive = immersiveDebounced
+    // or by the corner button. The owner found that the second entry into
+    // fullscreen flashed the full touchpad over the picture. Cause: immersive
+    // was useLandscape && streaming, and the orientation change restarts the
+    // stream (streaming false for ~300ms), so the second entry opened in the
+    // non-immersive branch. Fix: stay immersive while a frame exists -- the
+    // restart is invisible and the exit via the bubble is what really leaves.
+    val immersive = useLandscape && (state.streaming || state.currentFrame != null)
 
     fun resetTransform() {
         imageScale = 1f
@@ -572,10 +563,9 @@ private fun RemoteImageArea(
 
             val baseImageModifier = when {
                 // Fullscreen prioriza ver TODO el escritorio con borde negro
-                // y NADA recortado. El dueño (S24 Ultra 19.5:9 mostrando un
-                // PC 19:9) pidió achicar un 15% para que encuadre perfecto en
-                // cualquier teléfono/tablet aunque sobren barras negras.
-                fillScreen -> Modifier.fillMaxSize(0.85f).aspectRatio(aspect)
+                // y NADA recortado. 19:9 PC en 19.5:9 S24 Ultra: achicado al
+                // 80% (era 85%, dueño pidió otro 5% para ver los bordes).
+                fillScreen -> Modifier.fillMaxSize(0.80f).aspectRatio(aspect)
                 fillAvailable -> Modifier.fillMaxSize().aspectRatio(aspect)
                 else -> Modifier.fillMaxWidth().aspectRatio(aspect)
             }
