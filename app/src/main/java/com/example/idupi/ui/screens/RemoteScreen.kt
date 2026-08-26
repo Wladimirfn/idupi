@@ -32,6 +32,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -47,10 +49,14 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import android.app.Activity
 import android.content.Context
+import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.view.WindowManager
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -135,9 +141,15 @@ fun RemoteScreen(
     // Landscape overlays the controls; this collapses them so the whole
     // screen belongs to the picture.
     var controlsVisible by remember { mutableStateOf(true) }
-    // YouTube-style fullscreen: streaming in landscape owns EVERYTHING --
-    // system bars hidden, no app bar, black edge to edge.
-    val immersive = isLandscape && state.streaming
+    // YouTube-style manual lock (owner request): a small corner button pins
+    // the session to landscape fullscreen without waiting for the user to
+    // physically rotate the phone. Survives rotation because the activity
+    // no longer recreates (configChanges in the manifest).
+    var orientationLocked by remember { mutableStateOf(false) }
+    val useLandscape = isLandscape || orientationLocked
+    // Fullscreen owns everything when watching wide -- by physical rotation
+    // or by the corner button.
+    val immersive = useLandscape && state.streaming
 
     fun resetTransform() {
         imageScale = 1f
@@ -164,7 +176,20 @@ fun RemoteScreen(
         window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         onDispose {
             window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            // Leaving this screen must also hand orientation back to the
+            // system, or the whole app stays stuck sideways.
+            view.context.findActivity()?.requestedOrientation =
+                ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
         }
+    }
+
+    // The corner button's promise: locked means LANDSCAPE no matter how the
+    // phone is held; unlocked means the system decides again.
+    DisposableEffect(orientationLocked) {
+        view.context.findActivity()?.requestedOrientation =
+            if (orientationLocked) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            else ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        onDispose { }
     }
 
     // Immersive fullscreen (owner request): while STREAMING in landscape the
@@ -232,7 +257,7 @@ fun RemoteScreen(
         // In fullscreen the Scaffold padding (zero-height bar anyway) and any
         // inset-driven spacing would only shrink the picture: ignore it.
         val outerPadding = if (immersive) Modifier else Modifier.padding(padding)
-        if (isLandscape) {
+        if (useLandscape) {
             // Landscape (hito 10): the picture owns the whole content area and
             // the controls float OVER it -- a compact status row on top and a
             // collapsible card at the bottom. Nothing permanently shrinks the
@@ -304,6 +329,20 @@ fun RemoteScreen(
                     )
                 }
 
+                // YouTube's corner promise (owner request): tap to lock
+                // landscape fullscreen without rotating; tap again to let
+                // the phone decide.
+                FullscreenToggleButton(
+                    locked = orientationLocked,
+                    onToggle = {
+                        orientationLocked = !orientationLocked
+                        resetTransform()
+                    },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(6.dp),
+                )
+
                 if (controlsVisible) {
                     Card(
                         modifier = Modifier
@@ -347,19 +386,31 @@ fun RemoteScreen(
                 // Monitor picker: one chip per monitor; primary is marked with a star.
                 MonitorPickerRow(state = state, viewModel = viewModel)
 
-                RemoteImageArea(
-                    state = state,
-                    viewModel = viewModel,
-                    density = density,
-                    fillAvailable = false,
-                    imageScale = imageScale,
-                    panOffset = panOffset,
-                    onTransform = { scale, pan ->
-                        imageScale = scale
-                        panOffset = pan
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    RemoteImageArea(
+                        state = state,
+                        viewModel = viewModel,
+                        density = density,
+                        fillAvailable = false,
+                        imageScale = imageScale,
+                        panOffset = panOffset,
+                        onTransform = { scale, pan ->
+                            imageScale = scale
+                            panOffset = pan
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    FullscreenToggleButton(
+                        locked = orientationLocked,
+                        onToggle = {
+                            orientationLocked = !orientationLocked
+                            resetTransform()
+                        },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(6.dp),
+                    )
+                }
 
                 ScreenControls(
                     state = state,
@@ -663,17 +714,39 @@ private fun ScreenControls(
                 },
                 label = { Text(if (state.streaming) "Detener" else "Ver pantalla") }
             )
-            // Quality presets, live (owner request): the choice survives in
-            // ViewModel state; while streaming it reaches the server WITHOUT
-            // a restart. "auto" keeps climbing on its own; a pinned preset
-            // stays exactly where the human put it.
+            // Quality as a proper MENU (owner request): one compact chip
+            // shows the current choice; opening it lists every preset in a
+            // tidy, ordered dropdown instead of a row that overflows.
+            var qualityMenuOpen by remember { mutableStateOf(false) }
             val qualityOptions = listOf("auto", "baja", "media", "alta", "ultra")
-            qualityOptions.forEach { option ->
+            Box {
                 FilterChip(
-                    selected = state.selectedQuality == option,
-                    onClick = { onQualitySelect(option) },
-                    label = { Text(option.replaceFirstChar { it.uppercase() }) }
+                    selected = true,
+                    onClick = { qualityMenuOpen = !qualityMenuOpen },
+                    label = {
+                        Text(
+                            "Calidad: " +
+                                state.selectedQuality.replaceFirstChar { it.uppercase() }
+                        )
+                    },
                 )
+                DropdownMenu(
+                    expanded = qualityMenuOpen,
+                    onDismissRequest = { qualityMenuOpen = false },
+                ) {
+                    qualityOptions.forEach { option ->
+                        DropdownMenuItem(
+                            text = { Text(option.replaceFirstChar { it.uppercase() }) },
+                            onClick = {
+                                onQualitySelect(option)
+                                qualityMenuOpen = false
+                            },
+                            trailingIcon = if (state.selectedQuality == option) {
+                                @Composable { Icon(Icons.Filled.Check, contentDescription = null) }
+                            } else null,
+                        )
+                    }
+                }
             }
         }
         Row(
@@ -828,6 +901,32 @@ private fun ScreenControls(
 
 private fun monitorLabel(monitor: ScreenMonitor): String =
     "${monitor.name} (${monitor.width}x${monitor.height})" + if (monitor.primary) " ★" else ""
+
+/**
+ * The small corner control the owner asked for, YouTube-style: enter
+ * landscape fullscreen on tap, leave on the next tap. A translucent pill so
+ * it reads over any picture without covering much of it.
+ */
+@Composable
+private fun FullscreenToggleButton(
+    locked: Boolean,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.65f),
+        modifier = modifier,
+    ) {
+        IconButton(onClick = onToggle) {
+            Icon(
+                if (locked) Icons.Filled.FullscreenExit else Icons.Filled.Fullscreen,
+                contentDescription = if (locked) "Volver a vertical" else "Pantalla completa horizontal",
+                tint = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+    }
+}
 
 /**
  * The floating trackpad surface, styled as one contained card: a NOTEBOOK
