@@ -18,8 +18,10 @@ android {
         applicationId = "com.example.idupi"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        // Owner-visible update marker: every shipped build bumps both, so
+        // "which APK am I running" is answerable from the system settings.
+        versionCode = 3
+        versionName = "1.2-quality-fullscreen"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
