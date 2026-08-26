@@ -49,6 +49,8 @@ import android.app.Activity
 import android.content.Context
 import android.content.res.Configuration
 import android.view.WindowManager
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -130,11 +132,12 @@ fun RemoteScreen(
     // pan (hito 10) rides alongside it so a zoomed picture can be moved.
     var imageScale by remember { mutableStateOf(1f) }
     var panOffset by remember { mutableStateOf(Offset.Zero) }
-    // Auto hands the server's ladder the wheel (hito 9); off = manual 55.
-    var qualityAuto by remember { mutableStateOf(true) }
     // Landscape overlays the controls; this collapses them so the whole
     // screen belongs to the picture.
     var controlsVisible by remember { mutableStateOf(true) }
+    // YouTube-style fullscreen: streaming in landscape owns EVERYTHING --
+    // system bars hidden, no app bar, black edge to edge.
+    val immersive = isLandscape && state.streaming
 
     fun resetTransform() {
         imageScale = 1f
@@ -164,6 +167,25 @@ fun RemoteScreen(
         }
     }
 
+    // Immersive fullscreen (owner request): while STREAMING in landscape the
+    // system bars step aside exactly like a video player -- swipe from an
+    // edge brings them back transiently. Leaving landscape or stopping the
+    // stream restores them; leaving this screen restores them too.
+    DisposableEffect(immersive) {
+        val window = view.context.findActivity()?.window
+        if (window != null) {
+            val controller = WindowInsetsControllerCompat(window, view)
+            if (immersive) {
+                controller.systemBarsBehavior =
+                    WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                controller.hide(WindowInsetsCompat.Type.systemBars())
+            } else {
+                controller.show(WindowInsetsCompat.Type.systemBars())
+            }
+        }
+        onDispose { }
+    }
+
     // The picker has nothing to show until the monitors are fetched, and the
     // screen is the only thing that knows it is being looked at.
     LaunchedEffect(Unit) {
@@ -176,30 +198,40 @@ fun RemoteScreen(
     LaunchedEffect(state.streaming) { if (state.streaming) resetTransform() }
     // Rotation swaps the box's aspect: the streamed viewport is recomputed by
     // [RemoteImageArea] during layout, and the stream restarts so the server
-    // sends a frame sized for what is now displayed.
+    // sends a frame sized for what is now displayed. The user's quality
+    // choice rides along (it lives in the ViewModel state).
     LaunchedEffect(configuration.orientation) {
         resetTransform()
         if (state.streaming) {
             viewModel.startStreaming(
                 viewportW = viewModel.viewportForCurrentBox.first,
                 viewportH = viewModel.viewportForCurrentBox.second,
-                quality = if (qualityAuto) "auto" else "55",
             )
         }
     }
 
     Scaffold(
+        containerColor = if (immersive)
+            androidx.compose.ui.graphics.Color.Black
+        else MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
-                title = { Text("Pantalla Remota") },
-                navigationIcon = {
-                    IconButton(onClick = onMenuClick) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Menú")
+            // Fullscreen hides the app bar too: every pixel belongs to the
+            // stream, YouTube-style. The back gesture still works.
+            if (!immersive) {
+                TopAppBar(
+                    title = { Text("Pantalla Remota") },
+                    navigationIcon = {
+                        IconButton(onClick = onMenuClick) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Menú")
+                        }
                     }
-                }
-            )
+                )
+            }
         }
     ) { padding ->
+        // In fullscreen the Scaffold padding (zero-height bar anyway) and any
+        // inset-driven spacing would only shrink the picture: ignore it.
+        val outerPadding = if (immersive) Modifier else Modifier.padding(padding)
         if (isLandscape) {
             // Landscape (hito 10): the picture owns the whole content area and
             // the controls float OVER it -- a compact status row on top and a
@@ -209,7 +241,7 @@ fun RemoteScreen(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding)
+                    .then(outerPadding)
                     .imePadding()
             ) {
                 RemoteImageArea(
@@ -290,8 +322,7 @@ fun RemoteScreen(
                             ScreenControls(
                                 state = state,
                                 viewModel = viewModel,
-                                qualityAuto = qualityAuto,
-                                onQualityAutoToggle = { qualityAuto = !qualityAuto },
+                                onQualitySelect = { viewModel.setScreenQuality(it) },
                                 imageScale = imageScale,
                                 panOffset = panOffset,
                                 onZoom = onTrackpadZoom,
@@ -309,7 +340,7 @@ fun RemoteScreen(
                     .fillMaxSize()
                     .verticalScroll(controlsScroll)
                     .imePadding()
-                    .padding(padding)
+                    .then(outerPadding)
                     .padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
@@ -333,8 +364,7 @@ fun RemoteScreen(
                 ScreenControls(
                     state = state,
                     viewModel = viewModel,
-                    qualityAuto = qualityAuto,
-                    onQualityAutoToggle = { qualityAuto = !qualityAuto },
+                    onQualitySelect = { viewModel.setScreenQuality(it) },
                     imageScale = imageScale,
                     panOffset = panOffset,
                     onZoom = onTrackpadZoom,
@@ -601,8 +631,7 @@ private fun MonitorPickerRow(
 private fun ScreenControls(
     state: RemoteScreenUiState,
     viewModel: RemoteScreenViewModel,
-    qualityAuto: Boolean,
-    onQualityAutoToggle: () -> Unit,
+    onQualitySelect: (String) -> Unit,
     imageScale: Float,
     panOffset: Offset,
     onZoom: (Float) -> Unit,
@@ -629,17 +658,23 @@ private fun ScreenControls(
                         viewModel.startStreaming(
                             viewportW = viewModel.viewportForCurrentBox.first,
                             viewportH = viewModel.viewportForCurrentBox.second,
-                            quality = if (qualityAuto) "auto" else "55",
                         )
                     }
                 },
                 label = { Text(if (state.streaming) "Detener" else "Ver pantalla") }
             )
-            FilterChip(
-                selected = qualityAuto,
-                onClick = onQualityAutoToggle,
-                label = { Text("Auto") }
-            )
+            // Quality presets, live (owner request): the choice survives in
+            // ViewModel state; while streaming it reaches the server WITHOUT
+            // a restart. "auto" keeps climbing on its own; a pinned preset
+            // stays exactly where the human put it.
+            val qualityOptions = listOf("auto", "baja", "media", "alta", "ultra")
+            qualityOptions.forEach { option ->
+                FilterChip(
+                    selected = state.selectedQuality == option,
+                    onClick = { onQualitySelect(option) },
+                    label = { Text(option.replaceFirstChar { it.uppercase() }) }
+                )
+            }
         }
         Row(
             modifier = Modifier.fillMaxWidth(),

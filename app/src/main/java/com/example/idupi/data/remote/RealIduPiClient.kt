@@ -377,6 +377,14 @@ class RealIduPiClient : IduPiClient {
         }
     }
 
+    /** Live quality switch -- the server validates and announces the result. */
+    override suspend fun changeScreenQuality(sid: String, quality: String) {
+        send(HttpMethod.Post, "/api/v1/screen/quality") {
+            contentType(ContentType.Application.Json)
+            setBody(mapOf("sid" to sid, "quality" to quality))
+        }
+    }
+
     override suspend fun getScreenConfig(): ScreenRemoteConfig =
         send(HttpMethod.Get, "/api/v1/screen/config").body()
 

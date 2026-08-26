@@ -9,6 +9,7 @@
 
 import { ScreenHelper, ensureHelperBuilt } from "./screen-helper.mjs";
 import { createScreenStream } from "./screen-stream.mjs";
+import { QUALITY_LADDER } from "./screen-quality.mjs";
 import { encodeControl, encodeFrame } from "./screen-protocol.mjs";
 
 const screenHelper = new ScreenHelper();
@@ -28,6 +29,11 @@ function ensureInputHelper() {
 const REMOTE_INPUT_ENABLED = process.env.IDUPI_REMOTE_INPUT !== "0";
 // Active receiver-paced streams keyed by the client-chosen session id.
 const screenSessions = new Map();
+
+/** Test seam: inject fake sessions without booting helpers or ports. */
+export function _sessionsForTest() {
+    return screenSessions;
+}
 
 export async function handleScreenRoute(req, res, pathname) {
     // What the server allows over this bridge; the app hides its controls
@@ -128,17 +134,17 @@ export async function handleScreenRoute(req, res, pathname) {
                 "Cache-Control": "no-cache, no-transform",
                 Connection: "keep-alive",
             });
-            const quality = qualityParam === "auto"
-                ? "auto"
+            // "auto" hands the ladder the wheel; a preset name or a number
+            // pins that choice manually. Anything else falls back to 55.
+            const quality = qualityParam === "auto" || QUALITY_LADDER.some((p) => p.name === qualityParam)
+                ? qualityParam
                 : Number(qualityParam);
             const stream = createScreenStream({
                 helper: screenHelper,
                 monitor: monitor,
                 width: Math.round(width),
                 height: Math.round(height),
-                // "auto" hands the ladder the wheel; anything non-numeric
-                // falls back to the manual default.
-                quality: Number.isFinite(quality) || quality === "auto"
+                quality: Number.isFinite(quality) || typeof quality === "string"
                     ? quality
                     : 55,
             });
@@ -187,11 +193,56 @@ export async function handleScreenRoute(req, res, pathname) {
                     );
                     return;
                 }
-                await session.stream.onAck({ frameId: parsed.frameId });
+                // renderMs is the ladder's fuel: dropping it here made auto
+                // mode see every frame as fast and pin itself at ultra.
+                await session.stream.onAck({
+                    frameId: parsed.frameId,
+                    renderMs: parsed.renderMs,
+                });
                 res.writeHead(204);
                 res.end();
             } catch (err) {
                 res.writeHead(410, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ error: err.message }));
+            }
+        });
+        return true;
+    }
+
+    // Live quality change (owner request): switch presets -- or hand the
+    // ladder back the wheel -- WITHOUT tearing the stream down. The stream
+    // validates the value and announces the result as a quality_changed
+    // control, so the app's pill updates from server truth.
+    if (pathname === "/api/v1/screen/quality" && req.method === "POST") {
+        let body = "";
+        req.on("data", (chunk) => {
+            body += chunk;
+        });
+        req.on("end", async () => {
+            let parsed;
+            try {
+                parsed = JSON.parse(body || "{}");
+            } catch {
+                res.writeHead(400, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ error: "invalid JSON body" }));
+                return;
+            }
+            const session = parsed.sid && screenSessions.get(parsed.sid);
+            if (!session) {
+                res.writeHead(404, { "Content-Type": "application/json" });
+                res.end(
+                    JSON.stringify({
+                        error: "unknown or closed stream session",
+                    }),
+                );
+                return;
+            }
+            try {
+                await session.stream.setQuality(parsed.quality);
+                res.writeHead(204);
+                res.end();
+            } catch (err) {
+                res.writeHead(400, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ error: err.message }));
             }
         });

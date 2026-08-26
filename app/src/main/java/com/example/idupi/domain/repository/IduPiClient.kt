@@ -88,6 +88,12 @@ interface IduPiClient {
     /** Must be called AFTER a frame is rendered; the server paces on it. */
     suspend fun acknowledgeScreenFrame(sid: String, frameId: Int, bytes: Int, renderMs: Long)
 
+    /**
+     * Changes stream quality LIVE: "auto" hands the server ladder the wheel,
+     * a preset name ("baja"|"media"|"alta"|"ultra") pins it. No restart.
+     */
+    suspend fun changeScreenQuality(sid: String, quality: String)
+
     /** What the server allows: remote input ships OFF behind an explicit opt-in. */
     suspend fun getScreenConfig(): ScreenRemoteConfig
 

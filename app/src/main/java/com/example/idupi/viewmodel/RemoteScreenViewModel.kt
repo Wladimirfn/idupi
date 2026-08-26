@@ -45,6 +45,12 @@ data class RemoteScreenUiState(
     val remoteInputEnabled: Boolean = false,
     /** Auto-ladder's current preset name, as announced by the server (hito 9). */
     val activeQuality: String? = null,
+    /**
+     * The user's quality CHOICE: "auto" or a pinned preset name. Lives in
+     * state (not a remember) so rotation -- which restarts the stream --
+     * keeps it. The server's activeQuality may differ under auto.
+     */
+    val selectedQuality: String = "auto",
 )
 
 /**
@@ -115,15 +121,16 @@ class RemoteScreenViewModel(
         viewportForCurrentBox = viewportFor(monitor, boxW, boxH)
     }
 
-    fun startStreaming(viewportW: Int, viewportH: Int, quality: String = "55") {
+    fun startStreaming(viewportW: Int, viewportH: Int, quality: String? = null) {
         stopStreaming()
         val monitorId = _uiState.value.selectedMonitorId ?: return
+        val chosen = quality ?: _uiState.value.selectedQuality
         val request = ScreenStreamRequest(
             sid = UUID.randomUUID().toString(),
             monitor = monitorId,
             viewportW = viewportW,
             viewportH = viewportH,
-            quality = quality
+            quality = chosen
         )
         sid = request.sid
         viewportForCurrentBox = viewportW to viewportH
@@ -161,6 +168,26 @@ class RemoteScreenViewModel(
     }
 
     private val controlJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+
+    /**
+     * Live quality change: records the choice and, mid-stream, tells the
+     * server WITHOUT restarting. The server announces what actually applies
+     * as a quality_changed control, so [activeQuality] stays server truth --
+     * under "auto" it will keep moving on its own.
+     */
+    fun setScreenQuality(quality: String) {
+        _uiState.value = _uiState.value.copy(selectedQuality = quality)
+        val currentSid = sid ?: return
+        viewModelScope.launch {
+            try {
+                client.changeScreenQuality(currentSid, quality)
+            } catch (e: Exception) {
+                if (e !is CancellationException) {
+                    _uiState.value = _uiState.value.copy(error = e.message)
+                }
+            }
+        }
+    }
 
     /**
      * Decode, expose to the UI, THEN ack with real telemetry. The ordering is

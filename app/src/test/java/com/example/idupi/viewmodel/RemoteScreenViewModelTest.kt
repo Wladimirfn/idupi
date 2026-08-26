@@ -85,6 +85,39 @@ class RemoteScreenViewModelTest {
     }
 
     @Test
+    fun `quality choice reaches the server live and rides a restart`() = runTest {
+        val fake = FakeIduPiClient()
+        fake.screenMonitorsToReturn = listOf(primaryMonitor)
+        fake.screenFramesToEmit = listOf(frame(1))
+        val viewModel = RemoteScreenViewModel(
+            clientSource = FakeClientSource(fake),
+            decodeJpeg = { stubBitmap }
+        )
+        viewModel.refreshMonitors()
+        advanceUntilIdle()
+
+        viewModel.startStreaming(viewportW = 800, viewportH = 450)
+        advanceUntilIdle()
+
+        // Mid-stream switch: recorded against the LIVE session id.
+        viewModel.setScreenQuality("alta")
+        advanceUntilIdle()
+        assertEquals(1, fake.screenQualityChanges.size)
+        assertEquals("alta", fake.screenQualityChanges.single().second)
+        // Against the LIVE session, not a stale one.
+        assertEquals(fake.lastScreenStreamRequest?.sid, fake.screenQualityChanges.single().first)
+        assertEquals("alta", viewModel.uiState.value.selectedQuality)
+
+        // The choice survives a stream restart (rotation does this): the new
+        // request carries the pinned preset instead of falling back to 55.
+        viewModel.startStreaming(viewportW = 800, viewportH = 450)
+        advanceUntilIdle()
+        assertEquals("alta", fake.lastScreenStreamRequest?.quality)
+
+        assertNull(viewModel.uiState.value.error)
+    }
+
+    @Test
     fun `the stream is requested at the given viewport`() = runTest {
         val fake = FakeIduPiClient()
         fake.screenMonitorsToReturn = listOf(primaryMonitor)

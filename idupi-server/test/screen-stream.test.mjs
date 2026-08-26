@@ -137,6 +137,65 @@ test("manual numeric quality keeps fixed geometry and never announces", async ()
     await stream.stop();
 });
 
+// --- Live quality changes: presets pinned by name, or auto restored,
+// without tearing the session down (owner request).
+
+test("creation accepts a named preset as the starting quality", async () => {
+    const helper = fakeHelper();
+    const stream = pacedStream(helper, { quality: "baja" });
+    const frames = [];
+    stream.onFrame((f) => frames.push(f));
+    await stream.start();
+    assert.equal(frames.length, 1);
+    assert.equal(helper.calls[0].width, Math.round(800 * 0.4)); // 320
+    assert.equal(helper.calls[0].quality, 40);
+    await stream.stop();
+});
+
+test("setQuality pins a named preset for subsequent captures", async () => {
+    const helper = fakeHelper();
+    const stream = pacedStream(helper, { quality: 55 });
+    const frames = [];
+    const controls = [];
+    stream.onFrame((f) => frames.push(f));
+    stream.onControl((c) => controls.push(c));
+    await stream.start();
+    await settle(40);
+
+    stream.setQuality("ultra");
+    await settle(80);
+
+    const changed = controls.find((c) => c.type === "quality_changed");
+    assert.ok(changed, "pinning a preset must announce quality_changed");
+    assert.equal(changed.name, "ultra");
+    assert.equal(helper.calls.at(-1).quality, 80);
+    assert.equal(helper.calls.at(-1).width, 800); // ultra scale is 1.0
+    await stream.stop();
+});
+
+test("setQuality('auto') hands the ladder back the wheel", async () => {
+    const stream = pacedStream(fakeHelper(), { quality: 75 });
+    const controls = [];
+    stream.onControl((c) => controls.push(c));
+    await stream.start();
+    await settle(30);
+
+    stream.setQuality("auto");
+    await settle(40);
+
+    const changed = controls.find((c) => c.type === "quality_changed");
+    assert.ok(changed, "switching to auto must announce the ladder's preset");
+    assert.equal(changed.name, "media"); // a fresh ladder starts at MEDIA
+    await stream.stop();
+});
+
+test("setQuality rejects unknown values", async () => {
+    const stream = pacedStream(fakeHelper());
+    await stream.start();
+    assert.throws(() => stream.setQuality("nope"));
+    await stream.stop();
+});
+
 test("stop() ends the flow", async () => {
     const stream = pacedStream(fakeHelper());
     const frames = [];

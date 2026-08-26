@@ -34,19 +34,28 @@ export function createScreenStream({
   let capturing = false;
   let timerHandle = null;
 
-  // Quality: a number is MANUAL (fixed, human-owned). "auto" hands the ladder
-  // controller the wheel -- it picks jpeg quality AND capture scale from the
-  // preset, and paces captures to the preset's max fps.
-  const auto = quality === "auto";
+  // Quality: "auto" hands the ladder controller the wheel; a preset NAME or
+  // a number pins that choice manually (the human owns it).
   const baseWidth = width;
   const baseHeight = height;
-  const ladder = auto ? createLadderController() : null;
-  let currentQuality = auto ? QUALITY_LADDER[1].jpegQuality : quality;
+  let auto = quality === "auto";
+  const initialPreset = QUALITY_LADDER.find((p) => p.name === quality);
+  let ladder = auto ? createLadderController() : null;
+  // Auto starts at MEDIA (index 1): good default, room to climb and to fall.
+  let currentQuality = auto
+    ? QUALITY_LADDER[1].jpegQuality
+    : (initialPreset ? initialPreset.jpegQuality : quality);
   let capW = width;
   let capH = height;
   // Manual mode gets a sane 30fps ceiling too: unbounded pacing would flood
-  // the socket with duplicate static-screen frames for zero benefit.
-  let minIntervalMs = paceIntervalMs ?? 33;
+  // the socket with duplicate static-screen frames for zero benefit. A named
+  // preset paces at ITS OWN fps ceiling instead.
+  let minIntervalMs = paceIntervalMs ??
+    (initialPreset ? 1000 / initialPreset.maxFps : 33);
+  if (initialPreset) {
+    capW = Math.round(baseWidth * initialPreset.scale);
+    capH = Math.round(baseHeight * initialPreset.scale);
+  }
   let lastCaptureStartedAt = 0;
 
   const outstanding = new Set(); // frame ids sent but not yet acked
@@ -143,9 +152,52 @@ export function createScreenStream({
       }
     },
 
-    /** Applies to subsequent captures; never triggers an unsolicited frame. */
+    /**
+     * Live quality change. Three shapes:
+     *  - "auto"      hands the ladder back the wheel (announces the preset)
+     *  - a preset    "baja"|"media"|"alta"|"ultra" pins that preset manually
+     *    name        (scale + jpeg quality + fps ceiling all follow it)
+     *  - a number    legacy manual: fixed jpeg quality at full scale
+     * Anything else throws -- the route surfaces it as 400.
+     */
     setQuality(q) {
-      currentQuality = q;
+      if (q === "auto") {
+        if (!auto) {
+          auto = true;
+          ladder = createLadderController();
+          applyPreset(); // fresh ladder starts at MEDIA and says so
+        }
+        return;
+      }
+      const n = Number(q);
+      const preset = QUALITY_LADDER.find((p) => p.name === q);
+      if (preset) {
+        auto = false;
+        ladder = null;
+        currentQuality = preset.jpegQuality;
+        capW = Math.round(baseWidth * preset.scale);
+        capH = Math.round(baseHeight * preset.scale);
+        if (paceIntervalMs === null) minIntervalMs = 1000 / preset.maxFps;
+        events.emit("control", { type: "quality_changed", ...preset });
+        return;
+      }
+      if (Number.isFinite(n) && q !== "" && q !== null) {
+        auto = false;
+        ladder = null;
+        currentQuality = n;
+        capW = baseWidth;
+        capH = baseHeight;
+        if (paceIntervalMs === null) minIntervalMs = 33;
+        events.emit("control", {
+          type: "quality_changed",
+          name: "manual",
+          scale: 1,
+          jpegQuality: n,
+          maxFps: Math.round(1000 / minIntervalMs),
+        });
+        return;
+      }
+      throw new Error(`unknown quality: ${q}`);
     },
     /** Rolling pipeline telemetry (optimization phase B). */
     stats() {

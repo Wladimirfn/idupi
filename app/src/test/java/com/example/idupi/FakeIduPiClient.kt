@@ -377,6 +377,8 @@ class FakeIduPiClient : IduPiClient {
     )
     val screenAcks = mutableListOf<RecordedScreenAck>()
 
+    val screenQualityChanges = mutableListOf<Pair<String, String>>()
+
     override suspend fun getScreenMonitors(): List<ScreenMonitor> {
         maybeFail()
         return screenMonitorsToReturn
@@ -423,6 +425,11 @@ class FakeIduPiClient : IduPiClient {
                 frameViewportW = lastScreenStreamRequest?.viewportW ?: -1,
             )
         )
+    }
+
+    override suspend fun changeScreenQuality(sid: String, quality: String) {
+        maybeFail()
+        screenQualityChanges.add(sid to quality)
     }
 }
 
