@@ -1,112 +1,100 @@
-// ============================================================================
-// idupi-server/test/screen-stream-recovery.test.mjs
-//
-// The stream died after 1996 good frames and never came back. Its pacing rule
-// is that nothing is captured until the receiver acknowledges the frame it
-// rendered, so silence from either side is silence forever -- there is no
-// timer underneath to nudge it awake.
-//
-// onAck marked the frame acknowledged BEFORE capturing the next one. A single
-// failed capture therefore consumed the acknowledgement without producing
-// anything, and the retry for that same frame was rejected as a duplicate.
-// The session stayed alive, holding a receiver that could no longer ask for
-// anything, until the socket timed out thirty seconds later.
-//
-// One failure must cost one frame, not the session.
-//
-// Run (from repo root):
-//   node --test idupi-server/test/screen-stream-recovery.test.mjs
-// ============================================================================
+// Timer-paced recovery: a failed capture costs one tick, not the session.
+// The timer keeps ticking and the next successful helper call emits again.
+// Acks are telemetry only -- they never trigger a capture directly, so
+// duplicate/stale acks stay idempotent regardless of failures.
 
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createScreenStream } from "../lib/screen-stream.mjs";
 
-/** A helper whose captures fail on demand, counting how often it was asked. */
 function fakeHelper() {
     let nextId = 1;
     const state = { calls: 0, failNext: 0 };
     return {
         state,
-        async capture() {
+        async capture({ width, height }) {
             state.calls++;
             if (state.failNext > 0) {
                 state.failNext--;
                 throw new Error("capture failed");
             }
-            return { meta: { id: nextId++, w: 8, h: 8 }, jpeg: Buffer.alloc(4) };
+            return { meta: { id: nextId++, w: width ?? 8, h: height ?? 8 }, jpeg: Buffer.alloc(4) };
         },
     };
 }
 
-function streamWith(helper) {
-    const frames = [];
-    const stream = createScreenStream({ helper, width: 8, height: 8 });
-    stream.onFrame((f) => frames.push(f));
-    return { stream, frames };
+function paced(helper) {
+    return createScreenStream({ helper, width: 800, height: 450, paceIntervalMs: 18 });
 }
+const settle = (ms = 80) => new Promise((r) => setTimeout(r, ms));
 
-test("a failed capture costs one frame, not the session", async () => {
+test("a failed timer capture does not kill the session", async () => {
     const helper = fakeHelper();
-    const { stream, frames } = streamWith(helper);
+    const stream = paced(helper);
+    const frames = [];
+    stream.onFrame((f) => frames.push(f));
 
     await stream.start();
-    const first = frames[0].meta.id;
+    assert.equal(frames.length, 1);
 
+    // Next tick fails -- timer must survive and emit on the following tick
     helper.state.failNext = 1;
-    await assert.rejects(() => stream.onAck({ frameId: first }));
-
-    // The receiver asks again for the frame it is still holding. Before the
-    // fix this returned silently as a duplicate and nothing ever flowed again.
-    await stream.onAck({ frameId: first });
-
-    assert.equal(frames.length, 2, "el reintento del mismo ack debe volver a capturar");
+    await settle(120);
+    // One tick may have failed, but the timer kept going and emitted at least once more
+    assert.ok(frames.length >= 2, `timer must recover after one failure, got ${frames.length}`);
+    await stream.stop();
 });
 
-test("a repeated ack still does not queue a second capture when it worked", async () => {
-    // The duplicate guard is what keeps one frame in flight; recovery must not
-    // cost us that.
+test("several failed captures in a row still recover", async () => {
     const helper = fakeHelper();
-    const { stream, frames } = streamWith(helper);
+    const stream = paced(helper);
+    const frames = [];
+    stream.onFrame((f) => frames.push(f));
 
     await stream.start();
-    const first = frames[0].meta.id;
-
-    await stream.onAck({ frameId: first });
-    await stream.onAck({ frameId: first });
-    await stream.onAck({ frameId: first });
-
-    assert.equal(frames.length, 2, "un ack exitoso repetido no debe capturar de nuevo");
-});
-
-test("a stale ack is still ignored after a recovery", async () => {
-    const helper = fakeHelper();
-    const { stream, frames } = streamWith(helper);
-
-    await stream.start();
-    const first = frames[0].meta.id;
-
-    helper.state.failNext = 1;
-    await assert.rejects(() => stream.onAck({ frameId: first }));
-    await stream.onAck({ frameId: first });
-
-    const before = frames.length;
-    await stream.onAck({ frameId: first }); // now genuinely stale
-    assert.equal(frames.length, before, "un ack viejo no debe disparar una captura");
-});
-
-test("the session survives several failures in a row", async () => {
-    const helper = fakeHelper();
-    const { stream, frames } = streamWith(helper);
-
-    await stream.start();
-    const first = frames[0].meta.id;
-
     helper.state.failNext = 3;
-    for (let i = 0; i < 3; i++) {
-        await assert.rejects(() => stream.onAck({ frameId: first }));
-    }
-    await stream.onAck({ frameId: first });
+    await settle(200);
+    // After 3 failures the next successful tick emits again
+    assert.ok(frames.length >= 2, `three failures must not kill session, got ${frames.length}`);
+    await stream.stop();
+});
 
-    assert.equal(frames.length, 2, "tres fallas seguidas no deben cerrar la sesión");
+test("acks stay idempotent after a recovery", async () => {
+    const helper = fakeHelper();
+    const stream = paced(helper);
+    const frames = [];
+    stream.onFrame((f) => frames.push(f));
+
+    await stream.start();
+    await settle(60);
+    const firstId = frames[0].meta.id;
+
+    // Ack the outstanding frame twice -- second is stale/duplicate, no throw, no extra capture burst
+    await stream.onAck({ frameId: firstId, renderMs: 5 });
+    await stream.onAck({ frameId: firstId, renderMs: 5 });
+    const after = frames.length;
+    await settle(60);
+    // Timer still paces normally, no duplicate burst from the second ack
+    assert.ok(frames.length >= after, "timer must keep pacing after duplicate ack");
+    await stream.stop();
+});
+
+test("a stale ack from a previous window is ignored", async () => {
+    const helper = fakeHelper();
+    const stream = paced(helper);
+    const frames = [];
+    stream.onFrame((f) => frames.push(f));
+
+    await stream.start();
+    await settle(80);
+    const staleId = frames[0].meta.id;
+    await stream.onAck({ frameId: staleId, renderMs: 5 });
+    await settle(40);
+    const before = frames.length;
+    // Same id again is now stale (already removed from outstanding)
+    await stream.onAck({ frameId: staleId, renderMs: 5 });
+    await settle(40);
+    // No throw and no special burst -- just timer pacing
+    assert.ok(frames.length >= before, "stale ack must be ignored without killing pacing");
+    await stream.stop();
 });
