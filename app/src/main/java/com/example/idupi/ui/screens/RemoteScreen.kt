@@ -329,6 +329,9 @@ fun RemoteScreen(
                             miniPadOpen = false
                             resetTransform()
                         },
+                        monitors = state.monitors,
+                        selectedMonitorId = state.selectedMonitorId,
+                        onSelectMonitor = { viewModel.selectMonitor(it) },
                         modifier = Modifier.fillMaxSize(),
                     )
                     if (miniPadOpen) {
@@ -1002,7 +1005,7 @@ private fun FullscreenToggleButton(
 /**
  * Owner's fullscreen "Pad" option: a SMALL translucent touchpad whose only
  * jobs are scrolling (both axes), left click and right click -- not a second
- * control center. It reuses the same Trackpad gestures as the docked one.
+ * control center. Clean, no texts as requested.
  */
 @Composable
 private fun MiniPad(
@@ -1012,27 +1015,23 @@ private fun MiniPad(
     modifier: Modifier = Modifier,
 ) {
     Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
-        modifier = modifier.width(190.dp),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.72f),
+        shadowElevation = 8.dp,
+        modifier = modifier.width(220.dp),
     ) {
-        Column(modifier = Modifier.padding(10.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "Pad",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                IconButton(onClick = onClose, modifier = Modifier.size(24.dp)) {
-                    Icon(Icons.Filled.Close, contentDescription = "Cerrar pad")
+        Column(modifier = Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Box(modifier = Modifier.fillMaxWidth()) {
+                IconButton(
+                    onClick = onClose,
+                    modifier = Modifier.align(Alignment.TopEnd).size(28.dp),
+                ) {
+                    Icon(Icons.Filled.Close, contentDescription = "Cerrar", modifier = Modifier.size(18.dp))
                 }
             }
             Trackpad(
                 enabled = true,
+                compact = true,
                 onRelativeMove = { dx, dy ->
                     viewModel.sendInput(ScreenInputEvent(type = "relmove", monitor = padMonitor, dx = dx, dy = dy))
                 },
@@ -1066,7 +1065,8 @@ private fun Trackpad(
     onRightClick: () -> Unit,
     onScroll: (Int, String) -> Unit,
     onZoom: (Float) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
 ) {
     OutlinedCard(modifier = modifier.fillMaxWidth()) {
         Column(
@@ -1253,20 +1253,22 @@ private fun Trackpad(
                         )
                     }
                 }
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        text = if (enabled) "Deslizá para mover el cursor"
-                        else "Input apagado en el server",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = if (enabled) MaterialTheme.colorScheme.onSurface
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    if (enabled) {
+                if (!compact) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            text = "tap = clic · bordes ⇕ ⇔ = scroll · 2 dedos = pellizco",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            text = if (enabled) "Deslizá para mover el cursor"
+                            else "Input apagado en el server",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = if (enabled) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                        if (enabled) {
+                            Text(
+                                text = "tap = clic · bordes ⇕ ⇔ = scroll · 2 dedos = pellizco",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                 }
             }
@@ -1275,12 +1277,12 @@ private fun Trackpad(
                     onClick = onClick,
                     enabled = enabled,
                     modifier = Modifier.weight(1f),
-                ) { Text("Clic") }
+                ) { Text(if (compact) "◀" else "Clic") }
                 FilledTonalButton(
                     onClick = onRightClick,
                     enabled = enabled,
                     modifier = Modifier.weight(1f),
-                ) { Text("Clic derecho") }
+                ) { Text(if (compact) "▶" else "Clic derecho") }
             }
         }
     }
