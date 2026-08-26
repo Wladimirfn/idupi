@@ -154,8 +154,22 @@ fun RemoteScreen(
     var orientationLocked by remember { mutableStateOf(false) }
     val useLandscape = isLandscape || orientationLocked
     // Fullscreen owns everything when watching wide -- by physical rotation
-    // or by the corner button.
-    val immersive = useLandscape && state.streaming
+    // or by the corner button. Debounced so the brief streaming=false gap
+    // during the orientation-triggered restart (stop+start) doesn't flash
+    // the touchpad over the picture -- that's the bug the owner just saw
+    // where fullscreen sometimes opens with the pad on top.
+    var immersiveDebounced by remember { mutableStateOf(false) }
+    androidx.compose.runtime.LaunchedEffect(useLandscape, state.streaming) {
+        if (useLandscape && state.streaming) {
+            immersiveDebounced = true
+        } else if (!useLandscape) {
+            immersiveDebounced = false
+        } else {
+            kotlinx.coroutines.delay(1200)
+            if (!state.streaming) immersiveDebounced = false
+        }
+    }
+    val immersive = immersiveDebounced
 
     fun resetTransform() {
         imageScale = 1f
@@ -557,12 +571,11 @@ private fun RemoteImageArea(
             val currentOnTransform by rememberUpdatedState(onTransform)
 
             val baseImageModifier = when {
-                // Fullscreen prioriza ver TODO el escritorio en 16:9 con
-                // borde negro (pillarbox/letterbox) -- nada recortado, como
-                // pide el dueño para el S24 Ultra 19.5:9. Es el mismo box
-                // que el landscape normal, solo que ocupa todo el alto
-                // disponible y se centra sobre fondo negro.
-                fillScreen -> Modifier.fillMaxSize().aspectRatio(aspect)
+                // Fullscreen prioriza ver TODO el escritorio con borde negro
+                // y NADA recortado. El dueño (S24 Ultra 19.5:9 mostrando un
+                // PC 19:9) pidió achicar un 15% para que encuadre perfecto en
+                // cualquier teléfono/tablet aunque sobren barras negras.
+                fillScreen -> Modifier.fillMaxSize(0.85f).aspectRatio(aspect)
                 fillAvailable -> Modifier.fillMaxSize().aspectRatio(aspect)
                 else -> Modifier.fillMaxWidth().aspectRatio(aspect)
             }
