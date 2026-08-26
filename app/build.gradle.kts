@@ -22,8 +22,8 @@ android {
         // "which APK am I running" is answerable from the system settings.
         // Same-versionCode installs get silently skipped by some phone
         // installers -- that is how a stale build masqueraded as the new one.
-        versionCode = 5
-        versionName = "1.4-fullscreen-fixes"
+        versionCode = 6
+        versionName = "1.5-ap-unica"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
