@@ -39,7 +39,7 @@ Al arrancar muestra:
 
 ### 3. Instalá la app
 
-Compilá la APK desde este repo (Android Studio → Run, o `gradlew :app:assembleDebug`; queda en `app/build/outputs/apk/debug/`) e instalala en el celular.
+Descargá el APK listo **`IDUPI-ap.apk` de la raíz del repo** (o de Releases) e instalalo en el celular. Si sos dev, podés compilarlo vos con `gradlew :app:assembleDebug` (queda en `app/build/outputs/apk/debug/`).
 
 ### 4. Conectá
 

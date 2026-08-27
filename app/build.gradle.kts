@@ -22,8 +22,8 @@ android {
         // "which APK am I running" is answerable from the system settings.
         // Same-versionCode installs get silently skipped by some phone
         // installers -- that is how a stale build masqueraded as the new one.
-        versionCode = 20
-        versionName = "1.19-3modes-equal"
+        versionCode = 21
+        versionName = "1.20-logo-visible"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

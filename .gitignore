@@ -23,6 +23,9 @@ idupi-server/projects.json
 .pi/
 # Build/debug artifacts that shouldn't live in git
 *.apk
+# Exception: the ready-to-install APK is committed at the repo root for end users.
+!IDUPI-ap.apk
+!/IDUPI-ap.apk
 *.stackdump
 # Pi subagent run artifacts (transcripts, cost meta) -- runtime state, not source
 .pi-subagents/
