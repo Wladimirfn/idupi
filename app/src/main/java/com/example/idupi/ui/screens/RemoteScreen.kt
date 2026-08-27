@@ -319,29 +319,47 @@ fun RemoteScreen(
                             )
                         }
                     }
-                    // Smart lift (owner request): typing near the bottom edge of
-                    // the picture parks the cursor right behind the keyboard, so
-                    // opening the keyboard while the last tap sat in the bottom
-                    // third nudges the picture up. A 1x picture cannot pan (the
-                    // graphicsLayer zeroes translation at scale 1), so the lift
-                    // zooms to 1.25 first -- exactly enough room for the nudge
-                    // while clampPan keeps the tap->fraction mapping consistent.
-                    // Closing the keyboard restores the pre-lift transform.
+                    // Smart lift (owner request): when the keyboard opens we want
+                    // the LAST tap point to stay visible above it. Typing at the
+                    // bottom needs the biggest lift, center needs a small one,
+                    // the upper third needs none. The lift scales with the tap's
+                    // y-fraction so any typing position (bottom / center / mid)
+                    // ends up in the upper 60% of the image. A 1x picture cannot
+                    // pan (graphicsLayer zeroes translation at scale 1), so when
+                    // a lift is required AND scale is 1.0 we nudge to 1.2 just
+                    // enough room for clampPan to take effect. We NEVER override
+                    // a user-applied zoom. Closing the keyboard restores the
+                    // pre-lift transform.
+                    // keyboardPx ~ 40% of screen height (column weight 0.4);
+                    // imagePx ~ 60% (the image Box's share when keyboard is open).
                     var preLiftPan by remember { mutableStateOf<Offset?>(null) }
                     var preLiftScale by remember { mutableStateOf<Float?>(null) }
                     LaunchedEffect(keyboardOpen, state.lastInteractionFraction) {
                         if (keyboardOpen) {
                             val f = state.lastInteractionFraction
-                            if (f != null && f.second > 0.65) {
-                                if (preLiftPan == null) {
-                                    preLiftPan = panOffset
-                                    preLiftScale = imageScale
-                                }
-                                if (imageScale <= 1f) imageScale = 1.25f
-                                val lift = with(density) { 60.dp.toPx() }
-                                val frac = ((f.second - 0.65) / 0.35).coerceIn(0.0, 1.0).toFloat()
-                                panOffset = Offset(panOffset.x, -(lift * frac))
+                            if (f == null) return@LaunchedEffect
+                            // Progressive: 0.3 -> 0, 0.5 -> ~21%, 0.7 -> ~43%,
+                            // 1.0 -> 75% of keyboard height. Below 0.3 we
+                            // explicitly skip -- the cursor is already high
+                            // enough to clear the keyboard.
+                            if (f.second <= 0.3) return@LaunchedEffect
+                            if (preLiftPan == null) {
+                                preLiftPan = panOffset
+                                preLiftScale = imageScale
                             }
+                            val screenHpx = with(density) {
+                                configuration.screenHeightDp.dp.toPx()
+                            }
+                            val keyboardPx = screenHpx * 0.4f
+                            val imageHpx = screenHpx * 0.6f
+                            val lift = ((f.second - 0.3) / 0.7)
+                                .coerceIn(0.0, 1.0).toFloat() * (keyboardPx * 0.75f)
+                            // Only auto-zoom when we have NO room (1x) AND we
+                            // actually need to lift. Respect any user zoom.
+                            val newScale = if (imageScale <= 1f) 1.2f else imageScale
+                            if (newScale != imageScale) imageScale = newScale
+                            val desired = Offset(panOffset.x, -lift)
+                            panOffset = clampPan(desired, newScale, imageHpx, imageHpx)
                         } else {
                             preLiftPan?.let { panOffset = it }
                             preLiftScale?.let { imageScale = it }
