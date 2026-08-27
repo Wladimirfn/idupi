@@ -51,6 +51,8 @@ data class RemoteScreenUiState(
      * keeps it. The server's activeQuality may differ under auto.
      */
     val selectedQuality: String = "auto",
+    /** Last place the user tapped/dragged, normalised 0..1, for smart keyboard panning. */
+    val lastInteractionFraction: Pair<Double, Double>? = null,
 )
 
 /**
@@ -296,6 +298,11 @@ class RemoteScreenViewModel(
      * pixel maths lives in the Go helper (the left monitor starts at x=-1920).
      */
     fun sendInput(event: ScreenInputEvent) {
+        // Remember where the user last interacted, so the 40% keyboard can
+        // push the image to keep that spot visible (owner's smart-pan request).
+        if (event.x != null && event.y != null) {
+            _uiState.value = _uiState.value.copy(lastInteractionFraction = event.x to event.y)
+        }
         if (!_uiState.value.remoteInputEnabled) return
         viewModelScope.launch {
             try {
