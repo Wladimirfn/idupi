@@ -12,6 +12,7 @@ import com.example.idupi.domain.model.frameRate
 import com.example.idupi.domain.model.recentArrivals
 import com.example.idupi.domain.model.KeyPress
 import com.example.idupi.domain.model.ScreenInputEvent
+import com.example.idupi.domain.model.SpecialKey
 import com.example.idupi.domain.model.ScreenQualityChanged
 import com.example.idupi.domain.model.ScreenStreamRequest
 import com.example.idupi.domain.model.ScreenWireMessage
@@ -57,7 +58,22 @@ data class RemoteScreenUiState(
     val selectedQuality: String = "auto",
     /** Last place the user tapped/dragged, normalised 0..1, for smart keyboard panning. */
     val lastInteractionFraction: Pair<Double, Double>? = null,
-)
+    /**
+     * Local echo of what the split keyboard is typing so the user can see it
+     * without auto-pan -- the fullscreen strip is too short to also lift the
+     * image, and the preview sits between the keys and the picture. Updated
+     * on every [sendKey] (chars append, backspace drops, enter clears) and
+     * wiped by [clearKeyboardPreview] when the keyboard closes.
+     */
+    val keyboardPreview: String = "",
+) {
+    companion object {
+        /** Hard cap on the echo so a runaway auto-repeat cannot blow up the
+         *  preview bar. The UI shows only the trailing window anyway. */
+        const val KEYBOARD_PREVIEW_MAX = 80
+        const val KEYBOARD_PREVIEW_VISIBLE = 40
+    }
+}
 
 /**
  * Pacing owner of the remote screen (brief §4.1): the receiver paces, the
@@ -346,8 +362,20 @@ class RemoteScreenViewModel(
      * Realtime typing (hito 7): every keystroke leaves the phone THE MOMENT
      * it is pressed, never on IME commit. Same double gate as the mouse --
      * a keyboard is an even more loaded gun than a pointer.
+     *
+     * Also drives [RemoteScreenUiState.keyboardPreview] -- a LOCAL echo of what
+     * the user is typing, displayed in a small bar above the keys. Owner
+     * request: typing in the bottom 40% of a landscape fullscreen was
+     * invisible to the user, and a forced zoom (the previous smart-pan) only
+     * distorted the picture without revealing the caret. The preview is the
+     * honest fix: the keys go out exactly as before, and the UI gets a
+     * non-blocking echo so the user can see what just happened.
      */
     fun sendKey(press: KeyPress) {
+        // Update the echo FIRST, regardless of the input gate: a disabled
+        // input still shows what the user pressed locally, so they know the
+        // key registered even if the server drops it.
+        _uiState.value = _uiState.value.copy(keyboardPreview = previewAfter(_uiState.value.keyboardPreview, press))
         if (!_uiState.value.remoteInputEnabled) {
             Log.w(TAG, "remote input disabled; dropping key code=${press.code}")
             return
@@ -363,6 +391,39 @@ class RemoteScreenViewModel(
                 }
             }
         }
+    }
+
+    /** Wipe the local echo when the keyboard closes -- the next session
+     *  should not show a stale line of text from the previous one. */
+    fun clearKeyboardPreview() {
+        if (_uiState.value.keyboardPreview.isNotEmpty()) {
+            _uiState.value = _uiState.value.copy(keyboardPreview = "")
+        }
+    }
+
+    /**
+     * Pure projection of a [KeyPress] onto the preview string. Lives next to
+     * [sendKey] so the wire-side echo and the test can share the rule:
+     *   - printable char -> append
+     *   - BACKSPACE      -> drop the last char (if any)
+     *   - ENTER          -> clear (a sentence ended)
+     *   - everything else (TAB, ESC, arrows) -> ignored, the preview is for
+     *     narrative text, not for hidden control surfaces
+     * Output is capped at [RemoteScreenUiState.KEYBOARD_PREVIEW_MAX] chars
+     * so a held key can never inflate it; the UI shows the trailing
+     * [RemoteScreenUiState.KEYBOARD_PREVIEW_VISIBLE] window with ellipsis.
+     */
+    private fun previewAfter(current: String, press: KeyPress): String {
+        val special = press.asSpecial()
+        val next = when {
+            press.kind == KeyPress.Kind.CHAR -> current + Char(press.code)
+            special == SpecialKey.BACKSPACE -> if (current.isEmpty()) "" else current.dropLast(1)
+            special == SpecialKey.ENTER -> ""
+            else -> current
+        }
+        return if (next.length > RemoteScreenUiState.KEYBOARD_PREVIEW_MAX) {
+            next.takeLast(RemoteScreenUiState.KEYBOARD_PREVIEW_MAX)
+        } else next
     }
     fun stopStreaming() {
         streamJob?.cancel()
