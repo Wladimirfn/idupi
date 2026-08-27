@@ -8,16 +8,13 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -39,11 +36,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.idupi.domain.model.KeyPress
 import com.example.idupi.domain.model.SpecialKey
 import com.example.idupi.domain.model.snapBubbleToEdge
@@ -141,6 +141,17 @@ fun FloatingBubble(
     }
 }
 
+/** Compact split-thumb keyboard that MUST fit the 40% fullscreen strip with
+ * NO scroll (owner spec): two 45% halves with a thumb gap, 3 letter rows + 1
+ * control row, 27dp keys, 13sp labels -- the density of the HTML reference
+ * (flex 1, 3px gaps, no vertical padding). Worst-case height on the smallest
+ * landscape phone (360dp tall -> 144dp budget): 26 header + 3*27 letters +
+ * 2*3 gaps + 27 control + 3 top pad = 143dp. */
+private val KeyboardBg = Color(0xFF2B2B2B)
+private val KeyboardKeyBg = Color(0xFF3C3C3C)
+private val KeyboardKeyText = Color(0xFFECECEC)
+private val KeyboardKeyHighlight = Color(0xFF6366F1)
+
 @Composable
 fun SplitKeyboard(
     onKey: (KeyPress) -> Unit,
@@ -155,58 +166,85 @@ fun SplitKeyboard(
         shift = false
     }
     Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerHighest,
-        shadowElevation = 8.dp,
+        color = KeyboardBg,
         shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
         modifier = modifier,
     ) {
-        Column(
-            modifier = Modifier
-                .padding(horizontal = 6.dp, vertical = 4.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(3.dp),
-        ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Header: one compact row (26dp) -- title + close, no extra spacer.
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(26.dp)
+                    .padding(horizontal = 4.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Teclado", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                IconButton(onClick = onClose, modifier = Modifier.size(32.dp)) {
-                    Icon(Icons.Filled.Close, contentDescription = "Cerrar teclado")
+                Text(
+                    "Teclado",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                    ),
+                    color = KeyboardKeyText.copy(alpha = 0.75f),
+                )
+                IconButton(onClick = onClose, modifier = Modifier.size(24.dp)) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "Cerrar teclado",
+                        tint = KeyboardKeyText.copy(alpha = 0.75f),
+                        modifier = Modifier.size(16.dp),
+                    )
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            // Two 45% halves with a 12dp thumb gap; rows inside are 3dp apart.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
                     KeyboardRow { for (c in "qwert") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
                     KeyboardRow { for (c in "asdfg") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
-                    KeyboardRow {
-                        KeyCap("⇧", Modifier.weight(1f), highlighted = shift) {
-                            haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                            shift = !shift
-                        }
-                        for (c in "zxcvb") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) }
-                    }
+                    KeyboardRow { for (c in "zxcv") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
                 }
-                Spacer(Modifier.width(4.dp))
-                Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight(),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
                     KeyboardRow { for (c in "yuiop") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
                     KeyboardRow { for (c in "hjkñl") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
-                    KeyboardRow {
-                        for (c in "nm,.") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) }
-                        KeyCap("⌫", Modifier.weight(1f)) {
-                            haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                            onKey(KeyPress.special(SpecialKey.BACKSPACE))
-                        }
-                    }
+                    KeyboardRow { for (c in "bnm,.") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
                 }
             }
-            Row(modifier = Modifier.fillMaxWidth().padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                KeyCap("Espacio", Modifier.weight(2.5f)) {
+            // Control row: shift / wide space / backspace / enter, same 27dp.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 3.dp),
+                horizontalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                KeyCap("⇧", Modifier.weight(1f), highlighted = shift) {
+                    haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                    shift = !shift
+                }
+                KeyCap("Espacio", Modifier.weight(2f)) {
                     haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
                     onKey(KeyPress.char(' '))
                 }
-                KeyCap("↵ Entrar", Modifier.weight(1f), highlighted = true) {
+                KeyCap("⌫", Modifier.weight(1f)) {
+                    haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                    onKey(KeyPress.special(SpecialKey.BACKSPACE))
+                }
+                KeyCap("⏎", Modifier.weight(1f), highlighted = true) {
                     haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
                     onKey(KeyPress.special(SpecialKey.ENTER))
                 }
@@ -217,7 +255,13 @@ fun SplitKeyboard(
 
 @Composable
 private fun KeyboardRow(content: @Composable RowScope.() -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp), content = content)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(27.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+        content = content,
+    )
 }
 
 @Composable
@@ -229,14 +273,19 @@ private fun KeyCap(
 ) {
     Surface(
         onClick = onClick,
-        shape = RoundedCornerShape(8.dp),
-        color = if (highlighted) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-        tonalElevation = 3.dp,
-        shadowElevation = 1.dp,
-        modifier = modifier.heightIn(min = 32.dp),
+        shape = RoundedCornerShape(6.dp),
+        color = if (highlighted) KeyboardKeyHighlight else KeyboardKeyBg,
+        modifier = modifier.height(27.dp),
     ) {
-        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize().padding(horizontal = 2.dp)) {
-            Text(text = label, style = MaterialTheme.typography.labelSmall)
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.SemiBold,
+                ),
+                color = KeyboardKeyText,
+            )
         }
     }
 }
