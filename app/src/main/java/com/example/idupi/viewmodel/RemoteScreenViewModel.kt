@@ -3,6 +3,7 @@ package com.example.idupi.viewmodel
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.idupi.data.IduPiClientProvider
@@ -41,8 +42,11 @@ data class RemoteScreenUiState(
     /** Rate over the last couple of seconds -- what says the stream is healthy. */
     val fps: Int = 0,
     val error: String? = null,
-    /** Server-side opt-in for remote input; ships OFF. */
-    val remoteInputEnabled: Boolean = false,
+    /** Server-side opt-in for remote input; defaults ON so a fast fullscreen
+     * entry never meets a dead keyboard while the config loads asynchronously.
+     * The config response can still refine (server ships OFF only via
+     * IDUPI_REMOTE_INPUT=0). */
+    val remoteInputEnabled: Boolean = true,
     /** Auto-ladder's current preset name, as announced by the server (hito 9). */
     val activeQuality: String? = null,
     /**
@@ -78,6 +82,14 @@ class RemoteScreenViewModel(
 
     private var streamJob: Job? = null
     private var sid: String? = null
+
+    /**
+     * Stream generation counter: every startStreaming/stopStreaming bumps it
+     * so a CANCELLED job's catch can never overwrite streaming=false after a
+     * NEWER job already set streaming=true (monitor switch + rotation race:
+     * the old job's finally used to clobber the new stream's live state).
+     */
+    private var streamJobId = 0
 
     /** Last fully-known picture: keyframes replace it, tiles patch it. */
     private var frameCache: ImageBitmap? = null
@@ -136,6 +148,9 @@ class RemoteScreenViewModel(
         )
         sid = request.sid
         viewportForCurrentBox = viewportW to viewportH
+        // Only THIS generation may write streaming/error: a superseded job's
+        // catch must never turn the state off behind the stream that replaced it.
+        val jobId = ++streamJobId
         _uiState.value = _uiState.value.copy(streaming = true)
 
         streamJob = viewModelScope.launch {
@@ -147,9 +162,16 @@ class RemoteScreenViewModel(
                     }
                 }
                 // Stream ended cleanly (server closed): surface it as stopped.
-                _uiState.value = _uiState.value.copy(streaming = false)
+                if (jobId == streamJobId) {
+                    _uiState.value = _uiState.value.copy(streaming = false)
+                }
             } catch (e: Exception) {
-                _uiState.value = _uiState.value.copy(streaming = false, error = e.message)
+                if (jobId == streamJobId) {
+                    _uiState.value = _uiState.value.copy(
+                        streaming = false,
+                        error = if (e is CancellationException) null else e.message
+                    )
+                }
             }
         }
     }
@@ -303,7 +325,12 @@ class RemoteScreenViewModel(
         if (event.x != null && event.y != null) {
             _uiState.value = _uiState.value.copy(lastInteractionFraction = event.x to event.y)
         }
-        if (!_uiState.value.remoteInputEnabled) return
+        if (!_uiState.value.remoteInputEnabled) {
+            // Loud, not silent: a dropped keystroke with no trace looked like
+            // a dead keyboard in fullscreen. The server still 403s a real opt-out.
+            Log.w(TAG, "remote input disabled; dropping ${event.type}")
+            return
+        }
         viewModelScope.launch {
             try {
                 client.sendScreenInput(event)
@@ -321,7 +348,10 @@ class RemoteScreenViewModel(
      * a keyboard is an even more loaded gun than a pointer.
      */
     fun sendKey(press: KeyPress) {
-        if (!_uiState.value.remoteInputEnabled) return
+        if (!_uiState.value.remoteInputEnabled) {
+            Log.w(TAG, "remote input disabled; dropping key code=${press.code}")
+            return
+        }
         viewModelScope.launch {
             try {
                 client.sendScreenInput(
@@ -337,6 +367,9 @@ class RemoteScreenViewModel(
     fun stopStreaming() {
         streamJob?.cancel()
         streamJob = null
+        // Invalidate the cancelled job's generation: its catch must not write
+        // state (or an error card) after a manual stop.
+        streamJobId++
         sid = null
         // Tiles of a dead stream must never patch the next stream's picture.
         frameCache = null
@@ -352,6 +385,7 @@ class RemoteScreenViewModel(
     }
 
     private companion object {
+        const val TAG = "RemoteScreenVM"
         /** Bounded ack retries: enough to cross a helper respawn (~instant)
          * or a transient GDI hiccup, small enough to surface real breakage. */
         const val ACK_MAX_ATTEMPTS = 8

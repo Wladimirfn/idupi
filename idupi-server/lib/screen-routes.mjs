@@ -64,7 +64,10 @@ export async function handleScreenRoute(req, res, pathname) {
                     cmd: "input",
                     action: parsed.type,
                     button: parsed.button || "",
-                    monitor: parsed.monitor ?? 0,
+                    // Both wire names are honoured; monitorIndex wins when both
+                    // ride along. Go decodes both fields, so no fallback to
+                    // primary happens on a field-name mismatch.
+                    monitor: parsed.monitorIndex ?? parsed.monitor ?? 0,
                     x: parsed.x,
                     y: parsed.y,
                     // Pad-mode relative travel, realtime keyboard codes and
@@ -108,7 +111,7 @@ export async function handleScreenRoute(req, res, pathname) {
     if (pathname === "/api/v1/screen/stream" && req.method === "GET") {
         const params = new URL(req.url || "/", "http://localhost").searchParams;
         const sid = params.get("sid");
-        const monitor = Number(params.get("monitor") ?? 0);
+        const monitor = Number(params.get("monitorIndex") ?? params.get("monitor") ?? 0);
         const width = Number(params.get("viewportW"));
         const height = Number(params.get("viewportH"));
         const qualityParam = params.get("quality") ?? "55";

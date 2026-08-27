@@ -215,7 +215,7 @@ fun AppNavigation() {
                                 Spacer(modifier = Modifier.weight(1f))
 
                                 Text(
-                                    text = "IDUPI v1.2.0",
+                                    text = "IDUPI v${com.example.idupi.BuildConfig.VERSION_NAME}",
                                     color = TextSecondary.copy(alpha = 0.5f),
                                     style = AppTypography.labelSmall,
                                     modifier = Modifier.padding(20.dp)

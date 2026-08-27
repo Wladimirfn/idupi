@@ -98,7 +98,7 @@ fun SettingsScreen(
             )
 
             Text(
-                text = "IDUPI v1.2.0",
+                text = "IDUPI v${com.example.idupi.BuildConfig.VERSION_NAME}",
                 style = AppTypography.bodySmall,
                 color = TextSecondary,
                 modifier = Modifier.fillMaxWidth(),

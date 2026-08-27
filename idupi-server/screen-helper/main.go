@@ -104,6 +104,14 @@ func main() {
 }
 
 func dispatch(out *bufio.Writer, req *request) {
+	// One bad input must never kill the capture helper (exit code 2 = the
+	// whole screen-stream dies with it). Any panic inside a command is
+	// answered as an error and the loop keeps serving the next request.
+	defer func() {
+		if r := recover(); r != nil {
+			writeError(out, req.ID, fmt.Errorf("internal error: %v", r))
+		}
+	}()
 	switch req.Cmd {
 	case "list":
 		monitors, err := enumerateMonitors()
@@ -216,6 +224,12 @@ func inputCommand(out *bufio.Writer, req *request) {
 		writeError(out, req.ID, err)
 		return
 	}
+	// Accept BOTH wire names for the monitor index: older clients send
+	// "monitor", newer ones "monitorIndex". Prefer the explicit index.
+	monitorIdx := req.MonitorIndex
+	if req.Monitor != nil {
+		monitorIdx = *req.Monitor
+	}
 	delta := 0
 	if req.Delta != nil {
 		delta = *req.Delta
@@ -233,7 +247,7 @@ func inputCommand(out *bufio.Writer, req *request) {
 	if action == "click" {
 		// Atomic click (stuck-button fix): down+up in ONE helper command so
 		// a lost release can never wedge the physical mouse.
-		inReq := inputRequest{Action: action, Button: strings.ToLower(req.Button), MonitorIndex: deref(req.Monitor)}
+		inReq := inputRequest{Action: action, Button: strings.ToLower(req.Button), MonitorIndex: monitorIdx}
 		if hasPos {
 			inReq.HasPos = true
 			inReq.NX, inReq.NY = *req.NX, *req.NY
@@ -278,7 +292,7 @@ func inputCommand(out *bufio.Writer, req *request) {
 	inReq := inputRequest{
 		Action:       action,
 		Button:       strings.ToLower(req.Button),
-		MonitorIndex: deref(req.Monitor),
+		MonitorIndex: monitorIdx,
 		Delta:        delta,
 	}
 	if req.Axis != nil {
