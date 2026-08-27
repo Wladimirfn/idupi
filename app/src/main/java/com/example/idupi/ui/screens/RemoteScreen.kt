@@ -319,6 +319,36 @@ fun RemoteScreen(
                             )
                         }
                     }
+                    // Smart lift (owner request): typing near the bottom edge of
+                    // the picture parks the cursor right behind the keyboard, so
+                    // opening the keyboard while the last tap sat in the bottom
+                    // third nudges the picture up. A 1x picture cannot pan (the
+                    // graphicsLayer zeroes translation at scale 1), so the lift
+                    // zooms to 1.25 first -- exactly enough room for the nudge
+                    // while clampPan keeps the tap->fraction mapping consistent.
+                    // Closing the keyboard restores the pre-lift transform.
+                    var preLiftPan by remember { mutableStateOf<Offset?>(null) }
+                    var preLiftScale by remember { mutableStateOf<Float?>(null) }
+                    LaunchedEffect(keyboardOpen, state.lastInteractionFraction) {
+                        if (keyboardOpen) {
+                            val f = state.lastInteractionFraction
+                            if (f != null && f.second > 0.65) {
+                                if (preLiftPan == null) {
+                                    preLiftPan = panOffset
+                                    preLiftScale = imageScale
+                                }
+                                if (imageScale <= 1f) imageScale = 1.25f
+                                val lift = with(density) { 60.dp.toPx() }
+                                val frac = ((f.second - 0.65) / 0.35).coerceIn(0.0, 1.0).toFloat()
+                                panOffset = Offset(panOffset.x, -(lift * frac))
+                            }
+                        } else {
+                            preLiftPan?.let { panOffset = it }
+                            preLiftScale?.let { imageScale = it }
+                            preLiftPan = null
+                            preLiftScale = null
+                        }
+                    }
                     FullscreenToggleButton(
                         locked = true,
                         onToggle = {
