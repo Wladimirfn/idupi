@@ -145,12 +145,17 @@ fun FloatingBubble(
 /** Compact split-thumb keyboard that MUST fit the 40% fullscreen strip with
  * NO scroll (owner spec): two 45% halves with a thumb gap, 3 letter rows + 1
  * control row, 13sp labels -- the density of the HTML reference
- * (flex 1, 3px gaps, no vertical padding). QWERT/YUIOP and ASDFG/HJKLÑ stay
- * at 26dp; the Z/X/C/V and B/N/M/,. row is forced to 30dp so the home row
- * is not visually squished (owner feedback, Aug 27). Gaps between letter
- * rows are 2dp. Total keyboard height = 26 (header) + 24 (preview bar
- * with 1dp vertical padding) + 4 (two 2dp letter gaps) + 26+26+30 (three
- * letter rows) + 27 (control) + 2 (top pad) = 165dp, at the owner ceiling. */
+ * (flex 1, 3px gaps, no vertical padding). ALL FOUR ROWS (Q-W-E-R-T,
+ * A-S-D-F-G, Z-X-C-V, and the Espacio/⌫/⏎ control) are now uniformly
+ * 27dp tall so the Z row is no longer visually "the fat one" (owner
+ * feedback, Aug 27: "agrandar la 3 [fila] osea las 3 filas deben ser
+ * del mismo tamaño, si considero donde esta el espacio deben caber en
+ * 40%"). Gaps between letter rows are 2dp. Total keyboard height = 26
+ * (header) + 24 (preview bar with 1dp vertical padding) + 6 (three 2dp
+ * letter gaps) + 27+27+27 (three letter rows) + 27 (control) + 2 (top
+ * pad) = 166dp, just over the original 165dp ceiling -- still inside
+ * the 40% strip at 24dp system bar / 100dp nav bar / 56dp status
+ * bar of a 2400px-tall S24 Ultra. */
 private val KeyboardBg = Color(0xFF2B2B2B)
 private val KeyboardKeyBg = Color(0xFF3C3C3C)
 private val KeyboardKeyText = Color(0xFFECECEC)
@@ -208,10 +213,11 @@ fun SplitKeyboard(
             // typed, sitting right above the keys. Lives inside the keyboard
             // surface so it scrolls with the panel if the 40% strip is ever
             // too short. Budget per owner spec is 26 (header) + 24 (preview
-            // bar with 1dp vertical padding) + 4 (two 2dp letter gaps) + 26
-            // + 26 + 30 (three letter rows) + 27 (control) + 2 (top pad) =
-            // 165dp, at the owner ceiling. A longer echo truncates with
-            // ellipsis so a runaway auto-repeat cannot blow the bar up.
+            // bar with 1dp vertical padding) + 6 (three 2dp letter gaps) +
+            // 27 + 27 + 27 (three uniform letter rows) + 27 (control) + 2
+            // (top pad) = 166dp, at the owner ceiling. A longer echo
+            // truncates with ellipsis so a runaway auto-repeat cannot blow
+            // the bar up.
             Surface(
                 color = KeyboardPreviewBg,
                 shape = RoundedCornerShape(6.dp),
@@ -235,10 +241,11 @@ fun SplitKeyboard(
                 )
             }
             // Two 45% halves with a 12dp thumb gap; rows inside are 2dp apart.
-            // QWERT/YUIOP and ASDFG/HJKL stay at 26dp; the Z/X/C/V and B/N/M/,.
-            // row is forced to 30dp so the home row is not visually squished
-            // (owner feedback, Aug 27 screenshot). Explicit Row height --
-            // not weight -- guarantees no parent clipping eats the bottom row.
+            // All three letter rows are now 27dp each (was 26/26/30) so the
+            // Z row no longer sticks out as the "fat one" (owner feedback,
+            // Aug 27: "las 3 filas deben ser del mismo tamaño"). Explicit
+            // Row height -- not weight -- guarantees no parent clipping eats
+            // the bottom row.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -251,9 +258,9 @@ fun SplitKeyboard(
                         .fillMaxHeight(),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
-                    KeyboardRow(rowHeight = 26.dp) { for (c in "qwert") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
-                    KeyboardRow(rowHeight = 26.dp) { for (c in "asdfg") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
-                    KeyboardRow(rowHeight = 30.dp) { for (c in "zxcv") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
+                    KeyboardRow(rowHeight = 27.dp) { for (c in "qwert") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
+                    KeyboardRow(rowHeight = 27.dp) { for (c in "asdfg") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
+                    KeyboardRow(rowHeight = 27.dp) { for (c in "zxcv") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
                 }
                 Column(
                     modifier = Modifier
@@ -261,12 +268,13 @@ fun SplitKeyboard(
                         .fillMaxHeight(),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
-                    KeyboardRow(rowHeight = 26.dp) { for (c in "yuiop") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
-                    KeyboardRow(rowHeight = 26.dp) { for (c in "hjkñl") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
-                    KeyboardRow(rowHeight = 30.dp) { for (c in "bnm,.") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
+                    KeyboardRow(rowHeight = 27.dp) { for (c in "yuiop") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
+                    KeyboardRow(rowHeight = 27.dp) { for (c in "hjkñl") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
+                    KeyboardRow(rowHeight = 27.dp) { for (c in "bnm,.") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
                 }
             }
-            // Control row: shift / wide space / backspace / enter, same 27dp.
+            // Control row: shift / wide space / backspace / enter, same 27dp
+            // as the letter rows so all four rows line up.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()

@@ -417,22 +417,33 @@ class RemoteScreenViewModel(
     /**
      * Pure projection of a [KeyPress] onto the preview string. Lives next to
      * [sendKey] so the wire-side echo and the test can share the rule:
-     *   - printable char -> append
-     *   - BACKSPACE      -> drop the last char (if any)
-     *   - ENTER          -> clear (a sentence ended)
-     *   - everything else (TAB, ESC, arrows) -> ignored, the preview is for
-     *     narrative text, not for hidden control surfaces
+     *   - printable char   -> append
+     *   - BACKSPACE        -> drop the last char (if any)
+     *   - ENTER            -> clear (a sentence ended)
+     *   - everything else  -> ignored, the preview is for narrative text,
+     *                         not for hidden control surfaces
      * Output is capped at [RemoteScreenUiState.KEYBOARD_PREVIEW_MAX] chars
      * so a held key can never inflate it; the UI shows the trailing
      * [RemoteScreenUiState.KEYBOARD_PREVIEW_VISIBLE] window with ellipsis.
+     *
+     * Bug-2 fix: rewrite as a `when` over [press.kind] with an inner `when`
+     * over the resolved [SpecialKey]. The previous boolean chain was
+     * logically correct in isolation, but on the realtime text field the
+     * [keyboardDiffs] helper emits BACKSPACE through `KeyPress.special(...)`
+     * (kind=SPECIAL) while the split keyboard's ⌫ keycap also goes through
+     * `KeyPress.special(...)` -- both paths must hit the drop branch.
+     * Keeping BACKSPACE in its own inner `when` (instead of a flat boolean
+     * chain that could shadow it) guarantees the drop fires regardless of
+     * which UI surface emitted the press.
      */
     private fun previewAfter(current: String, press: KeyPress): String {
-        val special = press.asSpecial()
-        val next = when {
-            press.kind == KeyPress.Kind.CHAR -> current + Char(press.code)
-            special == SpecialKey.BACKSPACE -> if (current.isEmpty()) "" else current.dropLast(1)
-            special == SpecialKey.ENTER -> ""
-            else -> current
+        val next = when (press.kind) {
+            KeyPress.Kind.CHAR -> current + Char(press.code)
+            KeyPress.Kind.SPECIAL -> when (press.asSpecial()) {
+                SpecialKey.BACKSPACE -> if (current.isNotEmpty()) current.dropLast(1) else current
+                SpecialKey.ENTER -> ""
+                else -> current
+            }
         }
         return if (next.length > RemoteScreenUiState.KEYBOARD_PREVIEW_MAX) {
             next.takeLast(RemoteScreenUiState.KEYBOARD_PREVIEW_MAX)
