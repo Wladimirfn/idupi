@@ -144,10 +144,13 @@ fun FloatingBubble(
 
 /** Compact split-thumb keyboard that MUST fit the 40% fullscreen strip with
  * NO scroll (owner spec): two 45% halves with a thumb gap, 3 letter rows + 1
- * control row, 27dp keys, 13sp labels -- the density of the HTML reference
- * (flex 1, 3px gaps, no vertical padding). Worst-case height on the smallest
- * landscape phone (360dp tall -> 144dp budget): 26 header + 3*27 letters +
- * 2*3 gaps + 27 control + 3 top pad = 143dp. */
+ * control row, 13sp labels -- the density of the HTML reference
+ * (flex 1, 3px gaps, no vertical padding). QWERT/YUIOP and ASDFG/HJKLÑ stay
+ * at 26dp; the Z/X/C/V and B/N/M/,. row is forced to 30dp so the home row
+ * is not visually squished (owner feedback, Aug 27). Gaps between letter
+ * rows are 2dp. Total keyboard height = 26 (header) + 24 (preview bar
+ * with 1dp vertical padding) + 4 (two 2dp letter gaps) + 26+26+30 (three
+ * letter rows) + 27 (control) + 2 (top pad) = 165dp, at the owner ceiling. */
 private val KeyboardBg = Color(0xFF2B2B2B)
 private val KeyboardKeyBg = Color(0xFF3C3C3C)
 private val KeyboardKeyText = Color(0xFFECECEC)
@@ -204,17 +207,17 @@ fun SplitKeyboard(
             // Preview bar (owner request): a thin echo of what the user just
             // typed, sitting right above the keys. Lives inside the keyboard
             // surface so it scrolls with the panel if the 40% strip is ever
-            // too short -- but at 22dp it never actually needs to: total
-            // keyboard height 26 (header) + 22 (preview) + 3*27 (letter rows)
-            // + 2*3 (gaps) + 27 (control) + 3 (top pad) = 165dp, the exact
-            // ceiling the owner set. A longer echo truncates with ellipsis
-            // so a runaway auto-repeat cannot blow the bar up.
+            // too short. Budget per owner spec is 26 (header) + 24 (preview
+            // bar with 1dp vertical padding) + 4 (two 2dp letter gaps) + 26
+            // + 26 + 30 (three letter rows) + 27 (control) + 2 (top pad) =
+            // 165dp, at the owner ceiling. A longer echo truncates with
+            // ellipsis so a runaway auto-repeat cannot blow the bar up.
             Surface(
                 color = KeyboardPreviewBg,
                 shape = RoundedCornerShape(6.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                    .padding(horizontal = 4.dp, vertical = 1.dp),
             ) {
                 Text(
                     text = previewText.ifEmpty { "Escribiendo…" },
@@ -231,7 +234,11 @@ fun SplitKeyboard(
                         .padding(horizontal = 6.dp),
                 )
             }
-            // Two 45% halves with a 12dp thumb gap; rows inside are 3dp apart.
+            // Two 45% halves with a 12dp thumb gap; rows inside are 2dp apart.
+            // QWERT/YUIOP and ASDFG/HJKL stay at 26dp; the Z/X/C/V and B/N/M/,.
+            // row is forced to 30dp so the home row is not visually squished
+            // (owner feedback, Aug 27 screenshot). Explicit Row height --
+            // not weight -- guarantees no parent clipping eats the bottom row.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -242,28 +249,28 @@ fun SplitKeyboard(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight(),
-                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
-                    KeyboardRow { for (c in "qwert") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
-                    KeyboardRow { for (c in "asdfg") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
-                    KeyboardRow { for (c in "zxcv") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
+                    KeyboardRow(rowHeight = 26.dp) { for (c in "qwert") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
+                    KeyboardRow(rowHeight = 26.dp) { for (c in "asdfg") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
+                    KeyboardRow(rowHeight = 30.dp) { for (c in "zxcv") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
                 }
                 Column(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight(),
-                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
-                    KeyboardRow { for (c in "yuiop") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
-                    KeyboardRow { for (c in "hjkñl") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
-                    KeyboardRow { for (c in "bnm,.") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
+                    KeyboardRow(rowHeight = 26.dp) { for (c in "yuiop") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
+                    KeyboardRow(rowHeight = 26.dp) { for (c in "hjkñl") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
+                    KeyboardRow(rowHeight = 30.dp) { for (c in "bnm,.") KeyCap("${c.uppercaseChar()}", Modifier.weight(1f)) { letter(c) } }
                 }
             }
             // Control row: shift / wide space / backspace / enter, same 27dp.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 3.dp),
+                    .padding(top = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(3.dp),
             ) {
                 KeyCap("⇧", Modifier.weight(1f), highlighted = shift) {
@@ -288,11 +295,14 @@ fun SplitKeyboard(
 }
 
 @Composable
-private fun KeyboardRow(content: @Composable RowScope.() -> Unit) {
+private fun KeyboardRow(
+    rowHeight: androidx.compose.ui.unit.Dp = 27.dp,
+    content: @Composable RowScope.() -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(27.dp),
+            .height(rowHeight),
         horizontalArrangement = Arrangement.spacedBy(3.dp),
         content = content,
     )
