@@ -58,6 +58,12 @@ data class RemoteScreenUiState(
     val selectedQuality: String = "auto",
     /** Last place the user tapped/dragged, normalised 0..1, for smart keyboard panning. */
     val lastInteractionFraction: Pair<Double, Double>? = null,
+    /** Wall-clock ms when [lastInteractionFraction] was last set. The smart
+     *  pan reads both: a stale fraction (older than ~2s) must NOT move the
+     *  picture, because by then the user has likely moved their attention
+     *  to a different field (or the keyboard is being opened for the
+     *  currently-focused one, whose position we cannot infer from pixels). */
+    val lastInteractionTime: Long = 0L,
     /**
      * Local echo of what the split keyboard is typing so the user can see it
      * without auto-pan -- the fullscreen strip is too short to also lift the
@@ -336,10 +342,17 @@ class RemoteScreenViewModel(
      * pixel maths lives in the Go helper (the left monitor starts at x=-1920).
      */
     fun sendInput(event: ScreenInputEvent) {
-        // Remember where the user last interacted, so the 40% keyboard can
-        // push the image to keep that spot visible (owner's smart-pan request).
+        // Remember where AND when the user last interacted, so the 40%
+        // keyboard can push the image to keep that spot visible ONLY if the
+        // tap is recent (owner's smart-pan request). A stale fraction must
+        // not move the picture -- by then the user is typing in a different
+        // field, or the keyboard is being opened for a field we cannot
+        // detect from pixels alone.
         if (event.x != null && event.y != null) {
-            _uiState.value = _uiState.value.copy(lastInteractionFraction = event.x to event.y)
+            _uiState.value = _uiState.value.copy(
+                lastInteractionFraction = event.x to event.y,
+                lastInteractionTime = clockMs(),
+            )
         }
         if (!_uiState.value.remoteInputEnabled) {
             // Loud, not silent: a dropped keystroke with no trace looked like

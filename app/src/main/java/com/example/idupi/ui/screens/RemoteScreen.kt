@@ -327,24 +327,47 @@ fun RemoteScreen(
                     // last tap fraction, but we DO NOT touch imageScale: the
                     // zoom is a USER choice via the trackpad pinch, and the
                     // preview is the real fix for the "what am I typing?"
-                    // blind spot. clampPan at scale 1.0 is a no-op (graphics
-                    // layer zeroes translation at 1x), so when the user has
-                    // NOT pinched we apply a soft manual lift only, and when
-                    // they HAVE pinched we pan inside the already-scaled
-                    // frame. Closing the keyboard restores the pre-lift pan
-                    // (scale was never modified so no scale restore needed).
+                    // blind spot.
+                    //
+                    // Tap-anchored positioning (owner feedback, Aug 27):
+                    //   * The last tap fraction is the ONLY signal we have
+                    //     for "where will the user type?" -- we do not read
+                    //     the remote caret or the remote focus.
+                    //   * If the tap is STALE (older than 2s, or the user
+                    //     opened the keyboard without first tapping a field),
+                    //     do NOT lift. The caret is wherever it already is;
+                    //     moving the picture would be a guess.
+                    //   * If y is in the top 35% of the image (browser
+                    //     address bar, title bar, etc.), the field is ALREADY
+                    //     visible above the keyboard -- return, no lift.
+                    //   * Otherwise, lift proportional to (y - 0.35) / 0.65,
+                    //     capped at 70% of the keyboard height. This pushes
+                    //     bottom fields up so they clear the keys without
+                    //     ever zooming the picture.
+                    //   * Closing the keyboard restores the pre-lift pan
+                    //     (scale was never modified so no scale restore).
                     // keyboardPx ~ 40% of screen height (column weight 0.4);
                     // imagePx ~ 60% (the image Box's share when keyboard is open).
                     var preLiftPan by remember { mutableStateOf<Offset?>(null) }
-                    LaunchedEffect(keyboardOpen, state.lastInteractionFraction) {
+                    LaunchedEffect(keyboardOpen, state.lastInteractionFraction, state.lastInteractionTime) {
                         if (keyboardOpen) {
                             val f = state.lastInteractionFraction
                             if (f == null) return@LaunchedEffect
-                            // Progressive: 0.3 -> 0, 0.5 -> ~21%, 0.7 -> ~43%,
-                            // 1.0 -> 75% of keyboard height. Below 0.3 we
-                            // explicitly skip -- the cursor is already high
-                            // enough to clear the keyboard.
-                            if (f.second <= 0.3) return@LaunchedEffect
+                            // Tap recency gate: a stale tap (e.g., they tapped
+                            // the address bar 5s ago and now open the keyboard
+                            // for a different field at the bottom) must not
+                            // move the picture. 2s covers a natural hand move
+                            // from tap-to-keyboard without letting the fraction
+                            // outlive the user's attention.
+                            val now = System.currentTimeMillis()
+                            if (state.lastInteractionTime <= 0L) return@LaunchedEffect
+                            if (now - state.lastInteractionTime > 2_000L) {
+                                preLiftPan = null
+                                return@LaunchedEffect
+                            }
+                            // Top 35% of the image is already above the
+                            // keyboard even at scale 1x: do nothing.
+                            if (f.second < 0.35) return@LaunchedEffect
                             if (preLiftPan == null) {
                                 preLiftPan = panOffset
                             }
@@ -353,8 +376,12 @@ fun RemoteScreen(
                             }
                             val keyboardPx = screenHpx * 0.4f
                             val imageHpx = screenHpx * 0.6f
-                            val lift = ((f.second - 0.3) / 0.7)
-                                .coerceIn(0.0, 1.0).toFloat() * (keyboardPx * 0.75f)
+                            // Progressive: 0.35 -> 0, 0.5 -> ~16%, 0.7 -> ~38%,
+                            // 1.0 -> 70% of keyboard height. Below 0.35 we
+                            // explicitly skip -- the cursor is already high
+                            // enough to clear the keyboard.
+                            val lift = ((f.second - 0.35) / 0.65)
+                                .coerceIn(0.0, 1.0).toFloat() * (keyboardPx * 0.70f)
                             // NEVER touch imageScale. The previous code nudged
                             // it to 1.2 when a lift was needed at 1x, which
                             // looked like a warp: the picture ballooned but
