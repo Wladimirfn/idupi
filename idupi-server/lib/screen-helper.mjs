@@ -6,7 +6,7 @@
 // lifecycle and request correlation only.
 
 import { execFile, spawn } from "node:child_process";
-import { access, constants } from "node:fs/promises";
+import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -27,13 +27,29 @@ const helperExe = join(helperDir, "idupi-screen.exe");
 
 // Distribution decision (brief §9.1): compile on the user's machine at first
 // use when the binary is missing, so no binary is committed to the repo.
+// Rebuild ALSO when any .go source is newer than the exe: a stale binary
+// built before a fix silently ships the old behaviour forever (the fullscreen
+// keyboard bug lived in exactly such a stale exe).
 let buildPromise = null;
 export function ensureHelperBuilt() {
   if (!buildPromise) {
     buildPromise = (async () => {
+      let stale = true; // missing/unreadable exe => build
       try {
-        await access(helperExe, constants.X_OK);
+        const exeStat = statSync(helperExe);
+        stale = readdirSync(helperDir)
+          .filter((f) => f.endsWith(".go"))
+          .some((f) => {
+            try {
+              return statSync(join(helperDir, f)).mtimeMs > exeStat.mtimeMs;
+            } catch {
+              return false; // unreadable source: trust the exe
+            }
+          });
       } catch {
+        // exe missing or unreadable: build it.
+      }
+      if (stale) {
         await execFileP(
           "go",
           ["build", "-ldflags=-s -w", "-o", helperExe, "."],

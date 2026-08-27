@@ -22,8 +22,8 @@ android {
         // "which APK am I running" is answerable from the system settings.
         // Same-versionCode installs get silently skipped by some phone
         // installers -- that is how a stale build masqueraded as the new one.
-        versionCode = 13
-        versionName = "1.12-smart-kbd"
+        versionCode = 14
+        versionName = "1.13-fullscreen-fix"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -39,6 +39,10 @@ android {
     }
     buildFeatures {
         compose = true
+        // BuildConfig.VERSION_NAME is the UI's "which build am I running"
+        // marker (Settings + nav drawer); AGP stops generating the class by
+        // default unless this flag is on.
+        buildConfig = true
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
