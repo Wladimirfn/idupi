@@ -316,24 +316,26 @@ fun RemoteScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .weight(0.4f),
+                                previewText = state.keyboardPreview,
                             )
                         }
                     }
-                    // Smart lift (owner request): when the keyboard opens we want
-                    // the LAST tap point to stay visible above it. Typing at the
-                    // bottom needs the biggest lift, center needs a small one,
-                    // the upper third needs none. The lift scales with the tap's
-                    // y-fraction so any typing position (bottom / center / mid)
-                    // ends up in the upper 60% of the image. A 1x picture cannot
-                    // pan (graphicsLayer zeroes translation at scale 1), so when
-                    // a lift is required AND scale is 1.0 we nudge to 1.2 just
-                    // enough room for clampPan to take effect. We NEVER override
-                    // a user-applied zoom. Closing the keyboard restores the
-                    // pre-lift transform.
+                    // Smart lift (owner pivot, Aug 27): a forced 1.2x zoom was
+                    // distorting the picture without making typing visible,
+                    // and the preview bar above the keys now shows the echo
+                    // directly. We still keep a GENTLE pan lift keyed on the
+                    // last tap fraction, but we DO NOT touch imageScale: the
+                    // zoom is a USER choice via the trackpad pinch, and the
+                    // preview is the real fix for the "what am I typing?"
+                    // blind spot. clampPan at scale 1.0 is a no-op (graphics
+                    // layer zeroes translation at 1x), so when the user has
+                    // NOT pinched we apply a soft manual lift only, and when
+                    // they HAVE pinched we pan inside the already-scaled
+                    // frame. Closing the keyboard restores the pre-lift pan
+                    // (scale was never modified so no scale restore needed).
                     // keyboardPx ~ 40% of screen height (column weight 0.4);
                     // imagePx ~ 60% (the image Box's share when keyboard is open).
                     var preLiftPan by remember { mutableStateOf<Offset?>(null) }
-                    var preLiftScale by remember { mutableStateOf<Float?>(null) }
                     LaunchedEffect(keyboardOpen, state.lastInteractionFraction) {
                         if (keyboardOpen) {
                             val f = state.lastInteractionFraction
@@ -345,7 +347,6 @@ fun RemoteScreen(
                             if (f.second <= 0.3) return@LaunchedEffect
                             if (preLiftPan == null) {
                                 preLiftPan = panOffset
-                                preLiftScale = imageScale
                             }
                             val screenHpx = with(density) {
                                 configuration.screenHeightDp.dp.toPx()
@@ -354,18 +355,29 @@ fun RemoteScreen(
                             val imageHpx = screenHpx * 0.6f
                             val lift = ((f.second - 0.3) / 0.7)
                                 .coerceIn(0.0, 1.0).toFloat() * (keyboardPx * 0.75f)
-                            // Only auto-zoom when we have NO room (1x) AND we
-                            // actually need to lift. Respect any user zoom.
-                            val newScale = if (imageScale <= 1f) 1.2f else imageScale
-                            if (newScale != imageScale) imageScale = newScale
+                            // NEVER touch imageScale. The previous code nudged
+                            // it to 1.2 when a lift was needed at 1x, which
+                            // looked like a warp: the picture ballooned but
+                            // the cursor still hid behind the keyboard. The
+                            // preview bar is the real solution; this lift is
+                            // best-effort and only effective when the user
+                            // has already pinched (>1x).
                             val desired = Offset(panOffset.x, -lift)
-                            panOffset = clampPan(desired, newScale, imageHpx, imageHpx)
+                            panOffset = clampPan(desired, imageScale, imageHpx, imageHpx)
                         } else {
                             preLiftPan?.let { panOffset = it }
-                            preLiftScale?.let { imageScale = it }
                             preLiftPan = null
-                            preLiftScale = null
                         }
+                    }
+                    // Preview cleanup: a closed keyboard must not leave a stale
+                    // line of text behind for the next session. The remote
+                    // machine never knows about the local echo, so the only
+                    // signal that we are "done typing" is the user tapping
+                    // the close icon (or the bubble's menu). Run on
+                    // keyboardOpen -> false only; we keep the preview while
+                    // the panel is open so the user can see what they typed.
+                    LaunchedEffect(keyboardOpen) {
+                        if (!keyboardOpen) viewModel.clearKeyboardPreview()
                     }
                     FullscreenToggleButton(
                         locked = true,

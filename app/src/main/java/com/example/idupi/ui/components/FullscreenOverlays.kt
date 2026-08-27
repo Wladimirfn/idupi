@@ -41,6 +41,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -151,12 +152,15 @@ private val KeyboardBg = Color(0xFF2B2B2B)
 private val KeyboardKeyBg = Color(0xFF3C3C3C)
 private val KeyboardKeyText = Color(0xFFECECEC)
 private val KeyboardKeyHighlight = Color(0xFF6366F1)
+private val KeyboardPreviewBg = Color(0xFF1E1E1E)
+private val KeyboardPreviewHint = Color(0xFF8A8A8A)
 
 @Composable
 fun SplitKeyboard(
     onKey: (KeyPress) -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
+    previewText: String = "",
 ) {
     var shift by remember { mutableStateOf(false) }
     val haptics = LocalHapticFeedback.current
@@ -196,6 +200,36 @@ fun SplitKeyboard(
                         modifier = Modifier.size(16.dp),
                     )
                 }
+            }
+            // Preview bar (owner request): a thin echo of what the user just
+            // typed, sitting right above the keys. Lives inside the keyboard
+            // surface so it scrolls with the panel if the 40% strip is ever
+            // too short -- but at 22dp it never actually needs to: total
+            // keyboard height 26 (header) + 22 (preview) + 3*27 (letter rows)
+            // + 2*3 (gaps) + 27 (control) + 3 (top pad) = 165dp, the exact
+            // ceiling the owner set. A longer echo truncates with ellipsis
+            // so a runaway auto-repeat cannot blow the bar up.
+            Surface(
+                color = KeyboardPreviewBg,
+                shape = RoundedCornerShape(6.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+            ) {
+                Text(
+                    text = previewText.ifEmpty { "Escribiendo…" },
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontSize = 12.sp,
+                        fontWeight = if (previewText.isEmpty()) FontWeight.Normal else FontWeight.Medium,
+                    ),
+                    color = if (previewText.isEmpty()) KeyboardPreviewHint else KeyboardKeyText,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(22.dp)
+                        .padding(horizontal = 6.dp),
+                )
             }
             // Two 45% halves with a 12dp thumb gap; rows inside are 3dp apart.
             Row(
