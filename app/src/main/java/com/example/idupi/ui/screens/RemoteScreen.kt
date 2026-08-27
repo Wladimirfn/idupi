@@ -320,14 +320,24 @@ fun RemoteScreen(
                             )
                         }
                     }
-                    // Smart lift (owner pivot, Aug 27): a forced 1.2x zoom was
-                    // distorting the picture without making typing visible,
-                    // and the preview bar above the keys now shows the echo
-                    // directly. We still keep a GENTLE pan lift keyed on the
-                    // last tap fraction, but we DO NOT touch imageScale: the
-                    // zoom is a USER choice via the trackpad pinch, and the
-                    // preview is the real fix for the "what am I typing?"
-                    // blind spot.
+                    // Smart pan (bug-1 fix, Aug 27): the 60% image area is a
+                    // viewport, not a page. The user wants the field they
+                    // are about to type into to land at the CENTRE of that
+                    // viewport, not just below the keyboard edge. Because
+                    // the field can sit at the TOP (browser address bar,
+                    // y ~ 0.15) OR at the BOTTOM (y ~ 0.85), the pan must
+                    // be BIDIRECTIONAL:
+                    //   * top tap   -> translate the image DOWN so the top
+                    //                  slides to the viewport's middle
+                    //   * bottom tap-> translate the image UP so the bottom
+                    //                  clears the keyboard
+                    //   * mid tap   -> image stays put
+                    // We DO NOT touch imageScale: zoom is a user choice via
+                    // the trackpad pinch. The micro-pan range is small
+                    // enough to leave the picture fully visible (see
+                    // [MICRO_PAN_RATIO_X]/[MICRO_PAN_RATIO_Y] in clampPan)
+                    // and is clamped again at draw time inside the
+                    // graphicsLayer block.
                     //
                     // Tap-anchored positioning (owner feedback, Aug 27):
                     //   * The last tap fraction is the ONLY signal we have
@@ -335,19 +345,23 @@ fun RemoteScreen(
                     //     the remote caret or the remote focus.
                     //   * If the tap is STALE (older than 2s, or the user
                     //     opened the keyboard without first tapping a field),
-                    //     do NOT lift. The caret is wherever it already is;
+                    //     do NOT pan. The caret is wherever it already is;
                     //     moving the picture would be a guess.
-                    //   * If y is in the top 35% of the image (browser
-                    //     address bar, title bar, etc.), the field is ALREADY
-                    //     visible above the keyboard -- return, no lift.
-                    //   * Otherwise, lift proportional to (y - 0.35) / 0.65,
-                    //     capped at 70% of the keyboard height. This pushes
-                    //     bottom fields up so they clear the keys without
-                    //     ever zooming the picture.
-                    //   * Closing the keyboard restores the pre-lift pan
+                    //   * The pan distance is `|0.5 - y| * imageHpx * scale`:
+                    //     at scale 1x, a tap at y=0.85 wants the picture to
+                    //     shift up by 0.35 * 60%_of_screen. At higher scales
+                    //     the multiplier is larger because the same fraction
+                    //     covers more pixels of the underlying picture.
+                    //   * Sign: positive y (down on screen) -> negative
+                    //     translation (image moves up) so the tapped spot
+                    //     appears at viewport centre. Below y=0.5 the sign
+                    //     flips and the image moves down. (hito 10.)
+                    //   * Closing the keyboard restores the pre-pan pan
                     //     (scale was never modified so no scale restore).
-                    // keyboardPx ~ 40% of screen height (column weight 0.4);
-                    // imagePx ~ 60% (the image Box's share when keyboard is open).
+                    // imagePx ~ 60% of screen height (the image Box's share
+                    // when the keyboard is open); the bidirectional pan
+                    // below is expressed in image pixels, then clamped to
+                    // the micro-pan range at 1x and ((S-1)/2 * size) above.
                     var preLiftPan by remember { mutableStateOf<Offset?>(null) }
                     LaunchedEffect(keyboardOpen, state.lastInteractionFraction, state.lastInteractionTime) {
                         if (keyboardOpen) {
@@ -365,31 +379,30 @@ fun RemoteScreen(
                                 preLiftPan = null
                                 return@LaunchedEffect
                             }
-                            // Top 35% of the image is already above the
-                            // keyboard even at scale 1x: do nothing.
-                            if (f.second < 0.35) return@LaunchedEffect
                             if (preLiftPan == null) {
                                 preLiftPan = panOffset
                             }
                             val screenHpx = with(density) {
                                 configuration.screenHeightDp.dp.toPx()
                             }
-                            val keyboardPx = screenHpx * 0.4f
                             val imageHpx = screenHpx * 0.6f
-                            // Progressive: 0.35 -> 0, 0.5 -> ~16%, 0.7 -> ~38%,
-                            // 1.0 -> 70% of keyboard height. Below 0.35 we
-                            // explicitly skip -- the cursor is already high
-                            // enough to clear the keyboard.
-                            val lift = ((f.second - 0.35) / 0.65)
-                                .coerceIn(0.0, 1.0).toFloat() * (keyboardPx * 0.70f)
+                            // Bidirectional centred pan. y == 0.5 is the
+                            // viewport centre -> 0 translation. y < 0.5
+                            // (tapped at the TOP) -> positive translation
+                            // (image slides DOWN so the top comes to the
+                            // middle). y > 0.5 (tapped at the BOTTOM) ->
+                            // negative translation (image slides UP so the
+                            // bottom clears the keyboard). ClampPan bounds
+                            // this to the micro-pan range at 1x and the
+                            // usual ((S-1)/2 * size) at higher scales.
+                            val desiredY = (0.5f - f.second.toFloat()) * imageHpx * imageScale
                             // NEVER touch imageScale. The previous code nudged
                             // it to 1.2 when a lift was needed at 1x, which
                             // looked like a warp: the picture ballooned but
                             // the cursor still hid behind the keyboard. The
-                            // preview bar is the real solution; this lift is
-                            // best-effort and only effective when the user
-                            // has already pinched (>1x).
-                            val desired = Offset(panOffset.x, -lift)
+                            // preview bar is the real solution; this pan is
+                            // the real visual fix, and it works at any scale.
+                            val desired = Offset(panOffset.x, desiredY)
                             panOffset = clampPan(desired, imageScale, imageHpx, imageHpx)
                         } else {
                             preLiftPan?.let { panOffset = it }
@@ -791,12 +804,22 @@ private fun RemoteImageArea(
                     scaleX = imageScale
                     scaleY = imageScale
                     // Defensive clamp at DRAW time: the stored pan can only
-                    // come from paths that clamp (pinch) or reset (1x), but
-                    // clamping here AND in frameFractionAt keeps the drawn
-                    // picture and the touch mapping consistent forever.
+                    // come from paths that clamp (pinch, micro-pan, or
+                    // reset), but clamping here AND in frameFractionAt keeps
+                    // the drawn picture and the touch mapping consistent
+                    // forever.
+                    //
+                    // Bug-1 fix: at scale <= 1f we NO LONGER zero the
+                    // translation. The smart-pan now expects a micro-pan
+                    // range so the picture slides a fraction of its own
+                    // size WITHOUT zooming -- enough to bring a top/bottom
+                    // field out from behind the 40% keyboard while leaving
+                    // the full picture visible. Clamps mirror [clampPan].
                     if (imageScale <= 1f) {
-                        translationX = 0f
-                        translationY = 0f
+                        val microX = size.width * MICRO_PAN_RATIO_X
+                        val microY = size.height * MICRO_PAN_RATIO_Y
+                        translationX = panOffset.x.coerceIn(-microX, microX)
+                        translationY = panOffset.y.coerceIn(-microY, microY)
                     } else {
                         val maxX = (imageScale - 1f) * size.width / 2f
                         val maxY = (imageScale - 1f) * size.height / 2f
@@ -1406,10 +1429,29 @@ private fun statusLine(renderMs: Long, bytes: Int, fps: Int, helperMs: Int): Str
 /**
  * Bounds for a panned/scaled picture: at scale S the image sticks out
  * (S-1)/2 of the node on every side, so a translation beyond that exposes
- * empty space at one edge -- clamp it. At 1x there is nothing to pan.
+ * empty space at one edge -- clamp it.
+ *
+ * Bug-1 fix: the previous version returned [Offset.Zero] at scale <= 1f,
+ * which made the smart-pan "micro lift" invisible -- the image sat at the
+ * pivot with no travel because the only allowed position was exactly the
+ * center. The 40% keyboard now uses a small micro-pan range at 1x (cap
+ * [MICRO_PAN_RATIO_X] of node width on X, [MICRO_PAN_RATIO_Y] of node
+ * height on Y) so the picture can slide a fraction of its own size
+ * WITHOUT zooming, enough to clear the top/bottom field out from behind
+ * the keys while leaving the full picture visible to the eye.
  */
+private const val MICRO_PAN_RATIO_X = 0.15f
+private const val MICRO_PAN_RATIO_Y = 0.30f
+
 private fun clampPan(offset: Offset, scale: Float, nodeW: Float, nodeH: Float): Offset {
-    if (scale <= 1f) return Offset.Zero
+    if (scale <= 1f) {
+        val microX = nodeW * MICRO_PAN_RATIO_X
+        val microY = nodeH * MICRO_PAN_RATIO_Y
+        return Offset(
+            x = offset.x.coerceIn(-microX, microX),
+            y = offset.y.coerceIn(-microY, microY),
+        )
+    }
     val maxX = (scale - 1f) * nodeW / 2f
     val maxY = (scale - 1f) * nodeH / 2f
     return Offset(
