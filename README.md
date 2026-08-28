@@ -26,7 +26,6 @@ Todo corre en TU hardware. IDUPI **no requiere servidores cloud propios ni relay
   <img src="docs/assets/screenshots/imagen5-aptoide.jpg" width="160" alt="Control" />
 </p>
 
-> Todas las capturas están optimizadas para Aptoide (842×1600, ratio 1.9) y GitHub. El banner superior es `1024×500` — listo para store y redes.
 
 
 ## Requisitos
