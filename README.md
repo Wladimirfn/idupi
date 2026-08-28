@@ -9,9 +9,25 @@
   <em>Escaneá para descargar IDUPI-ap.apk v1.21 — com.idupi.app</em>
 </p>
 
+![IDUPI Banner](docs/assets/banner.png)
+
+
 IDUPI es un servidor que vive en tu PC y una app Android que se conecta a él. Desde el teléfono podés **chatear con agentes de IA** (Pi, Claude, OpenCode) que trabajan sobre tus proyectos reales, y además **ver y controlar la pantalla de tu PC**: mover el mouse, tipear, hacer scroll y zoom, como un VNC pero liviano.
 
 Todo corre en TU hardware. IDUPI **no requiere servidores cloud propios ni relay externo**: la comunicación IDUPI puede permanecer entre tu PC y tu dispositivo. Tené en cuenta que los agentes de IA que uses (Claude, Pi con OpenAI/Kimi/MiniMax, etc.) se comunican con sus respectivos proveedores de modelos según su propia configuración. Fuera de casa se conecta por Tailscale, así que no abrís puertos del router.
+
+## 📸 Capturas
+
+<p align="center">
+  <img src="docs/assets/screenshots/imagen_1-aptoide.jpg" width="160" alt="Conexión" />
+  <img src="docs/assets/screenshots/imagen_2-aptoide.jpg" width="160" alt="Pantalla remota" />
+  <img src="docs/assets/screenshots/imagen3-aptoide.jpg" width="160" alt="Teclado dividido" />
+  <img src="docs/assets/screenshots/imagen4-aptoide.jpg" width="160" alt="Chat con IA" />
+  <img src="docs/assets/screenshots/imagen5-aptoide.jpg" width="160" alt="Control" />
+</p>
+
+> Todas las capturas están optimizadas para Aptoide (842×1600, ratio 1.9) y GitHub. El banner superior es `1024×500` — listo para store y redes.
+
 
 ## Requisitos
 
