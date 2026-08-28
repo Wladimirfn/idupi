@@ -2,7 +2,7 @@
 
 **Last updated:** 28 August 2026  
 **App:** IDUPI — `com.idupi.app`  
-**Contact:** wladimirfn (GitHub: https://github.com/Wladimirfn/idupi)
+**Contact:** idubox.chile@gmail.com — https://github.com/Wladimirfn/idupi
 
 ## Summary
 IDUPI runs entirely on **your own hardware**. The Android app (`com.idupi.app`) connects directly to the IDUPI server you run on your PC. We do not operate cloud servers, we do not collect your personal data, and we do not sell data to third parties.
@@ -35,7 +35,7 @@ IDUPI is not directed to children under 13 and does not knowingly collect data f
 If this policy changes, we will update this file in the repository and bump the date above.
 
 ## Contact
-For privacy questions, open an issue at https://github.com/Wladimirfn/idupi/issues or contact the maintainer via GitHub.
+For privacy questions, contact idubox.chile@gmail.com or open an issue at https://github.com/Wladimirfn/idupi/issues.
 
 ---
 *This policy is provided to satisfy store requirements (including Aptoide). IDUPI is open-source under the MIT License.*
