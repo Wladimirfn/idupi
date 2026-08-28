@@ -1,4 +1,5 @@
 # IDUPI — Tu PC entera, desde el celular
+[![Download APK](https://img.shields.io/badge/Download-APK%20v1.21-brightgreen)](https://github.com/Wladimirfn/idupi/releases/download/v1.21/IDUPI-ap.apk)
 
 IDUPI es un servidor que vive en tu PC y una app Android que se conecta a él. Desde el teléfono podés **chatear con agentes de IA** (Pi, Claude, OpenCode) que trabajan sobre tus proyectos reales, y además **ver y controlar la pantalla de tu PC**: mover el mouse, tipear, hacer scroll y zoom, como un VNC pero liviano.
 
@@ -39,7 +40,7 @@ Al arrancar muestra:
 
 ### 3. Instalá la app
 
-Descargá el APK listo **`IDUPI-ap.apk` de la raíz del repo** (o de Releases) e instalalo en el celular. Si sos dev, podés compilarlo vos con `gradlew :app:assembleDebug` (queda en `app/build/outputs/apk/debug/`).
+Descargá el APK listo desde **Releases**: [**IDUPI-ap.apk v1.21**](https://github.com/Wladimirfn/idupi/releases/download/v1.21/IDUPI-ap.apk) (también está en la raíz del repo) e instalalo en el celular. Si sos dev, podés compilarlo vos con `gradlew :app:assembleDebug` (queda en `app/build/outputs/apk/debug/`).
 
 ### 4. Conectá
 
