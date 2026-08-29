@@ -1,5 +1,5 @@
 # IDUPI — Tu PC entera, desde el celular
-[![Download APK](https://img.shields.io/badge/Download-APK%20v1.22-brightgreen)](https://github.com/Wladimirfn/idupi/releases/download/v1.22/IDUPI-ap.apk)
+[![Download APK](https://img.shields.io/badge/Download-APK%20v1.23-brightgreen)](https://github.com/Wladimirfn/idupi/releases/download/v1.23/IDUPI-ap.apk)
 
 ![IDUPI Banner](docs/assets/banner.png)
 
@@ -55,14 +55,14 @@ Al arrancar muestra:
 
 ### 3. Instalá la app
 
-Descargá el APK listo desde **Releases**: [**IDUPI-ap.apk v1.22**](https://github.com/Wladimirfn/idupi/releases/download/v1.22/IDUPI-ap.apk) (también está en la raíz del repo) e instalalo en el celular. Si sos dev, podés compilarlo vos con `gradlew :app:assembleDebug` (queda en `app/build/outputs/apk/debug/`).
+Descargá el APK listo desde **Releases**: [**IDUPI-ap.apk v1.23**](https://github.com/Wladimirfn/idupi/releases/download/v1.23/IDUPI-ap.apk) (también está en la raíz del repo) e instalalo en el celular. Si sos dev, podés compilarlo vos con `gradlew :app:assembleDebug` (queda en `app/build/outputs/apk/debug/`).
 
 <p align="center">
-  <a href="https://github.com/Wladimirfn/idupi/releases/download/v1.22/IDUPI-ap.apk">
+  <a href="https://github.com/Wladimirfn/idupi/releases/download/v1.23/IDUPI-ap.apk">
     <img src="docs/assets/qr-download.png" width="200" alt="QR Download APK" />
   </a>
   <br/>
-  <em>Escaneá para descargar IDUPI-ap.apk v1.22 — com.idupi.app</em>
+  <em>Escaneá para descargar IDUPI-ap.apk v1.23 — com.idupi.app</em>
 </p>
 
 ### 4. Conectá
