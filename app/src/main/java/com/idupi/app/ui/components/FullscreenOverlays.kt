@@ -394,7 +394,7 @@ fun SplitKeyboard(
             // in a SINGLE coroutine with a small inter-press delay. The
             // wire order is exactly:
             //   1) keydown VK_CONTROL
-            //   2) keychar 'c'
+            //   2) keyvk VK_'C'  (as a VIRTUAL KEY, not unicode)
             //   3) keyup VK_CONTROL
             // so the helper sees the modifier held across the character
             // press, and the OS registers the chord.
@@ -404,7 +404,12 @@ fun SplitKeyboard(
                 onKeys(
                     listOf(
                         KeyPress.down(modifier),
-                        KeyPress.char(letter),
+                        // Ctrl+C needs the letter as a VIRTUAL KEY (keyvk), not
+                        // a unicode keychar: a KEYEVENTF_UNICODE 'c' never
+                        // combines with the held Ctrl, so Windows types/echoes
+                        // 'c' instead of firing Copy. Uppercase ASCII code ==
+                        // the Win32 VK code (C=0x43, V=0x56, X=0x58).
+                        KeyPress(KeyPress.Kind.SPECIAL, letter.uppercaseChar().code, KeyPress.Phase.PRESS),
                         KeyPress.up(modifier),
                     )
                 )
