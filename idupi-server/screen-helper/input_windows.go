@@ -40,6 +40,11 @@ type mouseInput struct {
 
 const keUnicode = 0x0004 // KEYEVENTF_UNICODE: WScan carries a UTF-16 unit
 
+// keyEventfKeyUp is the KEYEVENTF_KEYUP flag — the up-stroke half of a
+// keystroke. Promoted to a package const so buildKeyInput can set it for
+// "keyup" half-events (modifier release) instead of inlining the value.
+const keyEventfKeyUp = 0x0002
+
 // INPUT/x64 with KEYBDINPUT payload. The trailing slack is NOT decoration:
 // SendInput validates cbSize against sizeof(INPUT), whose size is set by the
 // LARGEST union member (MOUSEINPUT, 40 bytes on x64). A bare KEYBDINPUT is
@@ -307,6 +312,13 @@ func executeInput(in *mouseInput) error {
 // buildKeyInput prepares ONE COMPLETE keystroke (unicode char or virtual key).
 // Realtime typing (hito 7) sends each key as it is pressed; folding down+up
 // into a single helper command halves the wire round-trips per keystroke.
+//
+// Modifier-hold support (bug-2 fix, paste+chord, Aug 28): chords like Ctrl+C
+// need the modifier to stay HELD across the character press, but a full
+// down+up pair would release it before the char arrives. "keydown" and
+// "keyup" build the HALF-events that wire into a chord: emit keydown for
+// VK_CONTROL, keychar for the letter, keyup for VK_CONTROL -- in that order,
+// with a small delay between them on the client so Windows sees the hold.
 func buildKeyInput(action string, code int) (*keybdInput, error) {
 	in := &keybdInput{Type: 1} // INPUT_KEYBOARD
 	switch action {
@@ -323,6 +335,23 @@ func buildKeyInput(action string, code int) (*keybdInput, error) {
 			return nil, fmt.Errorf("keyvk code %d is outside the virtual-key range", code)
 		}
 		in.WVk = uint16(code)
+	case "keydown":
+		// Half-event: only the down stroke, no up. The release is the
+		// caller's responsibility and travels on its own wire event so a
+		// chord can be assembled in-order (down modifier, press char, up
+		// modifier). VK range is the same as keyvk.
+		if code < 1 || code > 255 {
+			return nil, fmt.Errorf("keydown code %d is outside the virtual-key range", code)
+		}
+		in.WVk = uint16(code)
+	case "keyup":
+		// Half-event: only the up stroke, KEYEVENTF_KEYUP set. Pairs with
+		// a previous "keydown" on the SAME VK to release a held modifier.
+		if code < 1 || code > 255 {
+			return nil, fmt.Errorf("keyup code %d is outside the virtual-key range", code)
+		}
+		in.WVk = uint16(code)
+		in.DwFlags = keyEventfKeyUp
 	default:
 		return nil, fmt.Errorf("unknown key action %q", action)
 	}
@@ -333,12 +362,30 @@ func buildKeyInput(action string, code int) (*keybdInput, error) {
 // followed by KEYEVENTF_KEYUP travel as ONE contiguous array so SendInput
 // inserts them atomically -- no other input can slip between them.
 func executeKeyInput(in *keybdInput) error {
-	const keyEventfKeyUp = 0x0002
 	pair := [2]keybdInput{*in, *in}
 	pair[1].DwFlags |= keyEventfKeyUp
 	r, _, err := procSendInput.Call(2, uintptr(unsafe.Pointer(&pair[0])), unsafe.Sizeof(pair[0]))
 	if r == 0 {
 		return fmt.Errorf("SendInput keystroke failed: %v", err)
+	}
+	return nil
+}
+
+// executeKeyHalfEvent sends a SINGLE keystroke event (down OR up) without
+// synthesising the opposite edge. Used for the half-events ("keydown",
+// "keyup") that build a chord like Ctrl+C: the modifier must stay HELD
+// across the character press, so the release cannot travel in the same
+// SendInput call as the down -- it rides a later, separate command.
+// A half-event MUST be paired (down then up) by the caller; the helper
+// does not track held VK_* keys the way it tracks held mouse buttons, so
+// a lost release leaves the modifier held in the OS until the next
+// "keyup" on the same VK (or the OS settles the state when the input
+// focus changes). The piano: short, deterministic chords from the
+// soft keyboard are the only consumer today.
+func executeKeyHalfEvent(in *keybdInput) error {
+	r, _, err := procSendInput.Call(1, uintptr(unsafe.Pointer(in)), unsafe.Sizeof(*in))
+	if r == 0 {
+		return fmt.Errorf("SendInput half-event failed: %v", err)
 	}
 	return nil
 }

@@ -149,11 +149,46 @@ func TestBuildKeyInputRejectsGarbage(t *testing.T) {
 		{"keychar", 0x10000}, // beyond UTF-16: unsupported
 		{"keyvk", 0},         // 0 is not a key
 		{"keyvk", 256},       // beyond the VK range
+		{"keydown", 0},       // 0 is not a key
+		{"keydown", 256},     // beyond the VK range
+		{"keyup", 0},         // 0 is not a key
+		{"keyup", 256},       // beyond the VK range
 		{"unknown", 65},      // unknown action
 	} {
 		if _, err := buildKeyInput(tc.action, tc.code); err == nil {
 			t.Fatalf("%s(%d): expected an error, got none", tc.action, tc.code)
 		}
+	}
+}
+
+// Modifier-hold (bug-2 fix): Ctrl+C / Ctrl+V chords need the modifier
+// held across the character press. "keydown" emits the down stroke with
+// NO KEYEVENTF_KEYUP -- the release rides a later "keyup" event. A
+// half-event with the up flag set would release the modifier before the
+// char arrives, and Windows would never see the chord.
+func TestBuildKeyInputKeydownEmitsOnlyDownStroke(t *testing.T) {
+	in, err := buildKeyInput("keydown", 0x11) // VK_CONTROL
+	if err != nil {
+		t.Fatalf("keydown: %v", err)
+	}
+	if in.WVk != 0x11 {
+		t.Fatalf("wVk: got %d, want 0x11", in.WVk)
+	}
+	if in.DwFlags&keyEventfKeyUp != 0 {
+		t.Fatalf("keydown must not set KEYUP, got flags %#x", in.DwFlags)
+	}
+}
+
+func TestBuildKeyInputKeyupEmitsOnlyUpStroke(t *testing.T) {
+	in, err := buildKeyInput("keyup", 0x11) // VK_CONTROL
+	if err != nil {
+		t.Fatalf("keyup: %v", err)
+	}
+	if in.WVk != 0x11 {
+		t.Fatalf("wVk: got %d, want 0x11", in.WVk)
+	}
+	if in.DwFlags&keyEventfKeyUp == 0 {
+		t.Fatalf("keyup must set KEYUP, got flags %#x", in.DwFlags)
 	}
 }
 

@@ -289,6 +289,30 @@ func inputCommand(out *bufio.Writer, req *request) {
 		writeControl(out, req.ID, map[string]any{"ok": true})
 		return
 	}
+	if action == "keydown" || action == "keyup" {
+		// Half-event path (bug-2 fix, chord, Aug 28): a single down or
+		// up stroke WITHOUT the synthesised opposite edge. The caller
+		// sequences the half-events in order (down modifier, keychar
+		// char, up modifier) so a Ctrl+V actually registers as a chord.
+		// Without this, buildKeyInput would still validate the code,
+		// but executeKeyInput would inject the matching release and the
+		// modifier would never be held across the character press.
+		if req.Code == nil {
+			writeError(out, req.ID, fmt.Errorf("%s needs code", action))
+			return
+		}
+		in, err := buildKeyInput(action, *req.Code)
+		if err != nil {
+			writeError(out, req.ID, err)
+			return
+		}
+		if err := executeKeyHalfEvent(in); err != nil {
+			writeError(out, req.ID, err)
+			return
+		}
+		writeControl(out, req.ID, map[string]any{"ok": true})
+		return
+	}
 	inReq := inputRequest{
 		Action:       action,
 		Button:       strings.ToLower(req.Button),

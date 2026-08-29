@@ -370,6 +370,7 @@ internal data class ModeLayout(
 @Composable
 fun SplitKeyboard(
     onKey: (KeyPress) -> Unit,
+    onKeys: (List<KeyPress>) -> Unit = { list -> list.forEach(onKey) },
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
     previewText: String = "",
@@ -380,13 +381,33 @@ fun SplitKeyboard(
     fun emit(def: KeyDef) {
         haptics.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
         when {
-            // Ctrl+C / Ctrl+V / Ctrl+X style shortcut: stream the modifier
-            // first, then the char. Each one is its own KeyPress so the
-            // existing realtime path (sendKey) handles it the same as any
-            // other keystroke. Two events, no special wire shape needed.
+            // Ctrl+C / Ctrl+V / Ctrl+X style shortcut: build a proper chord
+            // (bug-2 fix, Aug 28): the modifier must stay HELD across the
+            // character press, but a full keyvk keypress would release the
+            // modifier before the char arrives. The previous build emitted
+            // two atomic keystrokes back-to-back (Ctrl down+up, then V
+            // down+up); Windows never saw a chord and the OS shortcut was
+            // silently dropped.
+            //
+            // The fix uses the new half-events (KeyPress.down / KeyPress.up)
+            // and pipes the three presses through sendKeys, which runs them
+            // in a SINGLE coroutine with a small inter-press delay. The
+            // wire order is exactly:
+            //   1) keydown VK_CONTROL
+            //   2) keychar 'c'
+            //   3) keyup VK_CONTROL
+            // so the helper sees the modifier held across the character
+            // press, and the OS registers the chord.
             def.comboModifier != null && def.comboChar != null -> {
-                onKey(KeyPress(KeyPress.Kind.SPECIAL, def.comboModifier))
-                onKey(KeyPress.char(def.comboChar))
+                val modifier = def.comboModifier
+                val letter = def.comboChar
+                onKeys(
+                    listOf(
+                        KeyPress.down(modifier),
+                        KeyPress.char(letter),
+                        KeyPress.up(modifier),
+                    )
+                )
             }
             def.char != null -> {
                 val raw = if (mode == KeyboardMode.Abc) {
