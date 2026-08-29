@@ -297,6 +297,130 @@ class RemoteScreenViewModelTest {
         assertEquals(SpecialKey.ENTER.vk, fake.screenInputs[2].code)
     }
 
+    /**
+     * Bug-1 fix (Aug 28): a paste of N chars must travel in the ORDER the
+     * UI produced them. The old `presses.forEach { sendKey }` fired N
+     * concurrent coroutines that raced through the Go helper's stdin pipe,
+     * and the OS received the chars interleaved. sendKeys drains the list
+     * in one coroutine, awaiting each round-trip before the next, so the
+     * wire order is exactly the list order.
+     */
+    @Test
+    fun `a paste travels the chars in order, not interleaved`() = runTest {
+        val fake = FakeIduPiClient()
+        fake.screenConfigToReturn = ScreenRemoteConfig(remoteInputEnabled = true)
+        val viewModel = RemoteScreenViewModel(
+            clientSource = FakeClientSource(fake),
+            decodeJpeg = { stubBitmap },
+        )
+        viewModel.refreshConfig()
+        advanceUntilIdle()
+
+        val paste = "pluging para opencode"
+        val presses = keyboardDiffs("", paste)
+        viewModel.sendKeys(presses)
+        advanceUntilIdle()
+
+        assertEquals(paste.length, fake.screenInputs.size)
+        // Every event must be a keychar with the expected UTF-16 unit,
+        // in the original order. A single out-of-order char would prove
+        // the race is back.
+        for (i in paste.indices) {
+            val expected = paste[i]
+            val event = fake.screenInputs[i]
+            assertEquals("keychar", event.type)
+            assertEquals("char[$i] = '${expected}'", expected.code, event.code)
+        }
+    }
+
+    /**
+     * Bug-1 fix: a single-press list short-circuits to the realtime path
+     * (sendKey), so an isolated keycap tap still goes out on its own
+     * coroutine without the 3ms inter-press delay.
+     */
+    @Test
+    fun `a single-key list takes the realtime path`() = runTest {
+        val fake = FakeIduPiClient()
+        fake.screenConfigToReturn = ScreenRemoteConfig(remoteInputEnabled = true)
+        val viewModel = RemoteScreenViewModel(
+            clientSource = FakeClientSource(fake),
+            decodeJpeg = { stubBitmap },
+        )
+        viewModel.refreshConfig()
+        advanceUntilIdle()
+
+        viewModel.sendKeys(listOf(KeyPress.char('a')))
+        advanceUntilIdle()
+
+        assertEquals(1, fake.screenInputs.size)
+        assertEquals("keychar", fake.screenInputs.single().type)
+        assertEquals('a'.code, fake.screenInputs.single().code)
+    }
+
+    /**
+     * Bug-1 fix: a burst of presses is dropped as a whole when input is
+     * disabled (the second gate). The local echo is still updated so the
+     * user sees what they typed even though the server never received it.
+     */
+    @Test
+    fun `a paste is dropped as a whole while input is disabled`() = runTest {
+        val fake = FakeIduPiClient()
+        fake.screenConfigToReturn = ScreenRemoteConfig(remoteInputEnabled = false)
+        val viewModel = RemoteScreenViewModel(
+            clientSource = FakeClientSource(fake),
+            decodeJpeg = { stubBitmap },
+        )
+        viewModel.refreshConfig()
+        advanceUntilIdle()
+
+        viewModel.sendKeys(keyboardDiffs("", "abc"))
+        advanceUntilIdle()
+
+        assertEquals(0, fake.screenInputs.size)
+        // Echo still reflects the burst: the user sees the chars they
+        // pressed even if the server dropped them.
+        assertEquals("abc", viewModel.uiState.value.keyboardPreview)
+    }
+
+    /**
+     * Bug-2 fix (Aug 28): a Ctrl+C chord sends three wire events in this
+     * exact order: keydown VK_CONTROL, keychar 'c', keyup VK_CONTROL.
+     * Without the hold, the OS shortcut silently fails. sendKeys preserves
+     * the order through one coroutine.
+     */
+    @Test
+    fun `a Ctrl+C chord is keydown char then keyup in order`() = runTest {
+        val fake = FakeIduPiClient()
+        fake.screenConfigToReturn = ScreenRemoteConfig(remoteInputEnabled = true)
+        val viewModel = RemoteScreenViewModel(
+            clientSource = FakeClientSource(fake),
+            decodeJpeg = { stubBitmap },
+        )
+        viewModel.refreshConfig()
+        advanceUntilIdle()
+
+        viewModel.sendKeys(
+            listOf(
+                KeyPress.down(0x11),   // VK_CONTROL
+                KeyPress.char('c'),
+                KeyPress.up(0x11),     // VK_CONTROL release
+            )
+        )
+        advanceUntilIdle()
+
+        assertEquals(3, fake.screenInputs.size)
+        // Order matters: down, char, up.
+        assertEquals("keydown", fake.screenInputs[0].type)
+        assertEquals(0x11, fake.screenInputs[0].code)
+        assertEquals("keychar", fake.screenInputs[1].type)
+        assertEquals('c'.code, fake.screenInputs[1].code)
+        assertEquals("keyup", fake.screenInputs[2].type)
+        assertEquals(0x11, fake.screenInputs[2].code)
+        // The preview bar should grow by ONE char ('c'), not by the
+        // modifier down/up -- half-events are scaffolding only.
+        assertEquals("c", viewModel.uiState.value.keyboardPreview)
+    }
+
     // --- dirty tiles (hito 8): compositing on the cached frame ---
 
     @Test

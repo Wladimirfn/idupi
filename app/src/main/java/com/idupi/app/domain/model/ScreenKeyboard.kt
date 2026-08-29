@@ -26,18 +26,39 @@ enum class SpecialKey(val vk: Int) {
  * unit; special keys ride "keyvk" with their Windows virtual-key code. The
  * Go helper performs the full down+up for each, so one wire event is one
  * complete keystroke -- half the round-trips of separate down/up events.
+ *
+ * Modifier-hold support (bug-2 fix, Ctrl+V chord, Aug 28): a chord like
+ * Ctrl+C needs the modifier HELD across the character press, but a full
+ * keyvk keypress would release the modifier before the char arrives, and
+ * Windows would never see the chord. The DOWN/UP phases emit "keydown"
+ * and "keyup" half-events -- the helper fires only the down or only the
+ * up. The ViewModel sequences the three events of a chord
+ * (keydown modifier, keychar char, keyup modifier) in one coroutine with
+ * a small delay between them, so the wire order is preserved and the
+ * OS sees the hold.
  */
-data class KeyPress(val kind: Kind, val code: Int) {
+data class KeyPress(val kind: Kind, val code: Int, val phase: Phase = Phase.PRESS) {
     enum class Kind { CHAR, SPECIAL }
+    /** DOWN/UP apply to special keys only -- characters always ride the
+     *  full press; holding a printable char makes no sense. */
+    enum class Phase { PRESS, DOWN, UP }
 
-    val wireAction: String get() = if (kind == Kind.CHAR) "keychar" else "keyvk"
+    val wireAction: String get() = when (phase) {
+        Phase.PRESS -> if (kind == Kind.CHAR) "keychar" else "keyvk"
+        Phase.DOWN -> "keydown"
+        Phase.UP -> "keyup"
+    }
 
     fun asSpecial(): SpecialKey? =
-        SpecialKey.entries.firstOrNull { it.vk == code }?.takeIf { kind == Kind.SPECIAL }
+        SpecialKey.entries.firstOrNull { it.vk == code }?.takeIf { kind == Kind.SPECIAL && phase == Phase.PRESS }
 
     companion object {
         fun char(c: Char) = KeyPress(Kind.CHAR, c.code)
         fun special(key: SpecialKey) = KeyPress(Kind.SPECIAL, key.vk)
+        /** Modifier-down half-event for a chord. */
+        fun down(vk: Int) = KeyPress(Kind.SPECIAL, vk, Phase.DOWN)
+        /** Modifier-up half-event for a chord. */
+        fun up(vk: Int) = KeyPress(Kind.SPECIAL, vk, Phase.UP)
     }
 }
 

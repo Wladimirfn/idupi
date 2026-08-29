@@ -24,7 +24,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -273,12 +272,21 @@ fun RemoteScreen(
             // the controls float OVER it -- a compact status row on top and a
             // collapsible card at the bottom. Nothing permanently shrinks the
             // screen.
+            //
+            // Bug-3 fix (Aug 28): imePadding() used to live here for BOTH
+            // the immersive and the non-immersive landscape, and it lifted
+            // the picture every time the IME opened -- the "auto-pan" the
+            // owner flagged. The immersive branch has its own SplitKeyboard
+            // Surface (40% weight), not a system IME, so imePadding() was
+            // dead weight there too. The non-immersive branch wants the
+            // picture to stay fixed while the user types; the existing
+            // LaunchedEffect in ScreenControls scrolls the bottom card to
+            // keep the field visible without moving the picture.
             val controlsScroll = rememberScrollState()
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .then(outerPadding)
-                    .imePadding()
             ) {
                 if (immersive) {
                     // CLEAN FULLSCREEN: stream 60% + keyboard 40% when open,
@@ -312,6 +320,7 @@ fun RemoteScreen(
                         if (keyboardOpen) {
                             SplitKeyboard(
                                 onKey = { viewModel.sendKey(it) },
+                                onKeys = { viewModel.sendKeys(it) },
                                 onClose = { keyboardOpen = false },
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -566,11 +575,19 @@ fun RemoteScreen(
             }
         } else {
             val controlsScroll = rememberScrollState()
+            // Bug-3 fix (Aug 28): in NORMAL mode (portrait OR landscape-
+            // non-immersive) the picture MUST stay fixed while typing.
+            // The previous build applied imePadding() on this outer column,
+            // which shifted the whole layout (image included) up when the
+            // IME opened -- the "auto-pan" the owner flagged. We no longer
+            // ask the window to lift our content; the field itself stays
+            // reachable through [controlsScroll], and the existing
+            // LaunchedEffect below scrolls to the field when it gains
+            // focus. The user is in charge of any pan they actually want.
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(controlsScroll)
-                    .imePadding()
                     .then(outerPadding)
                     .padding(12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
@@ -1017,7 +1034,16 @@ private fun ScreenControls(
                 value = keyText,
                 onValueChange = { new ->
                     val presses = keyboardDiffs(keyText, new)
-                    presses.forEach { viewModel.sendKey(it) }
+                    // Bug-1 fix (Aug 28): a paste of N chars must travel in
+                    // order over the wire. The previous `forEach { sendKey }`
+                    // fired N concurrent coroutines that raced through the
+                    // Go helper's stdin pipe and arrived interleaved at the
+                    // OS. sendKeys drains the list in a SINGLE coroutine
+                    // with a small inter-press delay, so the order in the
+                    // list is exactly the order on the wire. A single
+                    // keystroke (the common case) short-circuits inside
+                    // sendKeys back to the realtime path.
+                    viewModel.sendKeys(presses)
                     keyText =
                         if (presses.any { it == KeyPress.special(SpecialKey.ENTER) }) ""
                         else new

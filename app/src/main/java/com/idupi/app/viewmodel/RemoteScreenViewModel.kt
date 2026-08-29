@@ -383,6 +383,13 @@ class RemoteScreenViewModel(
      * distorted the picture without revealing the caret. The preview is the
      * honest fix: the keys go out exactly as before, and the UI gets a
      * non-blocking echo so the user can see what just happened.
+     *
+     * For a single key tap (the split keyboard's normal path) the call is
+     * fire-and-forget on its own coroutine -- latency is what the user
+     * feels. For a multi-press burst (paste, autocomplete, replacement) the
+     * single-press path races through the Go helper's stdin and the chars
+     * arrive interleaved. The caller must use [sendKeys] for any list with
+     * more than one press; this function stays the single-keystroke path.
      */
     fun sendKey(press: KeyPress) {
         // Update the echo FIRST, regardless of the input gate: a disabled
@@ -402,6 +409,79 @@ class RemoteScreenViewModel(
                 if (e !is CancellationException) {
                     _uiState.value = _uiState.value.copy(error = e.message)
                 }
+            }
+        }
+    }
+
+    /**
+     * Sequential key sender (bug-1 fix, Aug 28): a paste of N chars, an
+     * IME replacement, or any list of presses fired from a single UI event
+     * must travel in ORDER over the wire. Firing N concurrent coroutines
+     * (one per `viewModelScope.launch` inside [sendKey]) races the helper's
+     * stdin pipe and the OS receives the chars interleaved -- the
+     * distortion the owner saw: "pluging para opencode" arriving as
+     * "lpuig gnpraap onoedce".
+     *
+     * The fix is structural, not algorithmic: ONE coroutine drains the
+     * list, awaiting the network round-trip for each press before sending
+     * the next. The order in the list is the order on the wire, every
+     * time. A small inter-press delay gives Windows time to settle each
+     * keystroke in its input queue before the next arrives, so the OS
+     * never buffers two of them into one.
+     *
+     * Also used for chord assembly (bug-2 fix): the three events of a
+     * Ctrl+V (keydown VK_CONTROL, keychar 'v', keyup VK_CONTROL) travel
+     * in the same coroutine so the helper sees the modifier held across
+     * the character press.
+     *
+     * The local preview update stays in sync via [previewAfter] inside
+     * the loop, so the echo bar still grows char-by-char as the burst
+     * drains -- the user sees the typing happen, just correctly.
+     */
+    fun sendKeys(presses: List<KeyPress>) {
+        if (presses.isEmpty()) return
+        // One tap short-circuits to the realtime path: no ordering hazard,
+        // no extra coroutine.
+        if (presses.size == 1) {
+            sendKey(presses.single())
+            return
+        }
+        if (!_uiState.value.remoteInputEnabled) {
+            // Drop the whole burst with one log line, mirroring the single
+            // press behaviour but louder so a paste never appears to work
+            // locally while the server silently dropped it.
+            Log.w(TAG, "remote input disabled; dropping ${presses.size} keys")
+            // Still update the local echo: the user pressed them and the
+            // preview is the honest local story.
+            var echo = _uiState.value.keyboardPreview
+            presses.forEach { echo = previewAfter(echo, it) }
+            _uiState.value = _uiState.value.copy(keyboardPreview = echo)
+            return
+        }
+        viewModelScope.launch {
+            var echo = _uiState.value.keyboardPreview
+            for (press in presses) {
+                echo = previewAfter(echo, press)
+                _uiState.value = _uiState.value.copy(keyboardPreview = echo)
+                try {
+                    client.sendScreenInput(
+                        ScreenInputEvent(type = press.wireAction, code = press.code)
+                    )
+                } catch (e: Exception) {
+                    if (e !is CancellationException) {
+                        _uiState.value = _uiState.value.copy(error = e.message)
+                    }
+                    // Stop the burst on the first wire error: half-sent
+                    // bursts leave the remote field in a worse state than
+                    // a clean drop.
+                    return@launch
+                }
+                // Inter-press pacing. 0 for a single CHAR after a chord's
+                // modifier release (no reason to wait longer), ~3ms for
+                // everything else -- short enough to be invisible to a
+                // human, long enough that Windows' SendInput queue
+                // presents each keystroke as its own event.
+                delay(INTER_KEY_DELAY_MS)
             }
         }
     }
@@ -438,11 +518,20 @@ class RemoteScreenViewModel(
      */
     private fun previewAfter(current: String, press: KeyPress): String {
         val next = when (press.kind) {
-            KeyPress.Kind.CHAR -> current + Char(press.code)
-            KeyPress.Kind.SPECIAL -> when (press.asSpecial()) {
-                SpecialKey.BACKSPACE -> if (current.isNotEmpty()) current.dropLast(1) else current
-                SpecialKey.ENTER -> ""
-                else -> current
+            KeyPress.Kind.CHAR -> if (press.phase == KeyPress.Phase.PRESS) {
+                current + Char(press.code)
+            } else current
+            KeyPress.Kind.SPECIAL -> when (press.phase) {
+                // Half-events (DOWN/UP) are modifier-hold scaffolding for
+                // chords like Ctrl+V -- the user never sees a literal
+                // "VK_CONTROL" appended to the echo bar. The character
+                // press between them is what the preview should grow.
+                KeyPress.Phase.DOWN, KeyPress.Phase.UP -> current
+                KeyPress.Phase.PRESS -> when (press.asSpecial()) {
+                    SpecialKey.BACKSPACE -> if (current.isNotEmpty()) current.dropLast(1) else current
+                    SpecialKey.ENTER -> ""
+                    else -> current
+                }
             }
         }
         return if (next.length > RemoteScreenUiState.KEYBOARD_PREVIEW_MAX) {
@@ -476,6 +565,13 @@ class RemoteScreenViewModel(
         const val ACK_MAX_ATTEMPTS = 8
         const val ACK_RETRY_BASE_MS = 100L
         const val ACK_RETRY_CAP_MS = 2_000L
+        /** Pacing between sequential presses inside [sendKeys] (bug-1 fix).
+         *  3ms is well below human perception of "instant" (~80ms) and
+         *  comfortably above the SendInput queue's inter-event resolution
+         *  on Windows, so a 20-char paste arrives as 20 distinct keystrokes
+         *  in the right order, not as a buffer-collapse into a single
+         *  chord. */
+        const val INTER_KEY_DELAY_MS = 3L
         val DEFAULT_VIEWPORT_PAIR: Pair<Int, Int> =
             com.idupi.app.domain.model.DEFAULT_VIEWPORT
     }
