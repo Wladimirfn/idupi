@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.idupi.app.domain.model.*
 import com.idupi.app.ui.theme.*
+import com.idupi.app.viewmodel.OrchestratorEngine
 import com.idupi.app.viewmodel.OrchestratorTab
 import com.idupi.app.viewmodel.OrchestratorViewModel
 
@@ -40,15 +41,20 @@ fun OrchestratorScreen(
     onMenuClick: () -> Unit
 ) {
     val status by viewModel.status.collectAsState()
+    val activeEngine by viewModel.activeEngine.collectAsState()
     val activeTab by viewModel.activeTab.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val isActionRunning by viewModel.isActionRunning.collectAsState()
     val actionOutput by viewModel.actionOutput.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val providerModels by viewModel.providerModels.collectAsState()
+    val gentleAiDetected by viewModel.gentleAiDetected.collectAsState()
 
-    var editingOpenCodePhase by remember { mutableStateOf<Pair<String, OpenCodeModelAssignment>?>(null) }
-    var editingClaudePhase by remember { mutableStateOf<Pair<String, ClaudePhaseConfig>?>(null) }
+    // Per-engine editing state. `editingOpenCode` covers opencode, `editingClaude`
+    // covers claude, `editingPi` covers pi. Only one dialog at a time.
+    var editingOpenCode by remember { mutableStateOf<Pair<String, OpenCodeModelAssignment>?>(null) }
+    var editingClaude by remember { mutableStateOf<Pair<String, ClaudePhaseConfig>?>(null) }
+    var editingPi by remember { mutableStateOf<Pair<String, PiPhaseConfig>?>(null) }
     var showCreateProfileDialog by remember { mutableStateOf(false) }
     var editingProfile by remember { mutableStateOf<SddProfileItem?>(null) }
 
@@ -112,10 +118,19 @@ fun OrchestratorScreen(
                 }
             }
 
+            // gentle-ai detection banner — always visible so the user knows which mode they're in.
+            GentleAiDetectionBanner(gentleAiDetected = gentleAiDetected)
+
             // Ecosystem Overview Header
             EcosystemHeaderCard(status = status)
 
-            // Tabs Selector
+            // Motor selector (top engine chip row) — drives which data populates the shared tabs.
+            EngineSelectorRow(
+                activeEngine = activeEngine,
+                onSelect = { viewModel.selectEngine(it) }
+            )
+
+            // Shared function tabs (ONE set, driven by motor selector above)
             ScrollableTabRow(
                 selectedTabIndex = activeTab.ordinal,
                 containerColor = SlateCard,
@@ -153,20 +168,21 @@ fun OrchestratorScreen(
                     }
                 } else {
                     when (activeTab) {
-                        OrchestratorTab.SDD_PHASES -> SddPhasesTabView(
+                        OrchestratorTab.FASES -> SddPhasesTabView(
+                            activeEngine = activeEngine,
                             status = status,
-                            onEditOpenCode = { phase, current -> editingOpenCodePhase = phase to current },
-                            onEditClaude = { phase, current -> editingClaudePhase = phase to current }
+                            onEditOpenCode = { phase, current -> editingOpenCode = phase to current },
+                            onEditClaude = { phase, current -> editingClaude = phase to current },
+                            onEditPi = { phase, current -> editingPi = phase to current }
                         )
-                        OrchestratorTab.OPENCODE_MODELS -> OpenCodeModelsTabView(
-                            assignments = status?.modelAssignments ?: emptyMap(),
-                            onEdit = { role, current -> editingOpenCodePhase = role to current }
+                        OrchestratorTab.MODELOS -> ModelosTabView(
+                            activeEngine = activeEngine,
+                            status = status,
+                            onEditOpenCode = { phase, current -> editingOpenCode = phase to current },
+                            onEditClaude = { phase, current -> editingClaude = phase to current },
+                            onEditPi = { phase, current -> editingPi = phase to current }
                         )
-                        OrchestratorTab.CLAUDE_MODELS -> ClaudeModelsTabView(
-                            assignments = status?.claudePhaseAssignments ?: emptyMap(),
-                            onEdit = { phase, current -> editingClaudePhase = phase to current }
-                        )
-                        OrchestratorTab.SDD_PROFILES -> SddProfilesTabView(
+                        OrchestratorTab.PERFILES -> SddProfilesTabView(
                             profiles = status?.sddProfiles ?: emptyList(),
                             activeProfileId = status?.activeProfile,
                             onApplyProfile = { id ->
@@ -182,13 +198,18 @@ fun OrchestratorScreen(
                                 }
                             }
                         )
-                        OrchestratorTab.ECOSYSTEM_TOOLS -> EcosystemToolsTabView(
-                            status = status,
-                            isActionRunning = isActionRunning,
-                            actionOutput = actionOutput,
-                            onRunAction = { action -> viewModel.runAction(action) },
-                            onClearOutput = { viewModel.clearActionOutput() }
-                        )
+                        OrchestratorTab.HERRAMIENTAS -> if (gentleAiDetected) {
+                            EcosystemToolsTabView(
+                                status = status,
+                                isActionRunning = isActionRunning,
+                                actionOutput = actionOutput,
+                                onRunAction = { action -> viewModel.runAction(action) },
+                                onClearOutput = { viewModel.clearActionOutput() }
+                            )
+                        } else {
+                            // Modo-base: gentle-ai absent. Never crash; show clear banner + hint.
+                            ModoBasePlaceholder()
+                        }
                     }
                 }
             }
@@ -196,14 +217,14 @@ fun OrchestratorScreen(
     }
 
     // Dialogs
-    editingOpenCodePhase?.let { (phase, current) ->
+    editingOpenCode?.let { (phase, current) ->
         EditOpenCodeModelDialog(
             phase = phase,
             current = current,
             availableProviders = status?.providers ?: listOf("opencode-go", "openai", "alibaba", "minimax", "zai", "moonshotai", "google"),
             providerModels = providerModels,
             onLoadProviderModels = { prov -> viewModel.loadProviderModels(prov) },
-            onDismiss = { editingOpenCodePhase = null },
+            onDismiss = { editingOpenCode = null },
             onSave = { modelId, providerId, effort ->
                 viewModel.updateModel(
                     engine = "opencode",
@@ -213,18 +234,18 @@ fun OrchestratorScreen(
                     effort = effort,
                     onSuccess = {
                         Toast.makeText(context, "Modelo actualizado y sincronizado en PC", Toast.LENGTH_SHORT).show()
-                        editingOpenCodePhase = null
+                        editingOpenCode = null
                     }
                 )
             }
         )
     }
 
-    editingClaudePhase?.let { (phase, current) ->
+    editingClaude?.let { (phase, current) ->
         EditClaudeModelDialog(
             phase = phase,
             current = current,
-            onDismiss = { editingClaudePhase = null },
+            onDismiss = { editingClaude = null },
             onSave = { model ->
                 viewModel.updateModel(
                     engine = "claude",
@@ -232,7 +253,28 @@ fun OrchestratorScreen(
                     modelId = model,
                     onSuccess = {
                         Toast.makeText(context, "Modelo de Claude actualizado y sincronizado", Toast.LENGTH_SHORT).show()
-                        editingClaudePhase = null
+                        editingClaude = null
+                    }
+                )
+            }
+        )
+    }
+
+    editingPi?.let { (phase, current) ->
+        EditPiModelDialog(
+            phase = phase,
+            current = current,
+            onDismiss = { editingPi = null },
+            onSave = { providerId, modelId, effort ->
+                viewModel.updateModel(
+                    engine = "pi",
+                    phase = phase,
+                    modelId = modelId,
+                    providerId = providerId,
+                    effort = effort,
+                    onSuccess = {
+                        Toast.makeText(context, "Modelo Pi actualizado en ~/.pi/subagents.json", Toast.LENGTH_SHORT).show()
+                        editingPi = null
                     }
                 )
             }
@@ -244,6 +286,7 @@ fun OrchestratorScreen(
             profile = null,
             currentModelAssignments = status?.modelAssignments ?: emptyMap(),
             currentClaudeAssignments = status?.claudePhaseAssignments ?: emptyMap(),
+            currentPiAssignments = status?.piPhaseAssignments ?: emptyMap(),
             onDismiss = { showCreateProfileDialog = false },
             onSave = { profileItem ->
                 viewModel.saveProfile(profileItem) {
@@ -259,6 +302,7 @@ fun OrchestratorScreen(
             profile = prof,
             currentModelAssignments = prof.modelAssignments.ifEmpty { status?.modelAssignments ?: emptyMap() },
             currentClaudeAssignments = prof.claudeAssignments.ifEmpty { status?.claudePhaseAssignments ?: emptyMap() },
+            currentPiAssignments = prof.piAssignments.ifEmpty { status?.piPhaseAssignments ?: emptyMap() },
             onDismiss = { editingProfile = null },
             onSave = { profileItem ->
                 viewModel.saveProfile(profileItem) {
@@ -267,6 +311,132 @@ fun OrchestratorScreen(
                 }
             }
         )
+    }
+}
+
+@Composable
+private fun GentleAiDetectionBanner(gentleAiDetected: Boolean) {
+    val (bg, fg, border, label) = if (gentleAiDetected) {
+        Quintuple(
+            StatusConnected.copy(alpha = 0.12f),
+            StatusConnected,
+            StatusConnected.copy(alpha = 0.5f),
+            "gentle-ai: detectado (modo 2)"
+        )
+    } else {
+        Quintuple(
+            SlateBg,
+            TextSecondary,
+            SlateBorder,
+            "gentle-ai: no instalado (modo base)"
+        )
+    }
+
+    Surface(
+        color = bg,
+        shape = AppShapes.small,
+        border = BorderStroke(1.dp, border),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = AppSpacing.sm, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(AppSpacing.xs)
+        ) {
+            Icon(
+                imageVector = if (gentleAiDetected) Icons.Default.CheckCircle else Icons.Default.Info,
+                contentDescription = null,
+                tint = fg,
+                modifier = Modifier.size(14.dp)
+            )
+            Text(
+                text = label,
+                style = AppTypography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = fg
+            )
+        }
+    }
+}
+
+/** Minimal 5-tuple to avoid pulling in kotlin.Tuple5 (not in stdlib) for a single banner use. */
+private data class Quintuple<A, B, C, D, E>(val a: A, val b: B, val c: C, val d: D, val e: E)
+
+@Composable
+private fun EngineSelectorRow(
+    activeEngine: String,
+    onSelect: (String) -> Unit
+) {
+    val labels = mapOf(
+        OrchestratorEngine.PI to "Pi",
+        OrchestratorEngine.OPENCODE to "OpenCode",
+        OrchestratorEngine.CLAUDE to "Claude"
+    )
+
+    LazyRow(
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        items(OrchestratorEngine.ALL) { engine ->
+            val isActive = engine == activeEngine
+            Surface(
+                color = if (isActive) PrimaryIndigo.copy(alpha = 0.20f) else SlateCard,
+                shape = AppShapes.small,
+                border = BorderStroke(1.dp, if (isActive) PrimaryIndigo else SlateBorder),
+                modifier = Modifier.clickable { onSelect(engine) }
+            ) {
+                Text(
+                    text = labels[engine] ?: engine,
+                    style = AppTypography.labelSmall,
+                    fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
+                    color = if (isActive) PrimaryIndigo else TextPrimary,
+                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModoBasePlaceholder() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(AppSpacing.md)
+    ) {
+        Surface(
+            color = SlateCard,
+            shape = AppShapes.card,
+            border = BorderStroke(1.dp, SlateBorder),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(AppSpacing.cardPadding),
+                verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Construction, contentDescription = null, tint = TextSecondary, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(AppSpacing.xs))
+                    Text(
+                        text = "Modo base",
+                        style = AppTypography.bodySmall,
+                        fontWeight = FontWeight.Bold,
+                        color = TextPrimary
+                    )
+                }
+                Text(
+                    text = "Modulo base activo. Podes gestionar Pi, OpenCode y Claude con su SDD nativo desde aca.",
+                    style = AppTypography.bodySmall,
+                    color = TextSecondary
+                )
+                Text(
+                    text = "Las acciones de Sync / Doctor / Skills viven en `gentle-ai`. Cuando lo instales, se habilitan automaticamente aca sin tocar nada.",
+                    style = AppTypography.labelSmall,
+                    color = TextSecondary
+                )
+            }
+        }
     }
 }
 
@@ -360,6 +530,13 @@ private fun EcosystemHeaderCard(status: OrchestratorStatus?) {
     }
 }
 
+/**
+ * The 10 canonical SDD stages shared across engines (Pi denormalizes
+ * `sdd-proposal` → `sdd-propose`; see `idupi-server/lib/orchestrator/engines/pi.mjs`).
+ * Phases missing for an engine (e.g. Pi has no `review-*`) are simply omitted
+ * by the engine adapter's `skipped[]` reporting — they won't show in the
+ * `piPhaseAssignments` map and therefore won't be editable from the UI.
+ */
 private val SDD_PIPELINE_STAGES = listOf(
     "sdd-init" to "0. Bootstrap & Inicializar SDD",
     "sdd-onboard" to "1. Onboarding Guiado en Codebase",
@@ -373,46 +550,27 @@ private val SDD_PIPELINE_STAGES = listOf(
     "sdd-archive" to "9. Consolidar & Archivar"
 )
 
-private val AGENT_ROLE_DESCRIPTIONS = mapOf(
-    "gentle-orchestrator" to "Orquestador Maestro de Gentle-AI (Mantiene la coordinación y delega fases)",
-    "sdd-init" to "Bootstrap SDD context and project configuration",
-    "sdd-onboard" to "Guía paso a paso en ciclo SDD usando el codebase real",
-    "sdd-explore" to "Explorador de arquitectura y mapa del código",
-    "sdd-propose" to "Generador de propuesta y análisis de impacto",
-    "sdd-spec" to "Especificación formal de requisitos",
-    "sdd-design" to "Diseño técnico de arquitectura y dependencias",
-    "sdd-tasks" to "Desglose estructurado de tareas unitarias",
-    "sdd-apply" to "Aplicador quirúrgico de modificaciones y código",
-    "sdd-verify" to "Verificación, validación y ejecución de tests",
-    "sdd-archive" to "Consolidación y archivado del cambio completado",
-    "jd-judge-a" to "Adversarial code reviewer — blind judge A (Judgment Day)",
-    "jd-judge-b" to "Adversarial code reviewer — blind judge B (Judgment Day)",
-    "jd-fix-agent" to "Surgical fix agent for judgment-day protocol",
-    "review-refuter" to "Batched adversarial refuter — evalúa candidatos a blocker",
-    "review-risk" to "Análisis de riesgos y seguridad",
-    "review-resilience" to "Resiliencia y tolerancia a fallos",
-    "review-readability" to "Legibilidad y directrices de código",
-    "review-reliability" to "Fiabilidad y cobertura de pruebas",
-    "gga-reviewer" to "Gentleman Guardian Angel Reviewer",
-    "build" to "Compilación y empaquetado",
-    "explore" to "Exploración rápida de archivos",
-    "plan" to "Planificación general",
-    "general" to "Asistente multipropósito general"
-)
+/**
+ * Per-engine fallback for a phase when the server envelope has no explicit
+ * assignment yet (empty map, or older server payload missing the field).
+ */
+private fun openCodeDefault(phase: String) = OpenCodeModelAssignment(model_id = "default")
+private fun claudeDefault(phase: String) = ClaudePhaseConfig(model = "sonnet")
+private fun piDefault(phase: String) = PiPhaseConfig()
 
-private val AGENT_CATEGORIES = listOf(
-    "🌟 Orquestación Central" to listOf("gentle-orchestrator"),
-    "🔄 Ciclo SDD Completo" to listOf("sdd-init", "sdd-onboard", "sdd-explore", "sdd-propose", "sdd-spec", "sdd-design", "sdd-tasks", "sdd-apply", "sdd-verify", "sdd-archive"),
-    "⚖️ Judgment Day (Adversarial Protocol)" to listOf("jd-judge-a", "jd-judge-b", "jd-fix-agent"),
-    "🛡️ Comité de Revisión & Refutación" to listOf("review-refuter", "review-risk", "review-resilience", "review-readability", "review-reliability", "gga-reviewer"),
-    "🔧 Subagentes Generales" to listOf("build", "explore", "plan", "general")
-)
-
+/**
+ * Fases tab — shows per-phase assignments for the ACTIVE engine only. Other
+ * engines' assignments are not rendered here; the motor selector swaps which
+ * engine's data drives the view. The shared tab set (Fases|Modelos|Perfiles|
+ * Herramientas) does NOT change — only its content does.
+ */
 @Composable
 private fun SddPhasesTabView(
+    activeEngine: String,
     status: OrchestratorStatus?,
     onEditOpenCode: (String, OpenCodeModelAssignment) -> Unit,
-    onEditClaude: (String, ClaudePhaseConfig) -> Unit
+    onEditClaude: (String, ClaudePhaseConfig) -> Unit,
+    onEditPi: (String, PiPhaseConfig) -> Unit
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -420,81 +578,339 @@ private fun SddPhasesTabView(
         contentPadding = PaddingValues(bottom = AppSpacing.xl)
     ) {
         items(SDD_PIPELINE_STAGES) { (stageKey, stageTitle) ->
-            val openCodeAssign = status?.modelAssignments?.get(stageKey) ?: OpenCodeModelAssignment(model_id = "default")
-            val claudeConfig = status?.claudePhaseAssignments?.get(stageKey) ?: ClaudePhaseConfig(model = "sonnet")
+            when (activeEngine) {
+                OrchestratorEngine.PI -> PiPhaseCard(
+                    phaseKey = stageKey,
+                    phaseTitle = stageTitle,
+                    current = status?.piPhaseAssignments?.get(stageKey) ?: piDefault(stageKey),
+                    onClick = { onEditPi(stageKey, it) }
+                )
+                OrchestratorEngine.OPENCODE -> OpenCodePhaseCard(
+                    phaseKey = stageKey,
+                    phaseTitle = stageTitle,
+                    current = status?.modelAssignments?.get(stageKey) ?: openCodeDefault(stageKey),
+                    onClick = { onEditOpenCode(stageKey, it) }
+                )
+                OrchestratorEngine.CLAUDE -> ClaudePhaseCard(
+                    phaseKey = stageKey,
+                    phaseTitle = stageTitle,
+                    current = status?.claudePhaseAssignments?.get(stageKey) ?: claudeDefault(stageKey),
+                    onClick = { onEditClaude(stageKey, it) }
+                )
+                else -> Unit
+            }
+        }
+    }
+}
 
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = SlateCard),
-                shape = AppShapes.card,
-                border = BorderStroke(1.dp, SlateBorder)
+@Composable
+private fun PiPhaseCard(
+    phaseKey: String,
+    phaseTitle: String,
+    current: PiPhaseConfig,
+    onClick: (PiPhaseConfig) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SlateCard),
+        shape = AppShapes.card,
+        border = BorderStroke(1.dp, SlateBorder)
+    ) {
+        Column(
+            modifier = Modifier.padding(AppSpacing.cardPadding),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
+        ) {
+            Text(
+                text = phaseTitle,
+                style = AppTypography.bodySmall,
+                fontWeight = FontWeight.Bold,
+                color = TextPrimary
+            )
+            Surface(
+                color = AccentPurple.copy(alpha = 0.15f),
+                shape = AppShapes.small,
+                border = BorderStroke(1.dp, AccentPurple.copy(alpha = 0.4f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onClick(current) }
             ) {
-                Column(
-                    modifier = Modifier.padding(AppSpacing.cardPadding),
-                    verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
-                ) {
+                Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
                     Text(
-                        text = stageTitle,
-                        style = AppTypography.bodySmall,
-                        fontWeight = FontWeight.Bold,
-                        color = TextPrimary
+                        text = "Pi · ${current.provider_id.ifBlank { "sin provider" }}",
+                        style = AppTypography.labelSmall,
+                        color = TextSecondary
                     )
-
-                    AGENT_ROLE_DESCRIPTIONS[stageKey]?.let { desc ->
-                        Text(text = desc, style = AppTypography.labelSmall.copy(fontSize = 10.sp), color = TextSecondary)
+                    Text(
+                        text = current.model_id.ifBlank { "Sin asignar" },
+                        style = AppTypography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = AccentPurple,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    current.effort?.let { eff ->
+                        Text(
+                            text = "effort: $eff",
+                            style = AppTypography.labelSmall.copy(fontSize = 9.sp),
+                            color = TextSecondary
+                        )
                     }
+                }
+            }
+        }
+    }
+}
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+@Composable
+private fun OpenCodePhaseCard(
+    phaseKey: String,
+    phaseTitle: String,
+    current: OpenCodeModelAssignment,
+    onClick: (OpenCodeModelAssignment) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SlateCard),
+        shape = AppShapes.card,
+        border = BorderStroke(1.dp, SlateBorder)
+    ) {
+        Column(
+            modifier = Modifier.padding(AppSpacing.cardPadding),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
+        ) {
+            Text(
+                text = phaseTitle,
+                style = AppTypography.bodySmall,
+                fontWeight = FontWeight.Bold,
+                color = TextPrimary
+            )
+            Surface(
+                color = PrimaryIndigo.copy(alpha = 0.15f),
+                shape = AppShapes.small,
+                border = BorderStroke(1.dp, PrimaryIndigo.copy(alpha = 0.4f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onClick(current) }
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+                    Text(
+                        text = "${current.provider_id} / OpenCode",
+                        style = AppTypography.labelSmall,
+                        color = TextSecondary
+                    )
+                    Text(
+                        text = current.model_id.ifBlank { "Sin asignar" },
+                        style = AppTypography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = PrimaryIndigo,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    current.effort?.let { eff ->
+                        Text(
+                            text = "effort: $eff",
+                            style = AppTypography.labelSmall.copy(fontSize = 9.sp),
+                            color = TextSecondary
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ClaudePhaseCard(
+    phaseKey: String,
+    phaseTitle: String,
+    current: ClaudePhaseConfig,
+    onClick: (ClaudePhaseConfig) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SlateCard),
+        shape = AppShapes.card,
+        border = BorderStroke(1.dp, SlateBorder)
+    ) {
+        Column(
+            modifier = Modifier.padding(AppSpacing.cardPadding),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
+        ) {
+            Text(
+                text = phaseTitle,
+                style = AppTypography.bodySmall,
+                fontWeight = FontWeight.Bold,
+                color = TextPrimary
+            )
+            Surface(
+                color = AccentPurple.copy(alpha = 0.15f),
+                shape = AppShapes.small,
+                border = BorderStroke(1.dp, AccentPurple.copy(alpha = 0.4f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onClick(current) }
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
+                    Text(
+                        text = "Claude",
+                        style = AppTypography.labelSmall,
+                        color = TextSecondary
+                    )
+                    Text(
+                        text = current.model,
+                        style = AppTypography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = AccentPurple,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Modelos tab — engine-aware list of configured phase assignments for the
+ * ACTIVE engine. Provides a denser view than Fases (one line per phase) and
+ * a single tap-to-edit affordance per row.
+ */
+@Composable
+private fun ModelosTabView(
+    activeEngine: String,
+    status: OrchestratorStatus?,
+    onEditOpenCode: (String, OpenCodeModelAssignment) -> Unit,
+    onEditClaude: (String, ClaudePhaseConfig) -> Unit,
+    onEditPi: (String, PiPhaseConfig) -> Unit
+) {
+    val rows: List<Triple<String, String, @Composable (Modifier) -> Unit>> = when (activeEngine) {
+        OrchestratorEngine.PI -> (status?.piPhaseAssignments ?: emptyMap()).entries
+            .toList()
+            .sortedBy { it.key }
+            .map { (phase, cfg) ->
+                Triple(
+                    phase,
+                    "${cfg.provider_id.ifBlank { "?" }} · ${cfg.model_id.ifBlank { "Sin asignar" }}" + (cfg.effort?.let { " · effort=$it" } ?: ""),
+                ) { mod ->
+                    Surface(
+                        color = AccentPurple.copy(alpha = 0.20f),
+                        shape = AppShapes.small,
+                        modifier = mod
                     ) {
-                        // OpenCode model pill
-                        Surface(
-                            color = PrimaryIndigo.copy(alpha = 0.15f),
-                            shape = AppShapes.small,
-                            border = BorderStroke(1.dp, PrimaryIndigo.copy(alpha = 0.4f)),
-                            modifier = Modifier
-                                .weight(1f)
-                                .clickable { onEditOpenCode(stageKey, openCodeAssign) }
-                        ) {
-                            Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
-                                Text("${openCodeAssign.provider_id} / Pi", style = AppTypography.labelSmall, color = TextSecondary)
-                                Text(
-                                    text = openCodeAssign.model_id.ifBlank { "Sin asignar" },
-                                    style = AppTypography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = PrimaryIndigo,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                        Text(
+                            text = "Pi",
+                            style = AppTypography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = AccentPurple,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            }
+        OrchestratorEngine.OPENCODE -> (status?.modelAssignments ?: emptyMap()).entries
+            .toList()
+            .sortedBy { it.key }
+            .map { (phase, cfg) ->
+                Triple(
+                    phase,
+                    "${cfg.provider_id} · ${if (cfg.effort != null) "effort=${cfg.effort}" else "estándar"}",
+                ) { mod ->
+                    Surface(
+                        color = PrimaryIndigo.copy(alpha = 0.20f),
+                        shape = AppShapes.small,
+                        modifier = mod
+                    ) {
+                        Text(
+                            text = cfg.model_id,
+                            style = AppTypography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = PrimaryIndigo,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            }
+        OrchestratorEngine.CLAUDE -> (status?.claudePhaseAssignments ?: emptyMap()).entries
+            .toList()
+            .sortedBy { it.key }
+            .map { (phase, cfg) ->
+                Triple(phase, "claude") { mod ->
+                    Surface(
+                        color = AccentPurple.copy(alpha = 0.20f),
+                        shape = AppShapes.small,
+                        modifier = mod
+                    ) {
+                        Text(
+                            text = cfg.model,
+                            style = AppTypography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = AccentPurple,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            }
+        else -> emptyList()
+    }
+
+    if (rows.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                text = "Sin asignaciones para ${activeEngine}. Volvé a refrescar o seleccioná otro motor.",
+                style = AppTypography.bodySmall,
+                color = TextSecondary
+            )
+        }
+        return
+    }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(AppSpacing.xs),
+        contentPadding = PaddingValues(bottom = AppSpacing.xl)
+    ) {
+        items(rows) { (phase, subtitle, badge) ->
+            Surface(
+                color = SlateCard,
+                shape = AppShapes.small,
+                border = BorderStroke(1.dp, SlateBorder),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        when (activeEngine) {
+                            OrchestratorEngine.PI -> status?.piPhaseAssignments?.get(phase)?.let {
+                                onEditPi(phase, it)
                             }
-                        }
-
-                        Spacer(modifier = Modifier.width(AppSpacing.xs))
-
-                        // Claude model pill
-                        Surface(
-                            color = AccentPurple.copy(alpha = 0.15f),
-                            shape = AppShapes.small,
-                            border = BorderStroke(1.dp, AccentPurple.copy(alpha = 0.4f)),
-                            modifier = Modifier
-                                .weight(1f)
-                                .clickable { onEditClaude(stageKey, claudeConfig) }
-                        ) {
-                            Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)) {
-                                Text("Claude", style = AppTypography.labelSmall, color = TextSecondary)
-                                Text(
-                                    text = claudeConfig.model,
-                                    style = AppTypography.labelSmall,
-                                    fontWeight = FontWeight.Bold,
-                                    color = AccentPurple,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
+                            OrchestratorEngine.OPENCODE -> status?.modelAssignments?.get(phase)?.let {
+                                onEditOpenCode(phase, it)
+                            }
+                            OrchestratorEngine.CLAUDE -> status?.claudePhaseAssignments?.get(phase)?.let {
+                                onEditClaude(phase, it)
                             }
                         }
                     }
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = AppSpacing.sm, vertical = AppSpacing.xs),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = phase,
+                            style = AppTypography.bodySmall,
+                            fontWeight = FontWeight.Bold,
+                            color = TextPrimary
+                        )
+                        Text(
+                            text = subtitle,
+                            style = AppTypography.labelSmall,
+                            color = TextSecondary
+                        )
+                    }
+                    badge(Modifier)
                 }
             }
         }
@@ -607,20 +1023,53 @@ private fun SddProfilesTabView(
                                 Text(text = desc, style = AppTypography.bodySmall, color = TextSecondary)
                             }
 
-                            // Model summary pills
+                            // Per-engine model summary pills (transversal profile).
+                            val explorePi = prof.piAssignments["sdd-explore"]?.model_id
+                            val applyPi = prof.piAssignments["sdd-apply"]?.model_id
+                            val verifyPi = prof.piAssignments["sdd-verify"]?.model_id
                             val exploreModel = prof.modelAssignments["sdd-explore"]?.model_id ?: "default"
                             val applyModel = prof.modelAssignments["sdd-apply"]?.model_id ?: "default"
                             val verifyModel = prof.modelAssignments["sdd-verify"]?.model_id ?: "default"
+                            val exploreClaude = prof.claudeAssignments["sdd-explore"]?.model
+                            val applyClaude = prof.claudeAssignments["sdd-apply"]?.model
+                            val verifyClaude = prof.claudeAssignments["sdd-verify"]?.model
 
                             Row(horizontalArrangement = Arrangement.spacedBy(AppSpacing.xs)) {
                                 Surface(color = SlateBg, shape = AppShapes.small) {
-                                    Text("Explorar: $exploreModel", style = AppTypography.labelSmall.copy(fontSize = 9.sp), color = TextSecondary, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+                                    Text("OC/Expl: $exploreModel", style = AppTypography.labelSmall.copy(fontSize = 9.sp), color = TextSecondary, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
                                 }
                                 Surface(color = SlateBg, shape = AppShapes.small) {
-                                    Text("Apply: $applyModel", style = AppTypography.labelSmall.copy(fontSize = 9.sp), color = TextSecondary, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+                                    Text("OC/Apply: $applyModel", style = AppTypography.labelSmall.copy(fontSize = 9.sp), color = TextSecondary, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
                                 }
                                 Surface(color = SlateBg, shape = AppShapes.small) {
-                                    Text("Verify: $verifyModel", style = AppTypography.labelSmall.copy(fontSize = 9.sp), color = TextSecondary, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+                                    Text("OC/Verify: $verifyModel", style = AppTypography.labelSmall.copy(fontSize = 9.sp), color = TextSecondary, modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp))
+                                }
+                            }
+
+                            val anyPi = listOf(explorePi, applyPi, verifyPi).any { it != null }
+                            val anyClaude = listOf(exploreClaude, applyClaude, verifyClaude).any { it != null }
+                            if (anyPi || anyClaude) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(AppSpacing.xs)) {
+                                    if (anyPi) {
+                                        Surface(color = SlateBg, shape = AppShapes.small) {
+                                            Text(
+                                                "Pi/Apply: ${applyPi ?: "—"}",
+                                                style = AppTypography.labelSmall.copy(fontSize = 9.sp),
+                                                color = TextSecondary,
+                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
+                                    if (anyClaude) {
+                                        Surface(color = SlateBg, shape = AppShapes.small) {
+                                            Text(
+                                                "Claude/Apply: ${applyClaude ?: "—"}",
+                                                style = AppTypography.labelSmall.copy(fontSize = 9.sp),
+                                                color = TextSecondary,
+                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                            )
+                                        }
+                                    }
                                 }
                             }
 
@@ -645,119 +1094,6 @@ private fun SddProfilesTabView(
 }
 
 @Composable
-private fun OpenCodeModelsTabView(
-    assignments: Map<String, OpenCodeModelAssignment>,
-    onEdit: (String, OpenCodeModelAssignment) -> Unit
-) {
-    val itemsList = assignments.entries.toList().sortedBy { it.key }
-
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(AppSpacing.xs),
-        contentPadding = PaddingValues(bottom = AppSpacing.xl)
-    ) {
-        items(itemsList) { (role, assign) ->
-            Surface(
-                color = SlateCard,
-                shape = AppShapes.small,
-                border = BorderStroke(1.dp, SlateBorder),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onEdit(role, assign) }
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = AppSpacing.sm, vertical = AppSpacing.xs),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = role,
-                            style = AppTypography.bodySmall,
-                            fontWeight = FontWeight.Bold,
-                            color = TextPrimary
-                        )
-                        Text(
-                            text = "${assign.provider_id} · ${if (assign.effort != null) "Esfuerzo: ${assign.effort}" else "Estándar"}",
-                            style = AppTypography.labelSmall,
-                            color = TextSecondary
-                        )
-                    }
-
-                    Surface(
-                        color = PrimaryIndigo.copy(alpha = 0.2f),
-                        shape = AppShapes.small
-                    ) {
-                        Text(
-                            text = assign.model_id,
-                            style = AppTypography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = PrimaryIndigo,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun ClaudeModelsTabView(
-    assignments: Map<String, ClaudePhaseConfig>,
-    onEdit: (String, ClaudePhaseConfig) -> Unit
-) {
-    val itemsList = assignments.entries.toList().sortedBy { it.key }
-
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(AppSpacing.xs),
-        contentPadding = PaddingValues(bottom = AppSpacing.xl)
-    ) {
-        items(itemsList) { (phase, config) ->
-            Surface(
-                color = SlateCard,
-                shape = AppShapes.small,
-                border = BorderStroke(1.dp, SlateBorder),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onEdit(phase, config) }
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = AppSpacing.sm, vertical = AppSpacing.xs),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = phase,
-                        style = AppTypography.bodySmall,
-                        fontWeight = FontWeight.Bold,
-                        color = TextPrimary
-                    )
-
-                    Surface(
-                        color = AccentPurple.copy(alpha = 0.2f),
-                        shape = AppShapes.small
-                    ) {
-                        Text(
-                            text = config.model,
-                            style = AppTypography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = AccentPurple,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
 private fun EcosystemToolsTabView(
     status: OrchestratorStatus?,
     isActionRunning: Boolean,
@@ -773,7 +1109,7 @@ private fun EcosystemToolsTabView(
             .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(AppSpacing.md)
     ) {
-        // Quick Action Buttons
+        // Quick Action Buttons (gentle-ai only — see banner above for modo base)
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(AppSpacing.xs)) {
             Button(
                 onClick = { onRunAction("sync") },
@@ -979,7 +1315,6 @@ private fun EditOpenCodeModelDialog(
             ) {
                 Text("Rol / Fase: $phase", style = AppTypography.bodySmall, fontWeight = FontWeight.Bold, color = PrimaryIndigo)
 
-                // 1. Selector de Proveedor
                 Text("1. Selecciona Proveedor de IA:", style = AppTypography.labelSmall, fontWeight = FontWeight.Bold, color = TextSecondary)
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     items(availableProviders) { prov ->
@@ -987,14 +1322,13 @@ private fun EditOpenCodeModelDialog(
                             selected = selectedProvider == prov,
                             onClick = {
                                 selectedProvider = prov
-                                selectedModelId = "" // reset to pick from new provider
+                                selectedModelId = ""
                             },
                             label = { Text(prov, style = AppTypography.labelSmall) }
                         )
                     }
                 }
 
-                // 2. Selector de Modelos del Proveedor (Sin escribir a mano)
                 Text("2. Selecciona el Modelo de $selectedProvider:", style = AppTypography.labelSmall, fontWeight = FontWeight.Bold, color = TextSecondary)
                 if (currentModels.isEmpty()) {
                     Surface(
@@ -1021,7 +1355,6 @@ private fun EditOpenCodeModelDialog(
                     }
                 }
 
-                // Modelo Seleccionado Actualmente
                 Surface(
                     color = PrimaryIndigo.copy(alpha = 0.15f),
                     shape = AppShapes.small,
@@ -1039,7 +1372,6 @@ private fun EditOpenCodeModelDialog(
                     }
                 }
 
-                // 3. Selector de Nivel de Esfuerzo (Sin escribir a mano)
                 Text("3. Nivel de Esfuerzo de Razonamiento (Effort):", style = AppTypography.labelSmall, fontWeight = FontWeight.Bold, color = TextSecondary)
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     effortOptions.forEach { (effKey, effLabel) ->
@@ -1157,11 +1489,129 @@ private fun EditClaudeModelDialog(
     )
 }
 
+/**
+ * Pi dialog — same effort options as OpenCode (the wire shape matches), but
+ * the engine id sent over the wire is `pi` so the server routes the write to
+ * `~/.pi/subagents.json` via the pi.mjs adapter (PR1).
+ */
+@Composable
+private fun EditPiModelDialog(
+    phase: String,
+    current: PiPhaseConfig,
+    onDismiss: () -> Unit,
+    onSave: (providerId: String, modelId: String, effort: String?) -> Unit
+) {
+    var selectedProvider by remember { mutableStateOf(current.provider_id) }
+    var selectedModelId by remember { mutableStateOf(current.model_id) }
+    var selectedEffort by remember { mutableStateOf(current.effort) }
+
+    val providers = listOf("anthropic", "openai", "google", "minimax", "zai", "moonshotai", "alibaba")
+    val effortOptions = listOf(
+        null to "Estándar / Desactivado",
+        "low" to "Low (Bajo)",
+        "medium" to "Medium (Medio)",
+        "high" to "High (Alto)",
+        "max" to "Max (Máximo)"
+    )
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = SlateCard,
+        title = {
+            Text("Configurar Modelo Pi", style = AppTypography.titleMedium, color = TextPrimary)
+        },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+            ) {
+                Text("Fase: $phase (escribe ~/.pi/subagents.json)", style = AppTypography.bodySmall, fontWeight = FontWeight.Bold, color = AccentPurple)
+
+                Text("1. Proveedor:", style = AppTypography.labelSmall, fontWeight = FontWeight.Bold, color = TextSecondary)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    items(providers) { prov ->
+                        FilterChip(
+                            selected = selectedProvider == prov,
+                            onClick = { selectedProvider = prov },
+                            label = { Text(prov, style = AppTypography.labelSmall) }
+                        )
+                    }
+                }
+
+                Text("2. Model ID:", style = AppTypography.labelSmall, fontWeight = FontWeight.Bold, color = TextSecondary)
+                OutlinedTextField(
+                    value = selectedModelId,
+                    onValueChange = { selectedModelId = it },
+                    singleLine = true,
+                    placeholder = { Text("ej. claude-sonnet-4-5") },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary,
+                        focusedBorderColor = AccentPurple,
+                        unfocusedBorderColor = SlateBorder
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Text("3. Effort (opcional):", style = AppTypography.labelSmall, fontWeight = FontWeight.Bold, color = TextSecondary)
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    effortOptions.forEach { (effKey, effLabel) ->
+                        val isEffortSelected = selectedEffort == effKey
+                        Surface(
+                            color = if (isEffortSelected) AccentPurple.copy(alpha = 0.15f) else SlateBg,
+                            shape = AppShapes.small,
+                            border = BorderStroke(1.dp, if (isEffortSelected) AccentPurple else SlateBorder),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { selectedEffort = effKey }
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = AppSpacing.sm, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                RadioButton(
+                                    selected = isEffortSelected,
+                                    onClick = { selectedEffort = effKey },
+                                    colors = RadioButtonDefaults.colors(selectedColor = AccentPurple)
+                                )
+                                Spacer(modifier = Modifier.width(AppSpacing.xs))
+                                Text(
+                                    text = effLabel,
+                                    style = AppTypography.labelSmall,
+                                    fontWeight = if (isEffortSelected) FontWeight.Bold else FontWeight.Normal,
+                                    color = if (isEffortSelected) TextPrimary else TextSecondary
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onSave(selectedProvider.trim(), selectedModelId.trim(), selectedEffort) },
+                enabled = selectedProvider.isNotBlank() && selectedModelId.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(containerColor = AccentPurple)
+            ) {
+                Text("Guardar", style = AppTypography.labelSmall)
+            }
+        },
+        dismissButton = {
+            OutlinedButton(onClick = onDismiss) {
+                Text("Cancelar", style = AppTypography.labelSmall, color = TextSecondary)
+            }
+        }
+    )
+}
+
 @Composable
 private fun CreateOrEditSddProfileDialog(
     profile: SddProfileItem?,
     currentModelAssignments: Map<String, OpenCodeModelAssignment>,
     currentClaudeAssignments: Map<String, ClaudePhaseConfig>,
+    currentPiAssignments: Map<String, PiPhaseConfig>,
     onDismiss: () -> Unit,
     onSave: (profile: SddProfileItem) -> Unit
 ) {
@@ -1186,7 +1636,7 @@ private fun CreateOrEditSddProfileDialog(
                 verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
             ) {
                 Text(
-                    text = "El perfil SDD guardará las asignaciones de modelos en ~/.config/opencode/profiles/ para aplicarlas cuando quieras.",
+                    text = "El perfil SDD guarda las asignaciones de modelos para Pi, OpenCode y Claude (transversal). Se aplican cuando actives el perfil.",
                     style = AppTypography.bodySmall,
                     color = TextSecondary
                 )
@@ -1231,7 +1681,8 @@ private fun CreateOrEditSddProfileDialog(
                             description = description.trim().ifBlank { null },
                             isCustom = true,
                             modelAssignments = currentModelAssignments,
-                            claudeAssignments = currentClaudeAssignments
+                            claudeAssignments = currentClaudeAssignments,
+                            piAssignments = currentPiAssignments
                         )
                     )
                 },
