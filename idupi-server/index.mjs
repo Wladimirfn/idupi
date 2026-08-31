@@ -44,6 +44,16 @@ import { resolveProjectFilePath } from "./lib/project-files.mjs";
 import { isProtectedSystemPath } from "./lib/system-paths.mjs";
 import { claudeArgs, openCodeArgs } from "./lib/agent-cmdline.mjs";
 
+// Orchestrator delegation: engines resolve via resolveEngine(); per-route
+// helpers in lib/orchestrator/routes.mjs own per-engine isolation, .bak, and
+// gentle-ai sync wrapping. Routes in this file stay thin (parsing + response
+// shape only) so this monolith stops growing.
+import {
+    handleStatusRoute,
+    handleProfileApplyWithPresets,
+    handleModelsUpdate,
+} from "./lib/orchestrator/routes.mjs";
+
 const PORT = process.env.PORT || 8788;
 const requireAuth = createAuthGuard(loadToken());
 const PI_CLI_JS = join(
@@ -3224,6 +3234,16 @@ const SDD_PROFILE_PRESETS = {
             "sdd-apply": { model: "sonnet" },
             "sdd-verify": { model: "sonnet" },
             "sdd-archive": { model: "haiku" }
+        },
+        piAssignments: {
+            "sdd-explore":  { provider_id: "opencode-go", model_id: "deepseek-v4-pro" },
+            "sdd-propose":  { provider_id: "opencode-go", model_id: "qwen3.7-max" },
+            "sdd-spec":     { provider_id: "opencode-go", model_id: "deepseek-v4-pro" },
+            "sdd-design":   { provider_id: "opencode-go", model_id: "deepseek-v4-pro" },
+            "sdd-tasks":    { provider_id: "opencode-go", model_id: "gpt-5.6-luna", effort: "high" },
+            "sdd-apply":    { provider_id: "opencode-go", model_id: "gpt-5.6-luna", effort: "high" },
+            "sdd-verify":   { provider_id: "opencode-go", model_id: "gpt-5.6-luna", effort: "high" },
+            "sdd-archive":  { provider_id: "opencode-go", model_id: "mimo-v2.5" }
         }
     },
     "mid": {
@@ -3254,6 +3274,16 @@ const SDD_PROFILE_PRESETS = {
             "sdd-apply": { model: "sonnet" },
             "sdd-verify": { model: "sonnet" },
             "sdd-archive": { model: "haiku" }
+        },
+        piAssignments: {
+            "sdd-explore": { provider_id: "opencode-go", model_id: "mimo-v2.5" },
+            "sdd-propose": { provider_id: "opencode-go", model_id: "qwen3.7-max" },
+            "sdd-spec":    { provider_id: "opencode-go", model_id: "qwen3.7-plus" },
+            "sdd-design":  { provider_id: "opencode-go", model_id: "deepseek-v4-pro" },
+            "sdd-tasks":   { provider_id: "opencode-go", model_id: "hy3", effort: "high" },
+            "sdd-apply":   { provider_id: "opencode-go", model_id: "hy3" },
+            "sdd-verify":  { provider_id: "opencode-go", model_id: "hy3" },
+            "sdd-archive": { provider_id: "opencode-go", model_id: "mimo-v2.5" }
         }
     },
     "cheap": {
@@ -3284,6 +3314,16 @@ const SDD_PROFILE_PRESETS = {
             "sdd-apply": { model: "haiku" },
             "sdd-verify": { model: "haiku" },
             "sdd-archive": { model: "haiku" }
+        },
+        piAssignments: {
+            "sdd-explore": { provider_id: "opencode-go", model_id: "mimo-v2.5" },
+            "sdd-propose": { provider_id: "opencode-go", model_id: "qwen3.7-plus" },
+            "sdd-spec":    { provider_id: "opencode-go", model_id: "qwen3.7-plus" },
+            "sdd-design":  { provider_id: "opencode-go", model_id: "mimo-v2.5" },
+            "sdd-tasks":   { provider_id: "opencode-go", model_id: "mimo-v2.5" },
+            "sdd-apply":   { provider_id: "opencode-go", model_id: "hy3" },
+            "sdd-verify":  { provider_id: "opencode-go", model_id: "hy3" },
+            "sdd-archive": { provider_id: "opencode-go", model_id: "mimo-v2.5" }
         }
     }
 };
@@ -3304,7 +3344,8 @@ function getCustomSddProfiles() {
                         description: pData.description || `Perfil SDD guardado en tu PC`,
                         isCustom: true,
                         modelAssignments: pData.modelAssignments || pData.model_assignments || {},
-                        claudeAssignments: pData.claudeAssignments || pData.claude_phase_assignments || {}
+                        claudeAssignments: pData.claudeAssignments || pData.claude_phase_assignments || {},
+                        piAssignments: pData.piAssignments || pData.pi_phase_assignments || {}
                     });
                 } catch (e) {}
             }
@@ -3353,78 +3394,13 @@ function getModelsForProvider(providerId) {
     // 10b. Estado y Asignaciones de Orquestador SDD & Gentle-AI
     if (pathname === "/api/v1/orchestrator/status" && req.method === "GET") {
         try {
-            const statePath = join(homedir(), ".gentle-ai", "state.json");
-            let stateData = {};
-            if (existsSync(statePath)) {
-                try {
-                    stateData = JSON.parse(readFileSync(statePath, "utf8"));
-                } catch (e) {}
-            }
-
-            let sddInfo = {
-                changeName: null,
-                applyState: "idle",
-                nextRecommended: "sdd-new",
-                taskProgress: { total: 0, completed: 0, pending: 0, allComplete: false },
-                blockedReasons: []
-            };
-
-            try {
-                const sddRaw = execSync("gentle-ai sdd-status", { cwd: resolveProject(activeProjectId).path, encoding: "utf8", timeout: 4000, maxBuffer: EXEC_MAX_BUFFER });
-                const jsonMatch = sddRaw.match(/```json\s*([\s\S]*?)\s*```/);
-                if (jsonMatch && jsonMatch[1]) {
-                    const parsedSdd = JSON.parse(jsonMatch[1]);
-                    sddInfo = {
-                        changeName: parsedSdd.changeName || null,
-                        applyState: parsedSdd.applyState || "idle",
-                        nextRecommended: parsedSdd.nextRecommended || "sdd-new",
-                        taskProgress: parsedSdd.taskProgress || { total: 0, completed: 0, pending: 0, allComplete: false },
-                        blockedReasons: parsedSdd.blockedReasons || []
-                    };
-                }
-            } catch (sddErr) {}
-
-            // Leer todos los agentes configurados en ~/.config/opencode/opencode.json
-            const opencodeConfigPath = join(homedir(), ".config", "opencode", "opencode.json");
-            let opencodeAgents = {};
-            if (existsSync(opencodeConfigPath)) {
-                try {
-                    const op = JSON.parse(readFileSync(opencodeConfigPath, "utf8"));
-                    if (op.agent) {
-                        for (const [agentKey, agentVal] of Object.entries(op.agent)) {
-                            const rawModel = agentVal.model || "";
-                            const parts = rawModel.split("/");
-                            const providerId = parts.length > 1 ? parts[0] : "opencode-go";
-                            const modelId = parts.length > 1 ? parts.slice(1).join("/") : rawModel;
-                            opencodeAgents[agentKey] = {
-                                provider_id: providerId,
-                                model_id: modelId,
-                                effort: agentVal.variant || null
-                            };
-                        }
-                    }
-                } catch (e) {}
-            }
-
-            const combinedModelAssignments = { ...opencodeAgents, ...(stateData.model_assignments || {}) };
-            const sddProfilesList = getCustomSddProfiles();
-
-            const responsePayload = {
-                persona: stateData.persona || "gentleman",
-                preset: stateData.preset || "full-gentleman",
-                installedAgents: stateData.installed_agents || ["opencode", "claude-code", "pi", "codex", "kiro-ide", "kimi"],
-                components: stateData.components || ["engram", "sdd", "skills", "gga", "codegraph", "context7", "permissions"],
-                rddMode: stateData.rdd_mode || "on",
-                sddStatus: sddInfo,
-                claudePhaseAssignments: stateData.claude_phase_assignments || {},
-                modelAssignments: combinedModelAssignments,
-                providers: getDetectedProviders(),
-                sddProfiles: sddProfilesList,
-                activeProfile: stateData.active_profile || null
-            };
-
-            res.writeHead(200, { "Content-Type": "application/json" });
-            res.end(JSON.stringify(responsePayload));
+            const { status, body } = await handleStatusRoute(
+                resolveProject(activeProjectId).path,
+                getDetectedProviders,
+                getCustomSddProfiles,
+            );
+            res.writeHead(status, { "Content-Type": "application/json" });
+            res.end(JSON.stringify(body));
         } catch (err) {
             console.error(`[IDUPI 500] ${req.method} ${pathname}`, err);
             res.writeHead(500, { "Content-Type": "application/json" });
@@ -3438,78 +3414,22 @@ function getModelsForProvider(providerId) {
         let body = "";
         req.on("data", chunk => { body += chunk; });
         req.on("end", () => {
-            try {
-                const parsed = JSON.parse(body || "{}");
-                const profileId = parsed.profileId;
-
-                if (!profileId) {
-                    res.writeHead(400, { "Content-Type": "application/json" });
-                    res.end(JSON.stringify({ error: "profileId es obligatorio" }));
-                    return;
-                }
-
-                let targetModels = null;
-                let targetClaude = null;
-
-                const customPath = join(homedir(), ".config", "opencode", "profiles", `${profileId}.json`);
-                if (existsSync(customPath)) {
-                    const customData = JSON.parse(readFileSync(customPath, "utf8"));
-                    targetModels = customData.modelAssignments || customData.model_assignments;
-                    targetClaude = customData.claudeAssignments || customData.claude_phase_assignments;
-                }
-
-                if (!targetModels) {
-                    res.writeHead(404, { "Content-Type": "application/json" });
-                    res.end(JSON.stringify({ error: `Perfil '${profileId}' no encontrado` }));
-                    return;
-                }
-
-                const statePath = join(homedir(), ".gentle-ai", "state.json");
-                let stateData = {};
-                if (existsSync(statePath)) {
-                    stateData = JSON.parse(readFileSync(statePath, "utf8"));
-                }
-
-                stateData.installed_agents = ["opencode", "claude-code", "pi", "codex", "kiro-ide", "kimi"];
-                stateData.model_assignments = targetModels;
-                if (targetClaude) stateData.claude_phase_assignments = targetClaude;
-                stateData.active_profile = profileId;
-
-                writeFileSync(statePath, JSON.stringify(stateData, null, 2), "utf8");
-                console.log(`[Gentle-AI Orchestrator] Perfil SDD '${profileId}' aplicado.`);
-
-                // Actualizar también opencode.json
+            (async () => {
                 try {
-                    const opPath = join(homedir(), ".config", "opencode", "opencode.json");
-                    if (existsSync(opPath)) {
-                        const opData = JSON.parse(readFileSync(opPath, "utf8"));
-                        if (!opData.agent) opData.agent = {};
-                        for (const [rKey, rVal] of Object.entries(targetModels)) {
-                            if (!opData.agent[rKey]) opData.agent[rKey] = {};
-                            const fModel = rVal.provider_id ? `${rVal.provider_id}/${rVal.model_id}` : rVal.model_id;
-                            opData.agent[rKey].model = fModel;
-                            if (rVal.effort) opData.agent[rKey].variant = rVal.effort;
-                            else delete opData.agent[rKey].variant;
-                        }
-                        writeFileSync(opPath, JSON.stringify(opData, null, 2), "utf8");
-                    }
-                } catch(e) {}
-
-                // Sincronizar automáticamente en PC
-                try {
-                    execSync("gentle-ai sync", { encoding: "utf8", timeout: 10000, maxBuffer: EXEC_MAX_BUFFER });
-                    console.log(`[Gentle-AI Sync] Perfil sincronizado con todos los agentes.`);
-                } catch (syncErr) {
-                    console.warn(`[Gentle-AI Sync Warn]:`, syncErr.message);
+                    const parsed = JSON.parse(body || "{}");
+                    const { status, body: respBody } = await handleProfileApplyWithPresets(
+                        SDD_PROFILE_PRESETS,
+                        parsed,
+                        { log: (m) => console.log(m), warn: (m) => console.warn(m) },
+                    );
+                    res.writeHead(status, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify(respBody));
+                } catch (err) {
+                    console.error(`[IDUPI 500] ${req.method} ${pathname}`, err);
+                    res.writeHead(500, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify({ error: err.message }));
                 }
-
-                res.writeHead(200, { "Content-Type": "application/json" });
-                res.end(JSON.stringify({ status: "ok", profileId, activeProfile: profileId }));
-            } catch (err) {
-                console.error(`[IDUPI 500] ${req.method} ${pathname}`, err);
-                res.writeHead(500, { "Content-Type": "application/json" });
-                res.end(JSON.stringify({ error: err.message }));
-            }
+            })();
         });
         return;
     }
@@ -3549,7 +3469,8 @@ function getModelsForProvider(providerId) {
                     description: parsed.description || `Perfil SDD guardado por IDUPI`,
                     created_at: new Date().toISOString(),
                     modelAssignments: parsed.modelAssignments || stateData.model_assignments || {},
-                    claudeAssignments: parsed.claudeAssignments || stateData.claude_phase_assignments || {}
+                    claudeAssignments: parsed.claudeAssignments || stateData.claude_phase_assignments || {},
+                    piAssignments: parsed.piAssignments || stateData.pi_phase_assignments || {}
                 };
 
                 writeFileSync(profileFilePath, JSON.stringify(profilePayload, null, 2), "utf8");
@@ -3603,72 +3524,21 @@ function getModelsForProvider(providerId) {
         let body = "";
         req.on("data", chunk => { body += chunk; });
         req.on("end", () => {
-            try {
-                const parsed = JSON.parse(body || "{}");
-                const { engine, phase, modelId, providerId, effort } = parsed;
-
-                if (!engine || !phase || !modelId) {
-                    res.writeHead(400, { "Content-Type": "application/json" });
-                    res.end(JSON.stringify({ error: "engine, phase y modelId son obligatorios" }));
-                    return;
-                }
-
-                const statePath = join(homedir(), ".gentle-ai", "state.json");
-                let stateData = {};
-                if (existsSync(statePath)) {
-                    stateData = JSON.parse(readFileSync(statePath, "utf8"));
-                }
-
-                stateData.installed_agents = ["opencode", "claude-code", "pi", "codex", "kiro-ide", "kimi"];
-
-                if (engine === "claude") {
-                    if (!stateData.claude_phase_assignments) stateData.claude_phase_assignments = {};
-                    stateData.claude_phase_assignments[phase] = { model: modelId };
-                } else {
-                    if (!stateData.model_assignments) stateData.model_assignments = {};
-                    stateData.model_assignments[phase] = {
-                        provider_id: providerId || "opencode-go",
-                        model_id: modelId,
-                        ...(effort ? { effort } : {})
-                    };
-
-                    // Actualizar también opencode.json directamente
-                    try {
-                        const opPath = join(homedir(), ".config", "opencode", "opencode.json");
-                        if (existsSync(opPath)) {
-                            const opData = JSON.parse(readFileSync(opPath, "utf8"));
-                            if (!opData.agent) opData.agent = {};
-                            if (!opData.agent[phase]) opData.agent[phase] = {};
-                            const fullModel = providerId ? `${providerId}/${modelId}` : modelId;
-                            opData.agent[phase].model = fullModel;
-                            if (effort) opData.agent[phase].variant = effort;
-                            else delete opData.agent[phase].variant;
-                            writeFileSync(opPath, JSON.stringify(opData, null, 2), "utf8");
-                            console.log(`[OpenCode Direct Update] Actualizado opencode.json para '${phase}' -> ${fullModel}`);
-                        }
-                    } catch(opErr) {
-                        console.warn("[OpenCode Config Update Warn]:", opErr.message);
-                    }
-                }
-
-                writeFileSync(statePath, JSON.stringify(stateData, null, 2), "utf8");
-                console.log(`[Gentle-AI Orchestrator] Actualizado ${engine} [${phase}] -> ${modelId}`);
-
-                // Propagar cambios a los archivos de configuración de cada agente vía sync
+            (async () => {
                 try {
-                    execSync("gentle-ai sync", { encoding: "utf8", timeout: 8000, maxBuffer: EXEC_MAX_BUFFER });
-                    console.log(`[Gentle-AI Sync] Sincronización automática de modelos completada.`);
-                } catch (syncErr) {
-                    console.warn(`[Gentle-AI Sync] Aviso en auto-sync:`, syncErr.message);
+                    const parsed = JSON.parse(body || "{}");
+                    const { status, body: respBody } = await handleModelsUpdate(
+                        parsed,
+                        { log: (m) => console.log(m), warn: (m) => console.warn(m) },
+                    );
+                    res.writeHead(status, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify(respBody));
+                } catch (err) {
+                    console.error(`[IDUPI 500] ${req.method} ${pathname}`, err);
+                    res.writeHead(500, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify({ error: err.message }));
                 }
-
-                res.writeHead(200, { "Content-Type": "application/json" });
-                res.end(JSON.stringify({ status: "ok", phase, modelId }));
-            } catch (err) {
-                console.error(`[IDUPI 500] ${req.method} ${pathname}`, err);
-                res.writeHead(500, { "Content-Type": "application/json" });
-                res.end(JSON.stringify({ error: err.message }));
-            }
+            })();
         });
         return;
     }
