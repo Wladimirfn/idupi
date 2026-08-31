@@ -166,15 +166,20 @@ fun AppNavigation() {
                                 HorizontalDivider(color = SlateBorder, modifier = Modifier.padding(horizontal = 20.dp))
                                 Spacer(modifier = Modifier.height(10.dp))
 
+                                // Drawer order documented in tasks.md §5.3: [Pantalla Remota, Chat,
+                                // Proyectos, Orquestador SDD, Configuracion]. Keeping that subset in the
+                                // exact relative order shown there; the additional items (Alerts,
+                                // Dashboard, Sessions, Console) stay in their slots and are not part
+                                // of the documented order.
                                 val navItems = listOf(
+                                    Screen.REMOTE to Icons.AutoMirrored.Filled.ScreenShare,
                                     Screen.CHAT to Icons.Default.Chat,
-                                    Screen.ALERTS to Icons.Default.Notifications,
-                                    Screen.ORCHESTRATOR to Icons.Default.AccountTree,
-                                    Screen.DASHBOARD to Icons.Default.Dashboard,
                                     Screen.PROJECTS to Icons.Default.Folder,
+                                    Screen.ORCHESTRATOR to Icons.Default.AccountTree,
+                                    Screen.ALERTS to Icons.Default.Notifications,
+                                    Screen.DASHBOARD to Icons.Default.Dashboard,
                                     Screen.SESSIONS to Icons.Default.History,
                                     Screen.CONSOLE to Icons.Default.Terminal,
-                                    Screen.REMOTE to Icons.AutoMirrored.Filled.ScreenShare,
                                     Screen.SETTINGS to Icons.Default.Settings
                                 )
 
