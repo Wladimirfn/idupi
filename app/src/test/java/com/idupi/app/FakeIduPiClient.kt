@@ -99,6 +99,8 @@ class FakeIduPiClient : IduPiClient {
     var lastUpdatedOrchestratorEngine: String? = null
     var lastUpdatedOrchestratorPhase: String? = null
     var lastUpdatedOrchestratorModelId: String? = null
+    var lastUpdatedOrchestratorProviderId: String? = null
+    var lastUpdatedOrchestratorEffort: String? = null
     var lastRunOrchestratorAction: String? = null
     var lastMarkedAlertId: String? = null
     var lastApprovedPlanId: String? = null
@@ -316,6 +318,8 @@ class FakeIduPiClient : IduPiClient {
         lastUpdatedOrchestratorEngine = engine
         lastUpdatedOrchestratorPhase = phase
         lastUpdatedOrchestratorModelId = modelId
+        lastUpdatedOrchestratorProviderId = providerId
+        lastUpdatedOrchestratorEffort = effort
         return updateOrchestratorModelResult
     }
 
