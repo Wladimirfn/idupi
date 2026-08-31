@@ -95,13 +95,14 @@ class OrchestratorViewModelTest {
         val viewModel = OrchestratorViewModel(FakeClientSource(fake))
         advanceUntilIdle()
 
-        assertEquals(OrchestratorTab.SDD_PHASES, viewModel.activeTab.value)
+        // Shared 4-tab set (PR3 — owner-confirmed vision: no per-engine tab swaps).
+        assertEquals(OrchestratorTab.FASES, viewModel.activeTab.value)
 
-        viewModel.selectTab(OrchestratorTab.OPENCODE_MODELS)
-        assertEquals(OrchestratorTab.OPENCODE_MODELS, viewModel.activeTab.value)
+        viewModel.selectTab(OrchestratorTab.MODELOS)
+        assertEquals(OrchestratorTab.MODELOS, viewModel.activeTab.value)
 
-        viewModel.selectTab(OrchestratorTab.ECOSYSTEM_TOOLS)
-        assertEquals(OrchestratorTab.ECOSYSTEM_TOOLS, viewModel.activeTab.value)
+        viewModel.selectTab(OrchestratorTab.HERRAMIENTAS)
+        assertEquals(OrchestratorTab.HERRAMIENTAS, viewModel.activeTab.value)
     }
 
     @Test
@@ -163,5 +164,146 @@ class OrchestratorViewModelTest {
 
         assertEquals("opencode-go", fake.lastRequestedProviderId)
         assertEquals(1, viewModel.providerModels.value["opencode-go"]?.size)
+    }
+
+    // ------------------------------------------------------------------
+    // PR3 — Pi engine + gentle-ai detection (orchestrator-engine-generalize)
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `activeEngine defaults to opencode and selects pi or claude`() = runTest {
+        val viewModel = OrchestratorViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+
+        assertEquals("opencode", viewModel.activeEngine.value)
+
+        viewModel.selectEngine("pi")
+        assertEquals("pi", viewModel.activeEngine.value)
+
+        viewModel.selectEngine("claude")
+        assertEquals("claude", viewModel.activeEngine.value)
+
+        // Unknown engines do NOT silently fall back to opencode — they keep the
+        // last known good selection so the UI keeps rendering against valid data.
+        viewModel.selectEngine("copilot")
+        assertEquals("claude", viewModel.activeEngine.value)
+    }
+
+    @Test
+    fun `init exposes piPhaseAssignments and gentleAiDetected from status envelope`() = runTest {
+        fake.orchestratorStatusToReturn = com.idupi.app.domain.model.OrchestratorStatus(
+            piPhaseAssignments = mapOf(
+                "sdd-apply" to com.idupi.app.domain.model.PiPhaseConfig(
+                    provider_id = "anthropic",
+                    model_id = "claude-sonnet-4-5",
+                    effort = "high"
+                )
+            ),
+            gentleAiDetected = true
+        )
+
+        val viewModel = OrchestratorViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+
+        val st = viewModel.status.value
+        assertEquals(1, st?.piPhaseAssignments?.size)
+        assertEquals("claude-sonnet-4-5", st?.piPhaseAssignments?.get("sdd-apply")?.model_id)
+        assertEquals("high", st?.piPhaseAssignments?.get("sdd-apply")?.effort)
+        assertEquals(true, viewModel.gentleAiDetected.value)
+    }
+
+    @Test
+    fun `updateModel round-trips engine pi through the client and refreshes status`() = runTest {
+        fake.orchestratorStatusToReturn = com.idupi.app.domain.model.OrchestratorStatus(
+            piPhaseAssignments = mapOf(
+                "sdd-tasks" to com.idupi.app.domain.model.PiPhaseConfig(
+                    provider_id = "openai",
+                    model_id = "gpt-5-mini"
+                )
+            )
+        )
+
+        val viewModel = OrchestratorViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+
+        var onSuccessCalled = false
+        viewModel.updateModel(
+            engine = "pi",
+            phase = "sdd-tasks",
+            modelId = "gpt-5",
+            providerId = "openai",
+            effort = "medium",
+            onSuccess = { onSuccessCalled = true }
+        )
+        advanceUntilIdle()
+
+        assertEquals("pi", fake.lastUpdatedOrchestratorEngine)
+        assertEquals("sdd-tasks", fake.lastUpdatedOrchestratorPhase)
+        assertEquals("gpt-5", fake.lastUpdatedOrchestratorModelId)
+        assertEquals("openai", fake.lastUpdatedOrchestratorProviderId)
+        assertEquals("medium", fake.lastUpdatedOrchestratorEffort)
+        assertEquals(true, onSuccessCalled)
+        assertNull(viewModel.errorMessage.value)
+        // Status refreshed with the Pi assignment now in place.
+        assertEquals("gpt-5-mini", viewModel.status.value?.piPhaseAssignments?.get("sdd-tasks")?.model_id)
+    }
+
+    @Test
+    fun `piAssignmentsFor exposes Pi assignments independent of active engine`() = runTest {
+        fake.orchestratorStatusToReturn = com.idupi.app.domain.model.OrchestratorStatus(
+            piPhaseAssignments = mapOf(
+                "sdd-apply" to com.idupi.app.domain.model.PiPhaseConfig(
+                    provider_id = "anthropic",
+                    model_id = "claude-sonnet-4-5"
+                )
+            ),
+            modelAssignments = mapOf(
+                "sdd-apply" to com.idupi.app.domain.model.OpenCodeModelAssignment(
+                    provider_id = "opencode-go",
+                    model_id = "hy3"
+                )
+            ),
+            claudePhaseAssignments = mapOf(
+                "sdd-apply" to com.idupi.app.domain.model.ClaudePhaseConfig(model = "opus")
+            )
+        )
+
+        val viewModel = OrchestratorViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+
+        // piAssignmentsFor always returns the Pi map (the screen decides which
+        // map to render based on activeEngine).
+        val piFor = viewModel.piAssignmentsFor(viewModel.status.value)
+        assertEquals("claude-sonnet-4-5", piFor["sdd-apply"]?.model_id)
+
+        // OpenCode helper returns the OpenCode-shaped map.
+        val openCodeFor = viewModel.openCodeAssignmentsFor(viewModel.status.value)
+        assertEquals("hy3", openCodeFor["sdd-apply"]?.model_id)
+
+        // Claude helper returns the Claude-shaped map.
+        val claudeFor = viewModel.claudeAssignmentsFor(viewModel.status.value)
+        assertEquals("opus", claudeFor["sdd-apply"]?.model)
+
+        // Switch active engine — helpers keep returning the same maps.
+        viewModel.selectEngine("pi")
+        assertEquals("claude-sonnet-4-5", viewModel.piAssignmentsFor(viewModel.status.value)["sdd-apply"]?.model_id)
+    }
+
+    @Test
+    fun `status parses older server payload missing piPhaseAssignments and gentleAiDetected`() = runTest {
+        // Simulate a pre-PR2 server: the fake's default OrchestratorStatus has no
+        // piPhaseAssignments / gentleAiDetected set. The ViewModel must surface
+        // safe defaults rather than crash.
+        fake.orchestratorStatusToReturn = com.idupi.app.domain.model.OrchestratorStatus(
+            installedAgents = listOf("opencode")
+        )
+
+        val viewModel = OrchestratorViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+
+        val st = viewModel.status.value
+        assertNotNull(st)
+        assertTrue(st!!.piPhaseAssignments.isEmpty())
+        assertEquals(false, viewModel.gentleAiDetected.value)
     }
 }
