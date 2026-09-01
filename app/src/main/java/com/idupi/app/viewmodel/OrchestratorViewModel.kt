@@ -4,7 +4,10 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.idupi.app.data.IduPiClientProvider
+import com.idupi.app.domain.model.ClaudePhaseConfig
+import com.idupi.app.domain.model.OpenCodeModelAssignment
 import com.idupi.app.domain.model.OrchestratorStatus
+import com.idupi.app.domain.model.PiPhaseConfig
 import com.idupi.app.domain.model.ProviderModelItem
 import com.idupi.app.domain.model.SddProfileItem
 import com.idupi.app.domain.repository.IduPiClientSource
@@ -14,12 +17,35 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
+/**
+ * ONE shared function-tab set driven by the top motor selector — owner-confirmed
+ * vision (see memory `idupi/orchestrator-ui-shared-tabs`). Selecting an engine
+ * does NOT swap which tabs exist; the active engine drives WHICH data populates
+ * the shared tabs beneath it. This was a deliberate refinement away from
+ * per-engine tab swaps like `MODELS_OPENCODE` / `MODELS_CLAUDE`.
+ */
 enum class OrchestratorTab(val title: String) {
-    SDD_PHASES("Fases SDD"),
-    OPENCODE_MODELS("Modelos OpenCode"),
-    CLAUDE_MODELS("Modelos Claude"),
-    SDD_PROFILES("Perfiles SDD"),
-    ECOSYSTEM_TOOLS("Herramientas & Sinc")
+    FASES("Fases"),
+    MODELOS("Modelos"),
+    PERFILES("Perfiles"),
+    HERRAMIENTAS("Herramientas")
+}
+
+/**
+ * Supported engines, kept as constants rather than free strings so the UI
+ * cannot drift away from the contract. The orchestrator-server accepts `pi`,
+ * `pi-cli`, `opencode`, `claude` (and the aliases resolve to the canonical
+ * engine id); these constants are the canonical Android-side names.
+ */
+object OrchestratorEngine {
+    const val PI = "pi"
+    const val OPENCODE = "opencode"
+    const val CLAUDE = "claude"
+
+    /** All engines the UI can offer the user, in display order. */
+    val ALL: List<String> = listOf(PI, OPENCODE, CLAUDE)
+
+    fun isKnown(engine: String): Boolean = engine in ALL
 }
 
 class OrchestratorViewModel(
@@ -31,7 +57,16 @@ class OrchestratorViewModel(
     private val _status = MutableStateFlow<OrchestratorStatus?>(null)
     val status: StateFlow<OrchestratorStatus?> = _status.asStateFlow()
 
-    private val _activeTab = MutableStateFlow(OrchestratorTab.SDD_PHASES)
+    /**
+     * Currently active engine driving the shared function tabs. The motor
+     * selector chips mutate this; selecting an unknown engine is a no-op
+     * (we keep the last known good engine rather than silently falling back,
+     * so the UI keeps rendering against valid data).
+     */
+    private val _activeEngine = MutableStateFlow(OrchestratorEngine.OPENCODE)
+    val activeEngine: StateFlow<String> = _activeEngine.asStateFlow()
+
+    private val _activeTab = MutableStateFlow(OrchestratorTab.FASES)
     val activeTab: StateFlow<OrchestratorTab> = _activeTab.asStateFlow()
 
     private val _isLoading = MutableStateFlow(false)
@@ -46,6 +81,14 @@ class OrchestratorViewModel(
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
+    /**
+     * Live `gentleAiDetected` mirror of [OrchestratorStatus.gentleAiDetected],
+     * kept as its own StateFlow so the UI banner does not need to introspect
+     * the (possibly null) status envelope. Refreshed inside [refreshStatus].
+     */
+    private val _gentleAiDetected = MutableStateFlow(false)
+    val gentleAiDetected: StateFlow<Boolean> = _gentleAiDetected.asStateFlow()
+
     private val _providerModels = MutableStateFlow<Map<String, List<ProviderModelItem>>>(emptyMap())
     val providerModels: StateFlow<Map<String, List<ProviderModelItem>>> = _providerModels.asStateFlow()
 
@@ -55,6 +98,19 @@ class OrchestratorViewModel(
 
     fun selectTab(tab: OrchestratorTab) {
         _activeTab.value = tab
+    }
+
+    /**
+     * Switches the active engine. Unknown ids are ignored on purpose so the
+     * motor selector cannot drift into a contract the server does not honour.
+     * The shared tabs beneath remain valid against the new selection.
+     */
+    fun selectEngine(engine: String) {
+        if (!OrchestratorEngine.isKnown(engine)) {
+            Log.w(TAG, "Ignored unknown engine id: $engine")
+            return
+        }
+        _activeEngine.value = engine
     }
 
     fun clearError() {
@@ -72,6 +128,7 @@ class OrchestratorViewModel(
             try {
                 val st = client.getOrchestratorStatus()
                 _status.value = st
+                _gentleAiDetected.value = st.gentleAiDetected
                 // Preload models for configured providers
                 st.providers.take(3).forEach { prov ->
                     loadProviderModels(prov)
@@ -85,6 +142,26 @@ class OrchestratorViewModel(
                 _isLoading.value = false
             }
         }
+    }
+
+    /**
+     * Returns the Pi (`~/.pi/subagents.json`) per-phase assignments. The
+     * active engine decides whether the UI shows this map or one of the
+     * other engines' maps; this helper stays engine-specific so call sites
+     * can rely on the typed shape.
+     */
+    fun piAssignmentsFor(status: OrchestratorStatus?): Map<String, PiPhaseConfig> {
+        return status?.piPhaseAssignments ?: emptyMap()
+    }
+
+    /** Typed helper for the OpenCode engine view (engine-aware). */
+    fun openCodeAssignmentsFor(status: OrchestratorStatus?): Map<String, OpenCodeModelAssignment> {
+        return status?.modelAssignments ?: emptyMap()
+    }
+
+    /** Typed helper for the Claude engine view (engine-aware). */
+    fun claudeAssignmentsFor(status: OrchestratorStatus?): Map<String, ClaudePhaseConfig> {
+        return status?.claudePhaseAssignments ?: emptyMap()
     }
 
     fun loadProviderModels(providerId: String) {
