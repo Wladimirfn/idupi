@@ -1826,6 +1826,11 @@ class PiRpcManager {
         if (provider) currentStatus.operatingProvider = provider;
 
         if (changed && this.child && !this.child.killed) {
+            if (this.isBusy) {
+                console.warn(`[IDUPI Pi RPC] Cambio de modelo ${provider ? provider + '/' : ''}${modelId} encolado - hay un mensaje en vuelo, se aplicará al terminar`);
+                // Don't kill busy child - let current prompt finish, next ensureStarted will use new model
+                return;
+            }
             console.log(`[IDUPI Pi RPC] Reiniciando subproceso Pi CLI para aplicar modelo único: ${provider ? provider + '/' : ''}${modelId}`);
             this.child.kill("SIGTERM");
             this.child = null;
@@ -2260,13 +2265,22 @@ class PiRpcManager {
                 // Text Pi streamed but never closed with a message_end of its
                 // own. Publishing it here is the only way it reaches the chat;
                 // everything Pi did close was already sent as its own message.
+                // FIX: always publish via SSE, even when Pi completed via retries with empty buffers,
+                // so the app's chat bubble actually shows the result (100% of Pi's output).
                 const leftover = this.currentOutput.trim();
+                let publishedLeftover = false;
                 if (leftover) {
                     this.lastAnswer = leftover;
                     publishChatEvent(CHAT_EVENTS.MESSAGE_END, { text: leftover });
+                    publishedLeftover = true;
                 }
                 this.currentOutput = "";
                 const resultText = this.lastAnswer || "Respuesta procesada correctamente por Pi CLI.";
+                // If Pi completed after retries with no leftover/lastAnswer, still push the fallback via SSE
+                // so the POST's output and the SSE stream stay in sync (fixes "completa como éxito pero no llega").
+                if (!publishedLeftover && resultText) {
+                    publishChatEvent(CHAT_EVENTS.MESSAGE_END, { text: resultText });
+                }
 
                 activeTask.status = "completed";
                 activeTask.output = resultText;
