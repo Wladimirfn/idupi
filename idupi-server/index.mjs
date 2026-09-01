@@ -2025,7 +2025,16 @@ class PiRpcManager {
 
             const delta = event.assistantMessageEvent;
             if (event.type === "message_update" && delta?.type === "text_delta") {
-                const text = delta.delta || "";
+                let text = delta.delta || "";
+                // Filter Pi's internal self-instruction that leaks as text (e.g. "User repeated messages... Keep short... system context shows we're on...")
+                // This is not user-facing; it's the model's private plan. Drop it, keep only the real answer.
+                if (/User repeated messages/i.test(text) || /system context shows we're on/i.test(text) || /Use the actual date/i.test(text)) {
+                    // Strip the instruction line, keep only the real answer after it (after newline)
+                    const parts = text.split(/\r?\n/);
+                    const realParts = parts.filter(p => !/User repeated messages/i.test(p) && !/system context/i.test(p) && !/Use the actual date/i.test(p) && !/Keep short and in Spanish/i.test(p));
+                    text = realParts.join("\n").trim();
+                    if (!text) return;
+                }
                 this.currentOutput += text;
                 activeTask.output = this.currentOutput;
                 process.stdout.write(text);
@@ -2047,10 +2056,20 @@ class PiRpcManager {
             //
             // Each assistant message is closed here, where Pi itself ends it.
             if (event.type === "message_end" && event.message?.role === "assistant") {
-                const fromEvent = event.message.content?.find(c => c.type === "text")?.text || "";
+                let fromEvent = event.message.content?.find(c => c.type === "text")?.text || "";
+                // Filter same internal instruction if it leaked into the final message
+                if (/User repeated messages/i.test(fromEvent) || /system context shows we're on/i.test(fromEvent)) {
+                    const parts = fromEvent.split(/\r?\n/);
+                    fromEvent = parts.filter(p => !/User repeated messages/i.test(p) && !/system context/i.test(p) && !/Use the actual date/i.test(p) && !/Keep short and in Spanish/i.test(p)).join("\n");
+                }
                 // Prefer Pi's own copy; the accumulated deltas are the fallback
                 // for a message that streamed but arrived here without content.
-                const text = (fromEvent || this.currentOutput).trim();
+                let text = (fromEvent || this.currentOutput).trim();
+                // Final safety: strip instruction if still present in currentOutput fallback
+                if (/User repeated messages/i.test(text) || /system context shows we're on/i.test(text)) {
+                    const parts = text.split(/\r?\n/);
+                    text = parts.filter(p => !/User repeated messages/i.test(p) && !/system context/i.test(p) && !/Use the actual date/i.test(p) && !/Keep short and in Spanish/i.test(p)).join("\n").trim();
+                }
                 this.currentOutput = "";
                 if (text) {
                     this.lastAnswer = text;
