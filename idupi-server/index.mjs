@@ -3776,6 +3776,23 @@ function resolveClaudeSpawnTarget() {
             console.warn(`[Claude Resolve] no se pudo leer shim ${cmdShim}: ${e.message}`);
         }
     }
+    // Universal fallback: let Node's spawn resolve "claude" via PATH/PATHEXT.
+    // This covers every install type in the world (native exe, npm shim, npx, custom PATH)
+    // without hardcoding a single user's path. Args stay as ARRAY (no shell), so
+    // the injection fix from 611101c is preserved.
+    // We probe once with where; if where found anything, claude is in PATH.
+    if (hits.length > 0) {
+        console.warn(`[Claude Resolve] shim no parseable pero where encontró ${hits.length} hit(s), fallback a spawn("claude") directo`);
+        claudeSpawnTargetCache = { cmd: "claude" };
+        return claudeSpawnTargetCache;
+    }
+    // Last probe: try to run claude --version directly (covers npx/pnpx edge cases)
+    try {
+        execFileSync("claude", ["--version"], { encoding: "utf8", timeout: 3000, maxBuffer: 4096 });
+        console.warn(`[Claude Resolve] claude --version ok, fallback a spawn("claude")`);
+        claudeSpawnTargetCache = { cmd: "claude" };
+        return claudeSpawnTargetCache;
+    } catch {}
     console.error(`[Claude Resolve] FAIL hits=${JSON.stringify(hits)} cmdHits=${JSON.stringify(cmdHits)} nativeChecked=${JSON.stringify(nativeCandidates)}`);
     const err = new Error(
         `No se encontró el ejecutable de Claude. where hits: ${hits.join(", ") || "(vacío)"}. Revisá que 'where claude' en cmd devuelva algo y que el shim .cmd contenga cli.js. Instalá Claude Code y reiniciá el server, o cambiá el motor a Pi/OpenCode.`
@@ -3796,7 +3813,8 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
         const target = resolveClaudeSpawnTarget();
         const args = claudeArgs({ modelId, sessionId, isNewSession, message });
 
-        console.log(`[Claude CLI Spawn] Iniciando Claude en ${projPath}: ${target.exe ?? `node ${target.js}`}`);
+        const targetLabel = target.exe ? target.exe : target.js ? `node ${target.js}` : `claude (PATH)`;
+        console.log(`[Claude CLI Spawn] Iniciando Claude en ${projPath}: ${targetLabel}`);
 
         let fullOutput = "";
         let buffer = "";
@@ -3819,11 +3837,19 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
                 stdio: ["ignore", "pipe", "pipe"],
                 env: process.env
             })
-            : spawn(process.execPath, [target.js, ...args], {
+            : target.js
+            ? spawn(process.execPath, [target.js, ...args], {
                 cwd: projPath,
                 windowsHide: true,
                 stdio: ["ignore", "pipe", "pipe"],
                 env: process.env
+            })
+            : spawn(target.cmd, args, {
+                cwd: projPath,
+                windowsHide: true,
+                stdio: ["ignore", "pipe", "pipe"],
+                env: process.env,
+                // No shell:true - args as ARRAY, Windows PATHEXT resolves .cmd via PATH
             });
 
         // Without a shell wrapper `child` IS Claude itself, but MCP servers it
