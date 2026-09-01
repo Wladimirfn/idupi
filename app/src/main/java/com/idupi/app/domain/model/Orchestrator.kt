@@ -93,6 +93,12 @@ data class OrchestratorStatus(
      * Android banner (`Herramientas` tab gating) — false means modo-base.
      */
     val gentleAiDetected: Boolean = false,
+    /**
+     * Active engine as reported by the server (pi-cli, opencode, claude).
+     * Defaulted so older payloads still parse; synced to ViewModel's activeEngine
+     * so Pi/OpenCode/Claude each show their own models independently.
+     */
+    val activeEngine: String = "pi-cli",
     val providers: List<String> = emptyList(),
     val sddProfiles: List<SddProfileItem> = emptyList(),
     val activeProfile: String? = null
