@@ -3711,10 +3711,18 @@ function getModelsForProvider(providerId) {
 let claudeSpawnTargetCache = null;
 function resolveClaudeSpawnTarget() {
     if (claudeSpawnTargetCache) return claudeSpawnTargetCache;
-    const native = join(homedir(), ".local", "bin", "claude.exe");
-    if (existsSync(native)) {
-        claudeSpawnTargetCache = { exe: native };
-        return claudeSpawnTargetCache;
+    // 1. Native installers (Windows + Unix)
+    const nativeCandidates = [
+        join(homedir(), ".local", "bin", "claude.exe"),
+        join(homedir(), "AppData", "Local", "Programs", "claude", "claude.exe"),
+        join(homedir(), "AppData", "Local", "claude", "claude.exe"),
+        join(process.env.LOCALAPPDATA || "", "Programs", "claude", "claude.exe"),
+        join(process.env.APPDATA || "", "npm", "claude.cmd"),
+        join(homedir(), "AppData", "Roaming", "npm", "claude.cmd"),
+    ].filter(Boolean);
+    for (const p of nativeCandidates) {
+        try { if (existsSync(p) && p.toLowerCase().endsWith(".exe")) { claudeSpawnTargetCache = { exe: p }; return claudeSpawnTargetCache; } } catch {}
+        // .cmd candidates are parsed below, but if they exist we can at least log
     }
     let hits = [];
     try {
@@ -3722,23 +3730,55 @@ function resolveClaudeSpawnTarget() {
             .split(/\r?\n/)
             .map((s) => s.trim())
             .filter(Boolean);
-    } catch {
-        hits = [];
-    }
-    const cmdShim = hits.find((h) => h.toLowerCase().endsWith(".cmd"));
-    if (cmdShim) {
+    } catch {}
+    if (hits.length === 0) {
         try {
-            const shim = readFileSync(cmdShim, "utf8");
-            const m = shim.match(/"([^"]+@anthropic-ai[\\]+claude-code[\\]+cli\.js)"/i)
-                ?? shim.match(/([A-Za-z]:[^\s"]*node_modules[\\]+@anthropic-ai[\\]+claude-code[\\]+cli\.js)/i);
-            if (m) {
-                claudeSpawnTargetCache = { js: m[1] };
-                return claudeSpawnTargetCache;
-            }
+            hits = execFileSync("where", ["claude.cmd"], { encoding: "utf8", maxBuffer: EXEC_MAX_BUFFER })
+                .split(/\r?\n/)
+                .map((s) => s.trim())
+                .filter(Boolean);
         } catch {}
     }
+    // Direct .exe hit from PATH (e.g. native installer added to PATH)
+    const exeHit = hits.find((h) => h.toLowerCase().endsWith("claude.exe"));
+    if (exeHit && existsSync(exeHit)) {
+        claudeSpawnTargetCache = { exe: exeHit };
+        return claudeSpawnTargetCache;
+    }
+    // .cmd shim hits - try each, not just first
+    const cmdHits = hits.filter((h) => h.toLowerCase().endsWith(".cmd"));
+    // Also add known shim locations if where missed them
+    for (const p of nativeCandidates.filter((p) => p.toLowerCase().endsWith(".cmd"))) {
+        if (existsSync(p) && !cmdHits.includes(p)) cmdHits.push(p);
+    }
+    for (const cmdShim of cmdHits) {
+        try {
+            const shim = readFileSync(cmdShim, "utf8");
+            const m = shim.match(/"([^"]+@anthropic-ai[\\\/]+claude-code[\\\/]+cli\.js)"/i)
+                ?? shim.match(/([A-Za-z]:[^\s"]*node_modules[\\\/]+@anthropic-ai[\\\/]+claude-code[\\\/]+cli\.js)/i)
+                ?? shim.match(/([^\s"]+claude-code[\\\/]+cli\.js)/i);
+            if (m) {
+                let jsPath = m[1].replace(/\//g, "\\");
+                // Shim may contain %dp0% variable - resolve relative to shim dir
+                if (jsPath.includes("%dp0%") || jsPath.includes("%~dp0")) {
+                    jsPath = join(dirname(cmdShim), "node_modules", "@anthropic-ai", "claude-code", "cli.js");
+                }
+                if (existsSync(jsPath)) {
+                    claudeSpawnTargetCache = { js: jsPath };
+                    return claudeSpawnTargetCache;
+                }
+                // Even if not exists, try it - node will error clearly
+                claudeSpawnTargetCache = { js: jsPath };
+                return claudeSpawnTargetCache;
+            }
+            console.warn(`[Claude Resolve] shim ${cmdShim} no matcheó regex, contenido: ${shim.slice(0, 400)}`);
+        } catch (e) {
+            console.warn(`[Claude Resolve] no se pudo leer shim ${cmdShim}: ${e.message}`);
+        }
+    }
+    console.error(`[Claude Resolve] FAIL hits=${JSON.stringify(hits)} cmdHits=${JSON.stringify(cmdHits)} nativeChecked=${JSON.stringify(nativeCandidates)}`);
     const err = new Error(
-        "No se encontró el ejecutable de Claude (ni .exe nativo ni shim .cmd parseable). Instalá Claude Code y reiniciá el server, o cambiá el motor activo a Pi/OpenCode en la app."
+        `No se encontró el ejecutable de Claude. where hits: ${hits.join(", ") || "(vacío)"}. Revisá que 'where claude' en cmd devuelva algo y que el shim .cmd contenga cli.js. Instalá Claude Code y reiniciá el server, o cambiá el motor a Pi/OpenCode.`
     );
     err.code = "CLAUDE_NOT_INSTALLED";
     throw err;
