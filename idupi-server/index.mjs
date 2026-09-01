@@ -3716,23 +3716,32 @@ function resolveClaudeSpawnTarget() {
         claudeSpawnTargetCache = { exe: native };
         return claudeSpawnTargetCache;
     }
-    const hits = execFileSync("where", ["claude"], { encoding: "utf8", maxBuffer: EXEC_MAX_BUFFER })
-        .split(/\r?\n/)
-        .map((s) => s.trim())
-        .filter(Boolean);
+    let hits = [];
+    try {
+        hits = execFileSync("where", ["claude"], { encoding: "utf8", maxBuffer: EXEC_MAX_BUFFER })
+            .split(/\r?\n/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+    } catch {
+        hits = [];
+    }
     const cmdShim = hits.find((h) => h.toLowerCase().endsWith(".cmd"));
     if (cmdShim) {
-        const shim = readFileSync(cmdShim, "utf8");
-        const m = shim.match(/"([^"]+@anthropic-ai[\\]+claude-code[\\]+cli\.js)"/i)
-            ?? shim.match(/([A-Za-z]:[^\s"]*node_modules[\\]+@anthropic-ai[\\]+claude-code[\\]+cli\.js)/i);
-        if (m) {
-            claudeSpawnTargetCache = { js: m[1] };
-            return claudeSpawnTargetCache;
-        }
+        try {
+            const shim = readFileSync(cmdShim, "utf8");
+            const m = shim.match(/"([^"]+@anthropic-ai[\\]+claude-code[\\]+cli\.js)"/i)
+                ?? shim.match(/([A-Za-z]:[^\s"]*node_modules[\\]+@anthropic-ai[\\]+claude-code[\\]+cli\.js)/i);
+            if (m) {
+                claudeSpawnTargetCache = { js: m[1] };
+                return claudeSpawnTargetCache;
+            }
+        } catch {}
     }
-    throw new Error(
-        "No se encontró el ejecutable de Claude (ni .exe nativo ni shim .cmd parseable). Instalá Claude Code y reiniciá el server."
+    const err = new Error(
+        "No se encontró el ejecutable de Claude (ni .exe nativo ni shim .cmd parseable). Instalá Claude Code y reiniciá el server, o cambiá el motor activo a Pi/OpenCode en la app."
     );
+    err.code = "CLAUDE_NOT_INSTALLED";
+    throw err;
 }
 
 // Ejecución Asíncrona en Streaming para Claude CLI (Soporta tareas largas, subagentes en vivo y no se corta)
@@ -4231,6 +4240,20 @@ function runOpenCodeCli(projPath, sessionId, message) {
                     res.writeHead(200, { "Content-Type": "application/json" });
                     res.end(JSON.stringify({ status: "ok", taskId, output: agentOutput }));
                 } catch (piErr) {
+                    // Graceful degrade for missing Claude binary: don't crash the session,
+                    // show the message as assistant output so the user can switch engine.
+                    if (piErr && piErr.code === "CLAUDE_NOT_INSTALLED") {
+                        const friendly = piErr.message;
+                        activeTask.status = "completed";
+                        activeTask.output = `⚠️ ${friendly}`;
+                        if (clientTaskId) taskRegistry.finish(clientTaskId, { output: friendly });
+                        currentStatus.busy = false;
+                        currentStatus.cliTask = "En espera de mensajes";
+                        console.warn(`[Claude Not Installed] ${friendly}`);
+                        res.writeHead(200, { "Content-Type": "application/json" });
+                        res.end(JSON.stringify({ status: "ok", taskId, output: `⚠️ ${friendly}`, code: "CLAUDE_NOT_INSTALLED" }));
+                        return;
+                    }
                     activeTask.status = "error";
                     activeTask.error = piErr.message;
                     if (clientTaskId) taskRegistry.finish(clientTaskId, { error: piErr.message });
