@@ -22,8 +22,8 @@ android {
         // "which APK am I running" is answerable from the system settings.
         // Same-versionCode installs get silently skipped by some phone
         // installers -- that is how a stale build masqueraded as the new one.
-        versionCode = 24
-        versionName = "1.23-ctrl-fix"
+        versionCode = 25
+        versionName = "1.24-orchestrator"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
