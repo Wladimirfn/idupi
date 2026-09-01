@@ -104,6 +104,8 @@ class OrchestratorViewModel(
      * Switches the active engine. Unknown ids are ignored on purpose so the
      * motor selector cannot drift into a contract the server does not honour.
      * The shared tabs beneath remain valid against the new selection.
+     * Also notifies the server (universal, works for any Pi/OpenCode/Claude install)
+     * so that getAvailableModels() and session handling stay in sync with the UI.
      */
     fun selectEngine(engine: String) {
         if (!OrchestratorEngine.isKnown(engine)) {
@@ -111,6 +113,36 @@ class OrchestratorViewModel(
             return
         }
         _activeEngine.value = engine
+        // Sync with server - universal, not hardcoded to this machine's path
+        viewModelScope.launch {
+            try {
+                client.selectEngine(engine)
+                refreshStatus()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to sync engine selection to server: $engine", e)
+                // Keep local selection even if server sync fails - UI stays responsive
+            }
+        }
+    }
+
+    /**
+     * Syncs local activeEngine with server's activeEngine (called after
+     * session resume or status refresh). Ensures Pi/OpenCode/Claude each
+     * show their own models independently, as before.
+     */
+    fun syncEngineFromStatus(status: OrchestratorStatus?) {
+        val serverEngine = status?.activeEngine?.let { raw ->
+            when {
+                raw == "pi-cli" -> OrchestratorEngine.PI
+                OrchestratorEngine.isKnown(raw) -> raw
+                else -> null
+            }
+        }
+        if (serverEngine != null && serverEngine != _activeEngine.value) {
+            _activeEngine.value = serverEngine
+        }
     }
 
     fun clearError() {
@@ -129,6 +161,7 @@ class OrchestratorViewModel(
                 val st = client.getOrchestratorStatus()
                 _status.value = st
                 _gentleAiDetected.value = st.gentleAiDetected
+                syncEngineFromStatus(st)
                 // Preload models for configured providers
                 st.providers.take(3).forEach { prov ->
                     loadProviderModels(prov)
