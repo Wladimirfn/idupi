@@ -31,6 +31,19 @@ data class OpenCodeModelAssignment(
     val effort: String? = null
 )
 
+/**
+ * Pi phase binding. Mirrors the shape the orchestrator persists in
+ * `~/.pi/subagents.json` (`model_profiles[phase]`): provider + model + optional
+ * effort. Added in PR3 — see spec `orchestrator-engine-contract` for the
+ * envelope contract; wire-compatible defaults keep pre-PR2 server payloads alive.
+ */
+@Serializable
+data class PiPhaseConfig(
+    val provider_id: String = "",
+    val model_id: String = "",
+    val effort: String? = null
+)
+
 @Serializable
 data class ProviderModelItem(
     val id: String,
@@ -52,7 +65,12 @@ data class SddProfileItem(
     val description: String? = null,
     val isCustom: Boolean = true,
     val modelAssignments: Map<String, OpenCodeModelAssignment> = emptyMap(),
-    val claudeAssignments: Map<String, ClaudePhaseConfig> = emptyMap()
+    val claudeAssignments: Map<String, ClaudePhaseConfig> = emptyMap(),
+    /**
+     * Pi phase bindings, parallel shape to `modelAssignments` / `claudeAssignments`.
+     * Defaulted so older server payloads (pre-PR2) that omit the field parse cleanly.
+     */
+    val piAssignments: Map<String, PiPhaseConfig> = emptyMap()
 )
 
 @Serializable
@@ -65,6 +83,16 @@ data class OrchestratorStatus(
     val sddStatus: SddStatusInfo = SddStatusInfo(),
     val claudePhaseAssignments: Map<String, ClaudePhaseConfig> = emptyMap(),
     val modelAssignments: Map<String, OpenCodeModelAssignment> = emptyMap(),
+    /**
+     * Pi (`~/.pi/subagents.json`) phase bindings, surfaced by the server envelope
+     * since PR2 (commit `cc0052d`). Defaulted to empty so older payloads still parse.
+     */
+    val piPhaseAssignments: Map<String, PiPhaseConfig> = emptyMap(),
+    /**
+     * Whether the server detected a working `gentle-ai` install. Drives the
+     * Android banner (`Herramientas` tab gating) — false means modo-base.
+     */
+    val gentleAiDetected: Boolean = false,
     val providers: List<String> = emptyList(),
     val sddProfiles: List<SddProfileItem> = emptyList(),
     val activeProfile: String? = null
