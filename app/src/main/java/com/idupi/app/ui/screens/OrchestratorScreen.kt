@@ -317,14 +317,14 @@ fun OrchestratorScreen(
 @Composable
 private fun GentleAiDetectionBanner(gentleAiDetected: Boolean) {
     val (bg, fg, border, label) = if (gentleAiDetected) {
-        Quintuple(
+        Quadruple(
             StatusConnected.copy(alpha = 0.12f),
             StatusConnected,
             StatusConnected.copy(alpha = 0.5f),
             "gentle-ai: detectado (modo 2)"
         )
     } else {
-        Quintuple(
+        Quadruple(
             SlateBg,
             TextSecondary,
             SlateBorder,
@@ -359,8 +359,8 @@ private fun GentleAiDetectionBanner(gentleAiDetected: Boolean) {
     }
 }
 
-/** Minimal 5-tuple to avoid pulling in kotlin.Tuple5 (not in stdlib) for a single banner use. */
-private data class Quintuple<A, B, C, D, E>(val a: A, val b: B, val c: C, val d: D, val e: E)
+/** Minimal 4-tuple to avoid pulling in kotlin.Quadruple (not in stdlib) for a single banner use. */
+private data class Quadruple<A, B, C, D>(val a: A, val b: B, val c: C, val d: D)
 
 @Composable
 private fun EngineSelectorRow(
