@@ -23,7 +23,16 @@ idupi-server/projects.json
 .pi/
 # Build/debug artifacts that shouldn't live in git
 *.apk
+# Exception: the ready-to-install APK is committed at the repo root for end users.
+!IDUPI-ap.apk
+!/IDUPI-ap.apk
 *.stackdump
+# Release signing - never commit keystores or passwords
+*.keystore
+*.jks
+*.p12
+keystore.properties
+signing.properties
 # Pi subagent run artifacts (transcripts, cost meta) -- runtime state, not source
 .pi-subagents/
 # Pi subagent role outputs: pi-subagents declares these in each role's
