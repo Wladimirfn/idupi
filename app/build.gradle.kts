@@ -7,7 +7,7 @@ plugins {
 
 
 android {
-    namespace = "com.example.idupi"
+    namespace = "com.idupi.app"
     compileSdk {
         version = release(36) {
             minorApiLevel = 1
@@ -15,18 +15,31 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.example.idupi"
+        applicationId = "com.idupi.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        // Owner-visible update marker: every shipped build bumps both, so
+        // "which APK am I running" is answerable from the system settings.
+        // Same-versionCode installs get silently skipped by some phone
+        // installers -- that is how a stale build masqueraded as the new one.
+        versionCode = 26
+        versionName = "1.25-model-sync"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("release") {
+            storeFile = file("idupi-release.keystore")
+            storePassword = "Idupi2026Store"
+            keyAlias = "idupi"
+            keyPassword = "Idupi2026Store"
+        }
+    }
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -35,6 +48,10 @@ android {
     }
     buildFeatures {
         compose = true
+        // BuildConfig.VERSION_NAME is the UI's "which build am I running"
+        // marker (Settings + nav drawer); AGP stops generating the class by
+        // default unless this flag is on.
+        buildConfig = true
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
