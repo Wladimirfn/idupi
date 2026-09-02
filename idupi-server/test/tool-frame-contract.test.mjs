@@ -28,7 +28,7 @@ import { dirname, join } from "node:path";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SERVER_FILE = join(HERE, "..", "index.mjs");
 const PARSER_FILE = join(HERE, "..", "..", "app", "src", "main", "java", "com",
-    "example", "idupi", "data", "remote", "SseFrameParser.kt");
+    "idupi", "app", "data", "remote", "SseFrameParser.kt");
 
 const source = readFileSync(SERVER_FILE, "utf8");
 
