@@ -24,8 +24,14 @@ export function claudeArgs({ modelId = "", sessionId = "", isNewSession = false,
 }
 
 /** OpenCode CLI argv. Same array principle: data never becomes syntax. */
-export function openCodeArgs({ sessionId = "", message = "" }) {
+export function openCodeArgs({ model = "", provider = "", sessionId = "", message = "" }) {
     const args = ["run", "--format", "json", "--auto"];
+    if (model) {
+        // `opencode run -m` expects provider/model ("model to use in the format
+        // of provider/model" -- `opencode run --help`). Catalog ids already
+        // carry the provider; a bare model gets the provider prefix when known.
+        args.push("-m", model.includes("/") ? model : (provider ? `${provider}/${model}` : model));
+    }
     if (sessionId) args.push("-s", sessionId);
     args.push(message);
     return args;

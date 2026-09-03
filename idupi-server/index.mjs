@@ -240,6 +240,12 @@ let activeOpenCodeSessionId = null;
 // modelo por defecto (el de ~/.claude/settings.json) y no se agrega --model al comando.
 let activeClaudeModelId = null;
 
+// Modelo OpenCode explícitamente seleccionado vía /api/v1/model/switch mientras el
+// motor activo es "opencode". Si es null, el CLI de OpenCode usa su modelo por
+// defecto y no se agrega -m al comando. Se pasa a `opencode run -m` como
+// provider/model (verificado con `opencode run --help`).
+let activeOpenCodeModel = null; // { model, provider }
+
 // Aliases cortos que Claude Code acepta en --model (verificado con `claude --help`:
 // "Provide an alias for the latest model (e.g. 'fable', 'opus', or 'sonnet')...").
 // Solo mapeamos los alias que tienen un ID completo autorizado en nuestro catálogo.
@@ -1697,7 +1703,12 @@ function getSessionHistoryById(sessionId) {
     if (detectedModel) {
         currentStatus.operatingAi = detectedModel;
         if (detectedProvider) currentStatus.operatingProvider = detectedProvider;
-        piRpc.setModel(detectedModel, detectedProvider);
+        // Las entradas model_change son formato Pi; una sesión Claude (bajo
+        // ~/.claude) nunca debe reescribir el modelo del motor Pi. OpenCode ya
+        // retornó antes por el prefijo ses_, así que aquí solo puede ser Pi.
+        if (!targetFilePath.includes(".claude")) {
+            piRpc.setModel(detectedModel, detectedProvider);
+        }
         console.log(`[Session History] Modelo detectado en sesión: ${detectedProvider ? detectedProvider + '/' : ''}${detectedModel}`);
     }
 
@@ -3376,7 +3387,15 @@ const handleRequest = async (req, res) => {
                 const parsed = JSON.parse(body);
                 const sessionId = parsed.sessionId;
                 if (sessionId) {
-                    if (sessionId.startsWith("ses_") || currentStatus.activeEngine === "opencode") {
+                    // Clasificación por forma de ID + tienda de sesiones, NUNCA solo por
+                    // el motor activo: un id de Pi/Claude (UUID) reanudado con el motor
+                    // OpenCode activo caía en la rama OpenCode y la sesión real jamás se
+                    // reanudaba. Los ids de OpenCode son siempre "ses_" (verificado con
+                    // `opencode db`); el resto se resuelve en la tienda de Pi, y solo se
+                    // cae al motor activo cuando el id no puede ser un id de tienda.
+                    const sessionPath = findSessionFilePath(sessionId);
+                    const looksLikeStoreUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId);
+                    if (sessionId.startsWith("ses_") || (!sessionPath && !looksLikeStoreUuid && currentStatus.activeEngine === "opencode")) {
                         activeOpenCodeSessionId = sessionId;
                         currentStatus.activeEngine = "opencode";
                         console.log(`[OpenCode Session Resume] Sesión reanudada: ${sessionId}`);
@@ -3384,7 +3403,6 @@ const handleRequest = async (req, res) => {
                         res.end(JSON.stringify({ status: "ok", sessionId, engine: "opencode" }));
                         return;
                     }
-                    const sessionPath = findSessionFilePath(sessionId);
                     if (sessionPath && sessionPath.includes(".claude")) {
                         activeClaudeSessionId = sessionId;
                         currentStatus.activeEngine = "claude";
@@ -3479,6 +3497,14 @@ const handleRequest = async (req, res) => {
                     // llegaba a afectar al proceso real de Claude Code.
                     activeClaudeModelId = modelName;
                     console.log(`[Model Switch] Claude CLI usará --model ${modelName} en el próximo mensaje.`);
+                } else if (currentStatus.activeEngine === "opencode") {
+                    // OpenCode también es un CLI por mensaje: el modelo se recuerda y se
+                    // pasa como -m en cada invocación (ver rama "opencode" de
+                    // /api/v1/chat/send). Antes caía en la rama Pi y configuraba el
+                    // motor Pi sin que OpenCode cambiara jamás: la UI mostraba el
+                    // modelo elegido pero el CLI seguía usando el suyo por defecto.
+                    activeOpenCodeModel = { model: modelName, provider: providerName || null };
+                    console.log(`[Model Switch] OpenCode CLI usará -m ${modelName} en el próximo mensaje.`);
                 } else {
                     piRpc.setModel(modelName, providerName);
                 }
@@ -4588,7 +4614,7 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
 
 // Ejecución Asíncrona en Streaming para OpenCode
 
-function runOpenCodeCli(projPath, sessionId, message) {
+function runOpenCodeCli(projPath, sessionId, message, openCodeModel = null) {
     return new Promise((resolve, reject) => {
         publishChatEvent(CHAT_EVENTS.THINKING, { active: true });
 
@@ -4596,7 +4622,7 @@ function runOpenCodeCli(projPath, sessionId, message) {
         // to the resolved real executable -- a crafted sessionId or message
         // can no longer become cmd.exe syntax.
         const opencodeExe = resolveOpenCodeExePath();
-        const args = openCodeArgs({ sessionId, message });
+        const args = openCodeArgs({ model: openCodeModel?.model || "", provider: openCodeModel?.provider || "", sessionId, message });
 
         console.log(`[OpenCode CLI Spawn] Iniciando OpenCode en ${projPath}: ${opencodeExe}`);
 
@@ -4848,7 +4874,7 @@ function runOpenCodeCli(projPath, sessionId, message) {
                         }
                         agentOutput = await runClaudeCli(activeProj.path, activeClaudeSessionId, isNewClaudeSession, activeClaudeModelId, userMessage);
                     } else if (currentStatus.activeEngine === "opencode") {
-                        agentOutput = await runOpenCodeCli(activeProj.path, activeOpenCodeSessionId, userMessage);
+                        agentOutput = await runOpenCodeCli(activeProj.path, activeOpenCodeSessionId, userMessage, activeOpenCodeModel);
                         if (!activeOpenCodeSessionId) {
                             try {
                                 const rawDb = execSync('opencode db "SELECT id FROM session ORDER BY time_updated DESC LIMIT 1" --format json', { encoding: "utf8", maxBuffer: EXEC_MAX_BUFFER });
