@@ -306,4 +306,52 @@ class OrchestratorViewModelTest {
         assertTrue(st!!.piPhaseAssignments.isEmpty())
         assertEquals(false, viewModel.gentleAiDetected.value)
     }
+
+    // -- syncEngine: local-only engine sync from the resumed session -----------
+    //
+    // When the user taps Reanudar on a session, navigation threads the
+    // session's engine (pre-test audit: it was discarded, so the selector
+    // stayed stale). syncEngine flips the local engine immediately with NO
+    // server write; the post-resume refreshStatus() confirms server truth.
+
+    @Test
+    fun `syncEngine flips the local engine without any server write`() = runTest {
+        val viewModel = OrchestratorViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+        // The fake's default OrchestratorStatus.activeEngine is "pi-cli", so
+        // init's refreshStatus already synced the engine to PI.
+        assertEquals(OrchestratorEngine.PI, viewModel.activeEngine.value)
+
+        viewModel.syncEngine("claude")
+        assertEquals(OrchestratorEngine.CLAUDE, viewModel.activeEngine.value)
+        assertNull(
+            "syncEngine is local-only -- it must not write to the server",
+            fake.lastSelectedEngineId,
+        )
+    }
+
+    @Test
+    fun `syncEngine maps pi-cli to PI and keeps canonical engine ids`() = runTest {
+        val viewModel = OrchestratorViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+
+        viewModel.syncEngine("pi-cli")
+        assertEquals(OrchestratorEngine.PI, viewModel.activeEngine.value)
+
+        viewModel.syncEngine("opencode")
+        assertEquals(OrchestratorEngine.OPENCODE, viewModel.activeEngine.value)
+    }
+
+    @Test
+    fun `syncEngine ignores unknown and null engines`() = runTest {
+        val viewModel = OrchestratorViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+        val before = viewModel.activeEngine.value
+
+        viewModel.syncEngine("weird-engine")
+        assertEquals("an unknown engine id must be a no-op", before, viewModel.activeEngine.value)
+
+        viewModel.syncEngine(null)
+        assertEquals("a null engine must be a no-op", before, viewModel.activeEngine.value)
+    }
 }

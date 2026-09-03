@@ -41,6 +41,7 @@ import kotlinx.coroutines.flow.merge
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * Thrown when the server is reachable but rejects the request. Carries the real
@@ -97,6 +98,36 @@ private data class UpdateOrchestratorModelPayload(
 
 @Serializable
 private data class OrchestratorActionPayload(val action: String)
+
+// fix-ui-request-selection / Phase 4 (Android wire-up): the body posted to
+// /api/v1/chat/ui-response/:requestId. `value` is typed as JsonElement so the
+// wire type matches the registry's exact-type validation:
+//   select  -> JSON string (one of options)
+//   confirm -> JSON boolean
+//   input   -> JSON string (non-empty)
+// The previous implementation used `value.toString()` which turned a Kotlin
+// `true` into the text "true" and the server's `typeof value !== "boolean"`
+// check rejected it. Lifting to JsonElement preserves the original type.
+@Serializable
+private data class UiResponsePayload(
+    val value: JsonElement,
+    val token: String,
+    val sessionId: String,
+)
+
+/**
+ * Lifts the caller's [Any] into the [JsonElement] the wire format needs.
+ * Anything we don't recognise is stringified; the registry's `validateUiAnswer`
+ * rejects unrecognised types with 400, so the failure is visible rather than
+ * silent.
+ */
+private fun Any.toJsonElement(): JsonElement = when (this) {
+    is String -> JsonPrimitive(this)
+    is Boolean -> JsonPrimitive(this)
+    is Number -> JsonPrimitive(this)
+    is JsonElement -> this
+    else -> JsonPrimitive(this.toString())
+}
 
 class RealIduPiClient : IduPiClient {
 
@@ -555,10 +586,16 @@ class RealIduPiClient : IduPiClient {
         }
     }
 
-    override suspend fun sendUiResponse(requestId: String, value: Any) {
+    override suspend fun sendUiResponse(requestId: String, value: Any, token: String, sessionId: String) {
         send(HttpMethod.Post, "/api/v1/chat/ui-response/$requestId") {
             contentType(ContentType.Application.Json)
-            setBody(value.toString())
+            setBody(
+                UiResponsePayload(
+                    value = value.toJsonElement(),
+                    token = token,
+                    sessionId = sessionId,
+                )
+            )
         }
     }
 

@@ -6,6 +6,7 @@ import com.idupi.app.MainDispatcherRule
 import com.idupi.app.domain.model.ActivityStatus
 import com.idupi.app.domain.model.ChatEvent
 import com.idupi.app.domain.model.MessageSender
+import com.idupi.app.domain.model.ServerStatus
 import com.idupi.app.domain.repository.AiModelItem
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -379,5 +380,69 @@ class ChatViewModelTest {
         advanceUntilIdle()
 
         assertTrue(viewModel.activities.value.isEmpty())
+    }
+
+    // -- loadSessionHistory: session-resume sync hook -------------------------
+    //
+    // The caller (AppNavigation) refreshes the shared selector state + chat
+    // model list AFTER the resume completes, because POST /sessions/resume
+    // switches the server's activeEngine to the resumed session's engine.
+    // `onResumed` is the sequencing hook: it must fire only once the resume +
+    // post-resume status sync have run, and never on a failed resume.
+
+    @Test
+    fun `loadSessionHistory invokes onResumed after a successful resume`() = runTest {
+        val viewModel = ChatViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+
+        var resumed = false
+        viewModel.loadSessionHistory("sess-1") { resumed = true }
+        advanceUntilIdle()
+
+        assertTrue("onResumed must run once the session is resumed", resumed)
+    }
+
+    @Test
+    fun `loadSessionHistory does NOT invoke onResumed when the resume fails`() = runTest {
+        val viewModel = ChatViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+
+        fake.failWith = RuntimeException("pi is busy")
+        var resumed = false
+        viewModel.loadSessionHistory("sess-1") { resumed = true }
+        advanceUntilIdle()
+
+        assertEquals("a failed resume must not fire the sync hook", false, resumed)
+        val last = viewModel.messages.value.last()
+        assertEquals(MessageSender.ERROR, last.sender)
+        assertTrue(last.text.contains("pi is busy"))
+    }
+
+    @Test
+    fun `onResumed fires only AFTER the post-resume status sync`() = runTest {
+        // The hook must not run before the server state is read: the caller
+        // refreshes the shared status from it. Prove ordering by observing the
+        // status-derived `isThinking` inside the callback.
+        val viewModel = ChatViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+
+        fake.statusToReturn = ServerStatus(
+            connected = true,
+            pcName = "fake-pc",
+            project = "fake-project",
+            agent = "fake-agent",
+            busy = true,
+            queueSize = 0,
+        )
+        var thinkingAtCallback: Boolean? = null
+        viewModel.loadSessionHistory("sess-1") {
+            thinkingAtCallback = viewModel.isThinking.value
+        }
+        advanceUntilIdle()
+
+        assertEquals(
+            "the status sync (busy=true) must already be applied when onResumed runs",
+            true, thinkingAtCallback,
+        )
     }
 }

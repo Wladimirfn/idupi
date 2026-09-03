@@ -255,8 +255,27 @@ fun AppNavigation() {
                             Screen.SESSIONS -> SessionsScreen(
                                 viewModel = sessionsViewModel,
                                 onMenuClick = { scope.launch { drawerState.open() } },
-                                onSessionSelect = { sessionId ->
-                                    chatViewModel.loadSessionHistory(sessionId)
+                                onSessionSelect = { sessionId, engine ->
+                                    chatViewModel.loadSessionHistory(sessionId) {
+                                        // POST /sessions/resume switches the
+                                        // server's activeEngine to the resumed
+                                        // session's engine, so a fresh GET
+                                        // /status AFTER the resume is the
+                                        // authoritative read. Sync the shared
+                                        // selector state + chat model list so
+                                        // entering a Pi session while the
+                                        // dashboard selector says Claude
+                                        // auto-switches selector and models
+                                        // to Pi (pre-test audit).
+                                        mainViewModel.refreshStatus()
+                                        orchestratorViewModel.refreshStatus()
+                                        chatViewModel.refreshModels()
+                                    }
+                                    // Optimistic local flip from the session's
+                                    // known engine: the orchestrator selector
+                                    // is never stale, even before the
+                                    // post-resume status refresh lands.
+                                    orchestratorViewModel.syncEngine(engine)
                                     navigateTo(Screen.CHAT)
                                 }
                             )

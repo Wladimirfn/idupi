@@ -55,7 +55,24 @@ interface IduPiClient {
 
     fun connectChat(): Flow<ChatEvent>
     suspend fun sendMessage(message: String)
-    suspend fun sendUiResponse(requestId: String, value: Any)
+
+    /**
+     * POST [requestId]'s answer back to the server. The body is the structured
+     * JSON `{ value, token, sessionId }` -- NOT a stringified boolean, which is
+     * the bug that motivated this change (the previous call sent
+     * `value.toString()`, turning `true` into the literal text "true" and
+     * getting rejected by the server's exact-type validation).
+     *
+     * `token` and `sessionId` MUST come from the same `UiRequest` that the SSE
+     * `ui_request` frame delivered -- they are how the server binds the answer
+     * to the session and rejects stale answers with 409.
+     *
+     * @param value   Any JSON-serializable answer; select/input take a String,
+     *                confirm takes a Boolean. `RealIduPiClient` lifts it into
+     *                a `JsonElement` before posting so the wire type matches
+     *                the registry's `validateUiAnswer` predicate.
+     */
+    suspend fun sendUiResponse(requestId: String, value: Any, token: String, sessionId: String)
     suspend fun cancelCurrentTask()
     suspend fun getProjectFiles(projectId: String): List<FileNode>
     suspend fun getFileContent(projectId: String, path: String): String

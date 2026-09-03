@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.idupi.app.data.IduPiClientProvider
+import com.idupi.app.data.remote.IduPiHttpException
 import com.idupi.app.domain.model.*
 import com.idupi.app.domain.repository.IduPiClientSource
 import kotlinx.coroutines.CancellationException
@@ -35,6 +36,22 @@ class ChatViewModel(
 
     private val _activeUiRequest = MutableStateFlow<UiRequest?>(null)
     val activeUiRequest = _activeUiRequest.asStateFlow()
+
+    /**
+     * Last server rejection for the active UI request. Set on 409 (stale
+     * token, superseded request, or out-of-date value) so the chat can show
+     * the user why their answer was rejected. Cleared on a new
+     * `UiRequestReceived` or on a successful send. The dialog stays open --
+     * the spec scenario "'C' never reaches the CLI; the dialog stays open"
+     * is handled by NOT clearing `_activeUiRequest` on 409 (see
+     * [respondToUiRequest]).
+     */
+    private val _uiRequestError = MutableStateFlow<String?>(null)
+    val uiRequestError = _uiRequestError.asStateFlow()
+
+    private fun clearUiRequestError() {
+        _uiRequestError.value = null
+    }
 
     // Subagentes en ejecución y completados
     private val _subagents = MutableStateFlow<List<SubagentLiveState>>(emptyList())
@@ -342,12 +359,26 @@ class ChatViewModel(
                         }
                     }
                     is ChatEvent.UiRequestReceived -> {
+                        // A new request supersedes any prior 409 hold + error.
+                        clearUiRequestError()
                         _activeUiRequest.value = event.request
                         _messages.value = _messages.value + ChatMessage(
                             sender = MessageSender.SYSTEM,
                             text = "Pi solicita tu confirmación para proceder.",
                             uiRequest = event.request
                         )
+                    }
+                    is ChatEvent.UiRequestResolved -> {
+                        // Server confirmed the request is terminal (client
+                        // answer accepted OR the 120s timer auto-approved).
+                        // Close the card ONLY if the resolved id is the one
+                        // currently pending: a stale resolve for a request
+                        // already superseded by a newer one must neither close
+                        // the newer card nor wipe its 409 rejection message.
+                        if (_activeUiRequest.value?.id == event.requestId) {
+                            _activeUiRequest.value = null
+                            clearUiRequestError()
+                        }
                     }
                     is ChatEvent.MessageEnded -> {
                         _isStreaming.value = false
@@ -428,14 +459,68 @@ class ChatViewModel(
         _subagents.value = emptyList()
         _selectedSubagent.value = null
         _activeTool.value = null
+        clearUiRequestError()
     }
 
-    fun respondToUiRequest(requestId: String, value: Any) {
-        _activeUiRequest.value = null
+    /**
+     * Submit the user's answer to a pending `ui_request`. Behaviour by status:
+     *
+     *  200 -> server accepted the value; close the dialog.
+     *  400 -> invalid answer (e.g. an out-of-date select value like "C" not
+     *         in the current options). Spec scenario "Invalid answer
+     *         re-prompts": "C" never reaches the CLI and the dialog MUST stay
+     *         open so the user can pick a valid option.
+     *  409 -> stale token (request was superseded, OR client lost the race
+     *         with another answer). The spec says the dialog must stay open
+     *         for the user to retry ("'C' never reaches the CLI; the dialog
+     *         stays open"). We log at WARN so the lost race is visible in
+     *         `adb logcat` and the registry can still auto-resolve on its
+     *         120s backstop.
+     *  other 4xx/5xx/network -> surface as an error message; close the dialog.
+     *
+     * Takes the [UiRequest] (not just an id) so the caller does not have to
+     * remember the token/sessionId wiring -- the SSE `ui_request` frame is
+     * the only thing the UI has at hand, and bundling the requestId with its
+     * auth fields keeps the ViewModel the sole place that knows about them.
+     */
+    fun respondToUiRequest(request: UiRequest, value: Any) {
         viewModelScope.launch {
             try {
-                client.sendUiResponse(requestId, value)
+                // `token` is stored as a Long (parsed from the JSON number on
+                // the wire for precision); the server coerces with Number() so
+                // either numeric or string round-trip is accepted, and the
+                // design contract documents the interface as String.
+                client.sendUiResponse(request.id, value, request.token.toString(), request.sessionId)
+                _activeUiRequest.value = null
+                clearUiRequestError()
+            } catch (e: IduPiHttpException) {
+                if (e.statusCode == 409 || e.statusCode == 400) {
+                    // 409 -> stale / superseded token; 400 -> invalid answer
+                    // (e.g. an out-of-date select value like "C"). Both are
+                    // recoverable: spec scenario "Invalid answer re-prompts"
+                    // requires the dialog to stay open so the user can retry.
+                    // Do NOT clear `_activeUiRequest` -- doing so would close
+                    // the card mid-retry and leave the user with no way to
+                    // answer the still-pending server request. The 120s
+                    // server timer is the safety net.
+                    // Surface the rejection in the card so the user knows
+                    // their last answer was rejected (Phase 5.4: "out-of-date
+                    // value keeps dialog open, surfaces server rejection").
+                    Log.w(TAG, "ui-response ${e.statusCode} for ${request.id} (keeping dialog open): ${e.message}")
+                    _uiRequestError.value = "El servidor rechazó esa respuesta — verifica las opciones disponibles o reintenta."
+                } else {
+                    _activeUiRequest.value = null
+                    clearUiRequestError()
+                    _messages.value = _messages.value + ChatMessage(
+                        sender = MessageSender.ERROR,
+                        text = "No se pudo enviar la confirmación: ${e.message}"
+                    )
+                }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
+                _activeUiRequest.value = null
+                clearUiRequestError()
                 _messages.value = _messages.value + ChatMessage(
                     sender = MessageSender.ERROR,
                     text = "No se pudo enviar la confirmación: ${e.localizedMessage}"
@@ -446,7 +531,10 @@ class ChatViewModel(
 
     private var sessionJob: kotlinx.coroutines.Job? = null
 
-    fun loadSessionHistory(sessionId: String) {
+    fun loadSessionHistory(
+        sessionId: String,
+        onResumed: (() -> Unit)? = null,
+    ) {
         sessionJob?.cancel()
         _subagents.value = emptyList()
         _selectedSubagent.value = null
@@ -478,6 +566,14 @@ class ChatViewModel(
                     val status = client.getStatus()
                     _isThinking.value = status.busy
                 } catch (e: Exception) {}
+
+                // POST /sessions/resume switches the server's activeEngine to
+                // this session's engine (see index.mjs). Only now is a fresh
+                // GET /status -- and the engine-scoped model list -- guaranteed
+                // to reflect the resumed session, so the caller's shared-state
+                // sync (dashboard selector, orchestrator engine, chat models)
+                // runs after the resume instead of racing it.
+                onResumed?.invoke()
             } catch (e: Exception) {
                 if (e !is kotlinx.coroutines.CancellationException) {
                     _messages.value = listOf(
@@ -521,6 +617,7 @@ class ChatViewModel(
                 _isStreaming.value = false
                 _activeTool.value = null
                 _activeUiRequest.value = null
+                clearUiRequestError()
                 _isThinking.value = false
             }
         }
