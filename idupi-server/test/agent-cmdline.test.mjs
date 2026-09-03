@@ -44,3 +44,17 @@ test("happy path matches the documented CLI shape", () => {
     assert.deepEqual(openCodeArgs({ sessionId: "s-9", message: "hola" }),
         ["run", "--format", "json", "--auto", "-s", "s-9", "hola"]);
 });
+
+test("openCode args pass the selected model as -m in provider/model form", () => {
+    const args = openCodeArgs({ model: "gpt-5.6-luna", provider: "opencode-go", sessionId: "ses_x", message: "hola" });
+    assert.deepEqual(args, ["run", "--format", "json", "--auto", "-m", "opencode-go/gpt-5.6-luna", "-s", "ses_x", "hola"]);
+});
+
+test("openCode args keep a catalog id that already carries the provider", () => {
+    const args = openCodeArgs({ model: "opencode-go/gpt-5.6-luna", sessionId: "ses_x", message: "hola" });
+    assert.deepEqual(args, ["run", "--format", "json", "--auto", "-m", "opencode-go/gpt-5.6-luna", "-s", "ses_x", "hola"]);
+});
+
+test("openCode args without a model keep the historical shape", () => {
+    assert.deepEqual(openCodeArgs({ message: "hola" }), ["run", "--format", "json", "--auto", "hola"]);
+});
