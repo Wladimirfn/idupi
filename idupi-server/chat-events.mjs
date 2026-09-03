@@ -20,7 +20,15 @@
 
 import { ACTIVITY_TYPES } from "./lib/activity.mjs";
 
-/** Every event type the app is allowed to receive. Keep in sync with ChatEvent.kt. */
+/**
+ * Every event type the app is allowed to receive. Keep in sync with ChatEvent.kt.
+ *
+ * Phase 2 (fix-ui-request-selection) adds the UI request channel:
+ *   - UI_REQUEST          → emitted on registry register; app renders a dialog
+ *                           with a 120s countdown and the actions for the method
+ *   - UI_REQUEST_RESOLVED → emitted on registry expire (auto_approve) AND on
+ *                           successful client POST; app drops the dialog
+ */
 export const CHAT_EVENTS = Object.freeze({
     THINKING: "thinking",              // { active: boolean }
     TEXT_DELTA: "text_delta",          // { text }
@@ -31,7 +39,9 @@ export const CHAT_EVENTS = Object.freeze({
     SUBAGENT_END: "subagent_end",      // { id, name, summary? }
     MESSAGE_END: "message_end",        // { text }
     ENGINE_CHANGED: "engine_changed",  // { engine, model, provider? }
-    ERROR: "error"                     // { message }
+    ERROR: "error",                    // { message }
+    UI_REQUEST: "ui_request",                  // { requestId, token, method, title, message, options, deadlineMs, sessionId, engine }
+    UI_REQUEST_RESOLVED: "ui_request_resolved" // { requestId, sessionId, engine, resolution: "client"|"auto_approve", value }
 });
 
 const HEARTBEAT_MS = 20000;

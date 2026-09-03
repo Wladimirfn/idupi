@@ -142,6 +142,62 @@ test("pi: write preserves foreign keys (read-merge-write)", async () => {
     } finally { h.restore(); }
 });
 
+// ============================================================================
+// Pi UI-request normalizer (fix-ui-request-selection leftovers)
+// ============================================================================
+
+test("pi: normalizeUiRequest uses title/message when header/question are absent (real Pi events)", () => {
+    // Verified real Pi 0.84.0 capture: extension_ui_request carries `title`
+    // and NO `question`/`header` field at all. The old normalizer read
+    // header/question and produced a blank card. title||header and
+    // message||question||"" are the fallbacks.
+    const n = piEngine.__testing.normalizeUiRequest({
+        type: "extension_ui_request",
+        id: "e39b608a-dbde-4b49-ae3d-d87fc73791cf",
+        method: "select",
+        title: "[Choose] Which option do you choose?",
+        options: ["1. A — Choose option A.", "2. B — Choose option B.", "3. Type something."],
+    });
+    assert.equal(n.title, "[Choose] Which option do you choose?");
+    assert.equal(n.message, "", "no question/message -> empty body, never undefined");
+    assert.deepEqual(n.options, ["1. A — Choose option A.", "2. B — Choose option B.", "3. Type something."]);
+});
+
+test("pi: normalizeUiRequest keeps the old header/question spelling working", () => {
+    // Historical capture (Change A exploration): the header/question spelling
+    // must keep normalizing so old captures and other Pi surfaces still work.
+    const n = piEngine.__testing.normalizeUiRequest({
+        type: "extension_ui_request",
+        method: "select",
+        header: "Selection",
+        question: "Choose exactly A or B before I continue?",
+        options: [{ label: "A" }, { label: "B" }],
+    });
+    assert.equal(n.title, "Selection");
+    assert.equal(n.message, "Choose exactly A or B before I continue?");
+    assert.deepEqual(n.options, ["A", "B"]);
+});
+
+test("pi: normalizeUiRequest prefers title over header and message over question", () => {
+    const n = piEngine.__testing.normalizeUiRequest({
+        method: "confirm",
+        title: "Real title",
+        header: "Old header",
+        message: "Real message",
+        question: "Old question",
+    });
+    assert.equal(n.title, "Real title");
+    assert.equal(n.message, "Real message");
+});
+
+test("pi: normalizeUiRequest returns null for non-prompt extension_ui_request events", () => {
+    assert.equal(piEngine.__testing.normalizeUiRequest({ type: "extension_ui_request", method: "setStatus", statusKey: "mcp" }), null);
+    assert.equal(piEngine.__testing.normalizeUiRequest({ type: "extension_ui_request", method: "notify" }), null);
+    assert.equal(piEngine.__testing.normalizeUiRequest({ type: "extension_ui_request" }), null);
+    assert.equal(piEngine.__testing.normalizeUiRequest(null), null);
+    assert.equal(piEngine.__testing.normalizeUiRequest("not-an-object"), null);
+});
+
 test("pi: first write creates a .bak, second write in same process does not", async () => {
     const h = fakeHome();
     try {
