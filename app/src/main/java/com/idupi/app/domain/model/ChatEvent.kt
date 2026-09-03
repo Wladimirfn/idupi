@@ -7,6 +7,18 @@ sealed class ChatEvent {
     // so the one pre-existing call site (the synthetic "pi_cli" tool marker) keeps compiling.
     data class ToolStarted(val toolName: String, val message: String, val id: String = "") : ChatEvent()
     data class UiRequestReceived(val request: UiRequest) : ChatEvent()
+
+    /**
+     * Terminal acknowledgement that a pending `ui_request` was resolved
+     * server-side: either the client's answer POST returned 200
+     * (`resolution: "client"`) or the registry's 120s timer auto-approved it
+     * (`resolution: "auto_approve"`). The wire frame carries
+     * `{ requestId, sessionId, engine, resolution, value }`; the chat layer
+     * only needs `requestId` to close the matching card. The ViewModel guards
+     * on the id so a stale resolve for an already-superseded request cannot
+     * close a newer card. Old APKs may ignore the frame entirely.
+     */
+    data class UiRequestResolved(val requestId: String) : ChatEvent()
     data class SupervisorAlertReceived(val alert: SupervisorAlert) : ChatEvent()
     data class MessageEnded(val finalMessage: String) : ChatEvent()
     data class ErrorOccurred(val error: String) : ChatEvent()

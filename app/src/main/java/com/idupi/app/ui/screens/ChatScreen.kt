@@ -44,6 +44,7 @@ import com.idupi.app.domain.model.shouldAnimateScroll
 import com.idupi.app.domain.model.copyTextOf
 import com.idupi.app.domain.model.toggled
 import com.idupi.app.ui.components.MarkdownText
+import com.idupi.app.ui.components.UiRequestCard
 import com.idupi.app.ui.theme.*
 import com.idupi.app.viewmodel.ChatViewModel
 import com.idupi.app.viewmodel.MainViewModel
@@ -61,6 +62,7 @@ fun ChatScreen(
     val activeTool by viewModel.activeTool.collectAsState()
     val isThinking by viewModel.isThinking.collectAsState()
     val activeUiRequest by viewModel.activeUiRequest.collectAsState()
+    val uiRequestError by viewModel.uiRequestError.collectAsState()
     val availableCommands by viewModel.availableCommands.collectAsState()
     val availableModels by viewModel.availableModels.collectAsState()
     val serverStatus by mainViewModel.status.collectAsState()
@@ -356,6 +358,23 @@ fun ChatScreen(
                     ActiveSubagentsBar(
                         subagents = subagents,
                         onSelectSubagent = { viewModel.selectSubagent(it) }
+                    )
+                }
+
+                // Inline grace-period card for any pending `ui_request`. The
+                // ViewModel sets `activeUiRequest` together with the SYSTEM
+                // message in the same `UiRequestReceived` handler, so this
+                // exactly matches the "last SYSTEM message" condition the
+                // spec calls for. State survives Chat navigation -- the
+                // card re-renders on return with the correct remaining
+                // countdown because `deadlineAt` is an absolute timestamp
+                // and `remember(request.id, request.deadlineAt)` re-derives
+                // `remainingSeconds` from `System.currentTimeMillis()`.
+                activeUiRequest?.let { request ->
+                    UiRequestCard(
+                        request = request,
+                        onResponse = { value -> viewModel.respondToUiRequest(request, value) },
+                        errorMessage = uiRequestError,
                     )
                 }
 

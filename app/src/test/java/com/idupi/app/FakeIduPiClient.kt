@@ -107,6 +107,34 @@ class FakeIduPiClient : IduPiClient {
     var lastRejectedPlanId: String? = null
     var lastSentMessage: String? = null
     var lastSwitchedModel: String? = null
+
+    // Last sendUiResponse call -- the 409-retry tests (Phase 6) will assert
+    // these were forwarded with the right token/sessionId, that the ViewModel
+    // re-prompted on 409, and that the active request was cleared on 200.
+    var lastSentUiRequestId: String? = null
+    var lastSentUiValue: Any? = null
+    var lastSentUiToken: String? = null
+    var lastSentUiSessionId: String? = null
+
+    /**
+     * When set, [sendUiResponse] throws this exception instead of recording
+     * the call. Used by the Phase 6.4 tests to drive ChatViewModel through
+     * the 409-hold and other-error branches without a real server. Recording
+     * fields stay `null` on a throw -- the ViewModel must not clear
+     * `_activeUiRequest` before the POST, so we can also assert "no body was
+     * accepted" by reading the recording fields.
+     *
+     * Setting `failWith` overrides this for `sendUiResponse` too; setting
+     * `sendUiResponseFailure` overrides `failWith`. The two together let a
+     * test exercise "200 then 409" without touching the global `failWith`.
+     */
+    var sendUiResponseFailure: Exception? = null
+
+    /** When > 0, that many next [sendUiResponse] calls throw instead of
+     *  recording, then the field decrements. Lets a single test drive
+     *  "200 then 409 then 200" without three separate fake instances. */
+    var sendUiResponseFailuresRemaining: Int = 0
+
     var lastRequestedSessionEngine: String? = null
     var lastRequestedSessionCursor: String? = null
     var lastRequestedSessionLimit: Int? = null
@@ -237,8 +265,17 @@ class FakeIduPiClient : IduPiClient {
         lastSentMessage = message
     }
 
-    override suspend fun sendUiResponse(requestId: String, value: Any) {
+    override suspend fun sendUiResponse(requestId: String, value: Any, token: String, sessionId: String) {
+        sendUiResponseFailure?.let { throw it }
+        if (sendUiResponseFailuresRemaining > 0) {
+            sendUiResponseFailuresRemaining--
+            throw com.idupi.app.data.remote.IduPiHttpException(409, "fake://test", "fake 409")
+        }
         maybeFail()
+        lastSentUiRequestId = requestId
+        lastSentUiValue = value
+        lastSentUiToken = token
+        lastSentUiSessionId = sessionId
     }
 
     override suspend fun cancelCurrentTask() {

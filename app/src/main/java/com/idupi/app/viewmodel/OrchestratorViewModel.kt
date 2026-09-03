@@ -145,6 +145,24 @@ class OrchestratorViewModel(
         }
     }
 
+    /**
+     * Local-only engine sync (NO server write), used when the app already
+     * knows the engine from the session being resumed (threaded through
+     * navigation) so the orchestrator selector flips immediately instead of
+     * waiting for a status round-trip. Mirrors the canonical-id mapping in
+     * [syncEngineFromStatus]; an unknown/null engine is a no-op.
+     */
+    fun syncEngine(engine: String?) {
+        val canonical = when {
+            engine == "pi-cli" -> OrchestratorEngine.PI
+            engine != null && OrchestratorEngine.isKnown(engine) -> engine
+            else -> null
+        }
+        if (canonical != null && canonical != _activeEngine.value) {
+            _activeEngine.value = canonical
+        }
+    }
+
     fun clearError() {
         _errorMessage.value = null
     }
