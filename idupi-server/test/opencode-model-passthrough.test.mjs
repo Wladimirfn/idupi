@@ -34,7 +34,7 @@ const source = readFileSync(SERVER_FILE, "utf8");
 function modelSwitchRoute() {
     const at = source.indexOf('pathname === "/api/v1/model/switch"');
     assert.notEqual(at, -1, "no se encontró la ruta de cambio de modelo");
-    return source.slice(at, at + 2600);
+    return source.slice(at, at + 4400);
 }
 
 test("model/switch stores the selection for OpenCode instead of calling piRpc.setModel", () => {
@@ -44,8 +44,8 @@ test("model/switch stores the selection for OpenCode instead of calling piRpc.se
     const branchEnd = body.indexOf("} else {", ocAt);
     assert.notEqual(branchEnd, -1);
     const branch = body.slice(ocAt, branchEnd);
-    assert.match(branch, /activeOpenCodeModel\s*=\s*\{\s*model:\s*modelName/,
-        "la selección debe recordarse en activeOpenCodeModel");
+    assert.match(branch, /activeOpenCodeModel\s*=\s*\{\s*model:\s*normalizedOpenCodeModel/,
+        "la selección debe recordarse en activeOpenCodeModel con el id normalizado");
     assert.ok(!/piRpc\.setModel/.test(branch),
         "OpenCode no puede caer en la rama Pi: la UI mostraba el modelo pero el CLI nunca lo recibía");
 });
@@ -54,6 +54,36 @@ test("model/switch keeps the Pi branch for Pi", () => {
     const body = modelSwitchRoute();
     assert.match(body, /piRpc\.setModel\(modelName, providerName\)/,
         "Pi sigue aplicando el modelo vía setModel");
+});
+
+test("model/switch normalizes and validates the OpenCode model against the catalog before storing", () => {
+    const body = modelSwitchRoute();
+    const ocAt = body.indexOf('currentStatus.activeEngine === "opencode"');
+    const branchEnd = body.indexOf("} else {", ocAt);
+    const branch = body.slice(ocAt, branchEnd);
+    assert.match(branch, /normalizeOpenCodeModel\(modelName, providerName\)/,
+        "el id se normaliza antes de guardarse: un id que ya lleva el proveedor NUNCA se vuelve a prefijar");
+    assert.match(branch, /getAvailableModels\(\)/,
+        "la selección se valida contra el catálogo real de opencode antes de recordarse");
+    assert.match(branch, /no existe en opencode models/,
+        "un modelo inexistente falla rápido con mensaje claro, sin llegar a spawnear un hang");
+});
+
+test("model/switch no longer logs a doubled provider prefix", () => {
+    const body = modelSwitchRoute();
+    assert.ok(!/Aplicando modelo único: \$\{providerName \|\| 'auto'\}\/\$\{modelName\}/.test(body),
+        "el log no puede imprimir provider + modelo-que-ya-lleva-provider (opencode/opencode/x)");
+    assert.match(body, /displayModelId/, "el log imprime el id normalizado (sin prefijo duplicado)");
+});
+
+test("execOpenCodeDb degrades a broken JSON reply to an empty result with a warning instead of failing the scan", () => {
+    const at = source.indexOf("function execOpenCodeDb");
+    assert.notEqual(at, -1, "no se encontró execOpenCodeDb");
+    const fn = source.slice(at, at + 2200);
+    assert.match(fn, /OpenCode DB JSON Parse Warning/,
+        "un JSON roto/vacío registra un aviso estructurado (log + continue)");
+    assert.match(fn, /resolve\(\[\]\)/,
+        "la respuesta degradada resuelve a lista vacía en vez de rechazar y 502 el scan");
 });
 
 // --- 2. Resume classification ----------------------------------------------
