@@ -42,7 +42,7 @@ import {
 import { handleScreenRoute, shutdownScreen } from "./lib/screen-routes.mjs";
 import { resolveProjectFilePath } from "./lib/project-files.mjs";
 import { isProtectedSystemPath } from "./lib/system-paths.mjs";
-import { claudeArgs, openCodeArgs } from "./lib/agent-cmdline.mjs";
+import { claudeArgs, openCodeArgs, normalizeOpenCodeModel } from "./lib/agent-cmdline.mjs";
 import { mergePiModelCatalogs } from "./lib/pi-models.mjs";
 // Phase 3 (fix-ui-request-selection): pure normalizers that turn each
 // engine's raw UI-request event into the canonical shape the registry
@@ -1293,7 +1293,15 @@ function execOpenCodeDb(sql) {
                 try {
                     resolve(JSON.parse(stdout));
                 } catch (parseErr) {
-                    reject(parseErr);
+                    // Guard del scan: `opencode db` puede devolver JSON vacío o
+                    // incompleto cuando el CLI está ocupado o imprime un aviso en
+                    // stdout ("Unexpected end of JSON input" observado en el log
+                    // real). Un scan de sesiones no debe fallar (502) por una
+                    // respuesta ruidosa: se registra el aviso estructurado y se
+                    // degrada a resultado vacío -- las queries de acá siempre
+                    // devuelven arrays, así que [] es un resultado legítimo.
+                    console.warn(`[OpenCode DB JSON Parse Warning] ${parseErr.message} — sql="${String(sql).slice(0, 90)}" salida="${String(stdout).slice(0, 140)}"`);
+                    resolve([]);
                 }
             }
         );
@@ -3485,10 +3493,19 @@ const handleRequest = async (req, res) => {
                     if (found) providerName = found.provider;
                 }
 
+                const prevOperatingAi = currentStatus.operatingAi;
+                const prevOperatingProvider = currentStatus.operatingProvider;
                 currentStatus.operatingAi = modelName;
                 if (providerName) currentStatus.operatingProvider = providerName;
 
-                console.log(`[Model Switch] Aplicando modelo único: ${providerName || 'auto'}/${modelName}...`);
+                // The log used to print provider + '/' + model verbatim, which
+                // showed a DOUBLED prefix for OpenCode catalog ids that already
+                // carry their provider ("opencode/opencode/muse-..."). Print the
+                // normalized single id instead of the misleading double.
+                const displayModelId = modelName.includes("/")
+                    ? modelName
+                    : (providerName ? `${providerName}/${modelName}` : modelName);
+                console.log(`[Model Switch] Aplicando modelo único: ${displayModelId}...`);
 
                 if (currentStatus.activeEngine === "claude") {
                     // Se recuerda el modelo elegido para pasarlo como --model en cada
@@ -3500,11 +3517,26 @@ const handleRequest = async (req, res) => {
                 } else if (currentStatus.activeEngine === "opencode") {
                     // OpenCode también es un CLI por mensaje: el modelo se recuerda y se
                     // pasa como -m en cada invocación (ver rama "opencode" de
-                    // /api/v1/chat/send). Antes caía en la rama Pi y configuraba el
-                    // motor Pi sin que OpenCode cambiara jamás: la UI mostraba el
-                    // modelo elegido pero el CLI seguía usando el suyo por defecto.
-                    activeOpenCodeModel = { model: modelName, provider: providerName || null };
-                    console.log(`[Model Switch] OpenCode CLI usará -m ${modelName} en el próximo mensaje.`);
+                    // /api/v1/chat/send). El id se normaliza (los ids del catálogo ya
+                    // llevan el proveedor; prefijarlo de nuevo construye
+                    // "opencode/opencode/x", que el CLI no resuelve) y se valida contra
+                    // el catálogo real ANTES de recordarlo: un modelo inexistente falla
+                    // rápido con un mensaje claro en vez de llegar al spawn y colgarse.
+                    const normalizedOpenCodeModel = normalizeOpenCodeModel(modelName, providerName);
+                    const allModels = getAvailableModels();
+                    const catalogHasModel = allModels.some(
+                        m => String(m.id || "").toLowerCase() === normalizedOpenCodeModel.toLowerCase()
+                    );
+                    if (!catalogHasModel) {
+                        console.warn(`[Model Switch] Modelo "${normalizedOpenCodeModel}" no existe en opencode models; se ignora el switch.`);
+                        currentStatus.operatingAi = prevOperatingAi;
+                        currentStatus.operatingProvider = prevOperatingProvider;
+                        res.writeHead(400, { "Content-Type": "application/json" });
+                        res.end(JSON.stringify({ error: `El modelo "${normalizedOpenCodeModel}" no existe en opencode models.` }));
+                        return;
+                    }
+                    activeOpenCodeModel = { model: normalizedOpenCodeModel, provider: providerName || null };
+                    console.log(`[Model Switch] OpenCode CLI usará -m ${normalizedOpenCodeModel} en el próximo mensaje.`);
                 } else {
                     piRpc.setModel(modelName, providerName);
                 }
@@ -4622,7 +4654,24 @@ function runOpenCodeCli(projPath, sessionId, message, openCodeModel = null) {
         // to the resolved real executable -- a crafted sessionId or message
         // can no longer become cmd.exe syntax.
         const opencodeExe = resolveOpenCodeExePath();
-        const args = openCodeArgs({ model: openCodeModel?.model || "", provider: openCodeModel?.provider || "", sessionId, message });
+
+        // The model id is normalized BEFORE the argv is built: an id that
+        // already carries its provider must never be provider-prefixed again
+        // ("opencode/opencode/x" cannot be resolved and left the CLI stuck).
+        // A doubled first segment is rejected outright -- that shape is the
+        // known-bad provider+model-that-contains-provider combination.
+        let openCodeModelArg = openCodeModel;
+        if (openCodeModel && openCodeModel.model) {
+            const normalizedModel = normalizeOpenCodeModel(openCodeModel.model, openCodeModel.provider || "");
+            const segments = normalizedModel.split("/");
+            if (segments.length >= 3 && segments[0].toLowerCase() === segments[1].toLowerCase()) {
+                publishChatEvent(CHAT_EVENTS.THINKING, { active: false });
+                reject(new Error(`Modelo inválido "${normalizedModel}": prefijo de proveedor duplicado.`));
+                return;
+            }
+            openCodeModelArg = { model: normalizedModel, provider: openCodeModel.provider || null };
+        }
+        const args = openCodeArgs({ model: openCodeModelArg?.model || "", provider: openCodeModelArg?.provider || "", sessionId, message });
 
         console.log(`[OpenCode CLI Spawn] Iniciando OpenCode en ${projPath}: ${opencodeExe}`);
 
@@ -4646,6 +4695,22 @@ function runOpenCodeCli(projPath, sessionId, message, openCodeModel = null) {
             stdio: ["pipe", "pipe", "pipe"],
             env: process.env
         });
+
+        // CRITICAL hang fix (verified empirically against opencode-ai 1.18.27
+        // on Windows): `opencode run` BLOCKS at startup while stdin is an
+        // OPEN pipe -- the CLI waits on stdin before the session is even
+        // created, emits nothing, and never exits, so the 'close' listener
+        // below never fires and the only resolution was the 300s
+        // AGENT_CLI_TIMEOUT_MS taskkill ("pensando para siempre" en la app).
+        // EOF-ing stdin right after spawn unblocks startup (probe: piped
+        // stdin + child.stdin.end() -> exit 0 y stream normal; stdin abierto
+        // -> hang en init con cero salida). Trade-off: the Phase-3
+        // ui_response stdin delivery can no longer reach the child -- the
+        // writer guard below already logs when stdin is destroyed, and
+        // `--auto` denies question/permission prompts by default anyway.
+        if (child.stdin) {
+            try { child.stdin.end(); } catch (err) { console.warn(`[OpenCode CLI] stdin close falló: ${err?.message || err}`); }
+        }
 
         // MCP servers OpenCode spawns are its children -- the tree-kill still
         // reaches every descendant from the real root.
