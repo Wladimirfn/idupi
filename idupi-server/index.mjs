@@ -43,6 +43,148 @@ import { handleScreenRoute, shutdownScreen } from "./lib/screen-routes.mjs";
 import { resolveProjectFilePath } from "./lib/project-files.mjs";
 import { isProtectedSystemPath } from "./lib/system-paths.mjs";
 import { claudeArgs, openCodeArgs } from "./lib/agent-cmdline.mjs";
+import { mergePiModelCatalogs } from "./lib/pi-models.mjs";
+// Phase 3 (fix-ui-request-selection): pure normalizers that turn each
+// engine's raw UI-request event into the canonical shape the registry
+// expects. Imported once here so the engine adapters in this file (Pi RPC
+// handler; future Claude/OpenCode wiring) and any unit test can share the
+// same translator.
+import { normalizeUiRequest as normalizePiUiRequest } from "./lib/orchestrator/engines/pi.mjs";
+import { normalizeUiRequest as normalizeClaudeUiRequest } from "./lib/orchestrator/engines/claude.mjs";
+import { normalizeUiRequest as normalizeOpenCodeUiRequest } from "./lib/orchestrator/engines/opencode.mjs";
+
+// PendingUiRequestRegistry (fix-ui-request-selection, Phase 1): a single
+// session-bound registry owns the select/confirm/input lifecycle for every
+// engine CLI. The 120s expiry timer auto-approves requests so old APKs and
+// quiet clients never reach the 300s `AGENT_CLI_TIMEOUT_MS` taskkill. The
+// `IDUPI_UI_REQUEST_PHASE_A` env var gates the Phase A unblock contract;
+// default ON, set to "0" to disable (Phase B will flip this off once the app
+// is shipping). Phase 2 wires the SSE emit + POST route on top of the same
+// registry.
+import { UI_REQUEST_DEADLINE_MS } from "./lib/cli-constants.mjs";
+import {
+    PendingUiRequestRegistry,
+    UI_REQUEST_METHODS,
+    validateUiAnswer,
+} from "./lib/ui-request-registry.mjs";
+
+const IDUPI_UI_REQUEST_PHASE_A = process.env.IDUPI_UI_REQUEST_PHASE_A !== "0"; // default ON
+const uiRequestRegistry = new PendingUiRequestRegistry();
+
+// Phase 2 transport (fix-ui-request-selection): on register, broadcast a
+// `ui_request` SSE frame so any subscribed chat app can render the dialog
+// with the same token it must echo back on POST /api/v1/chat/ui-response.
+// The engine adapters (Phase 3) are the callers of register(); the wiring
+// here only cares that the registry's `register` event ends up on the SSE bus.
+uiRequestRegistry.on("register", ({ entry }) => {
+    publishChatEvent(CHAT_EVENTS.UI_REQUEST, {
+        requestId: entry.requestId,
+        token: entry.token,
+        method: entry.method,
+        title: entry.title,
+        message: entry.message,
+        options: entry.options,
+        // Server-reported deadline so the countdown renders correctly even if
+        // the app clock is skewed relative to the server clock. Positive only;
+        // 0 means "already expired" (impossible at register time, kept for
+        // symmetry with the spec's deadlineMs contract).
+        deadlineMs: Math.max(0, entry.expiresAt - Date.now()),
+        sessionId: entry.sessionId,
+        engine: entry.engine,
+    });
+});
+
+// Phase 1 fallback (kept + extended for Phase 2 transport): the 120s timer
+// fires `expire` with the blanket auto-approve decision. The log line is the
+// audit trail the spec asks for ("Expiry MUST yield a terminal, logged
+// resolution"); the SSE frame is what tells the app to drop the dialog so a
+// re-render after a background roundtrip doesn't keep the spinner alive.
+uiRequestRegistry.on("expire", ({ entry, decision }) => {
+    console.log(
+        `[ui-request] AUTO-APPROVE method=${entry.method} ` +
+        `sessionId=${entry.sessionId} requestId=${entry.requestId} ` +
+        `resolution=${decision.source} value=${JSON.stringify(decision.value)} ` +
+        `(phaseA=${IDUPI_UI_REQUEST_PHASE_A ? "on" : "off"})`,
+    );
+    // Phase 3 (fix-ui-request-selection): expiry is a TERMINAL decision — the
+    // engine must receive it on stdin, otherwise a pending ask_user_question
+    // keeps Pi's dialog open and rides into the 300s taskkill. writeUiResponseToStdin
+    // IS the guard: it returns false when no writer is registered for this
+    // requestId (already answered, child closed, or the engine had no id to
+    // correlate), and the entry is terminal either way. The writer is cleared
+    // so a late POST on the same requestId short-circuits to 404.
+    const stdinOk = writeUiResponseToStdin(entry.requestId, decision.value);
+    clearUiRequestStdinWriter(entry.requestId);
+    if (!stdinOk) {
+        console.warn(
+            `[ui-request] expire sin writer de stdin para ${entry.requestId} ` +
+            `(engine=${entry.engine}) — el diálogo del motor puede seguir abierto hasta el taskkill`,
+        );
+    }
+    publishChatEvent(CHAT_EVENTS.UI_REQUEST_RESOLVED, {
+        requestId: entry.requestId,
+        sessionId: entry.sessionId,
+        engine: entry.engine,
+        resolution: decision.source, // "auto_approve"
+        value: decision.value,
+    });
+});
+console.log(
+    `[ui-request] registry ready: deadline=${UI_REQUEST_DEADLINE_MS}ms, ` +
+    `phaseA=${IDUPI_UI_REQUEST_PHASE_A ? "on (default)" : "off (IDUPI_UI_REQUEST_PHASE_A=0)"}`,
+);
+
+// Phase 3 (fix-ui-request-selection): map a registered requestId to a writer
+// function that knows how to deliver the answer to that specific engine's
+// stdin. Populated by each engine adapter at register-time (Pi captures
+// `this.child.stdin`; Claude/OpenCode retain the child they just spawned
+// with `["pipe","pipe","pipe"]`). Cleared after a successful write, and on
+// the engine child 'close' so a dead child never gets a late answer.
+//
+// Lives outside the registry on purpose: the registry's contract is
+// "lifecycle only — no I/O" (see ui-request-registry.mjs doc-block). Keeping
+// the writer seam here means a future engine that uses a websocket, an
+// in-process queue, or a fake for tests can plug in without touching the
+// registry module.
+const uiRequestStdinWriters = new Map(); // requestId → (value) => boolean
+
+function setUiRequestStdinWriter(requestId, writer) {
+    if (typeof writer === "function") uiRequestStdinWriters.set(requestId, writer);
+}
+
+function clearUiRequestStdinWriter(requestId) {
+    uiRequestStdinWriters.delete(requestId);
+}
+
+function writeUiResponseToStdin(requestId, value) {
+    const writer = uiRequestStdinWriters.get(requestId);
+    if (!writer) return false;
+    try {
+        return writer(value) === true;
+    } catch (err) {
+        console.warn(`[ui-request] stdin write failed for ${requestId}: ${err?.message || err}`);
+        return false;
+    }
+}
+
+/**
+ * Drop every writer bound to a specific engine child. Called from the
+ * child 'close' handlers in runClaudeCli / runOpenCodeCli / PiRpcManager so a
+ * late POST never tries to write to a dead pipe. Each writer carries a
+ * `__child` back-pointer so we can identify its owner without introspecting
+ * the closure.
+ */
+function clearUiRequestStdinWritersForChild(child) {
+    if (!child) return;
+    // Collect first, then delete: mutating a Map while iterating it is
+    // well-defined per the spec, but the snapshot is clearer and survives
+    // any future refactor that swaps the container.
+    const toDelete = [];
+    for (const [requestId, writer] of uiRequestStdinWriters) {
+        if (writer && writer.__child === child) toDelete.push(requestId);
+    }
+    for (const requestId of toDelete) uiRequestStdinWriters.delete(requestId);
+}
 
 // Orchestrator delegation: engines resolve via resolveEngine(); per-route
 // helpers in lib/orchestrator/routes.mjs own per-engine isolation, .bak, and
@@ -214,9 +356,10 @@ function getAvailableModels() {
         return claudeModels;
     }
 
-    // Pi CLI models (~/.pi/agent/models-store.json)
+    // Pi CLI models (~/.pi/agent/models-store.json + ~/.pi/agent/models.json)
     const modelsStorePath = join(homedir(), ".pi", "agent", "models-store.json");
-    let models = [];
+    const modelsJsonPath = join(homedir(), ".pi", "agent", "models.json");
+    const storeModels = [];
 
     try {
         if (existsSync(modelsStorePath)) {
@@ -226,7 +369,7 @@ function getAvailableModels() {
                 if (providerObj && Array.isArray(providerObj.models)) {
                     for (const m of providerObj.models) {
                         if (m && m.id) {
-                            models.push({
+                            storeModels.push({
                                 id: m.id,
                                 name: m.name || m.id,
                                 provider: m.provider || providerKey
@@ -239,6 +382,40 @@ function getAvailableModels() {
     } catch (e) {
         console.error("[Models Store Error]", e.message);
     }
+
+    // Local/self-hosted models (local/ornith, local/qwen38) live in
+    // ~/.pi/agent/models.json under { providers: { <key>: { models: [...] } } }
+    // — the same providers[].models[] shape the store uses, but with the
+    // `providers` wrapper. A missing/corrupt file must not crash the catalog.
+    const localModels = [];
+    try {
+        if (existsSync(modelsJsonPath)) {
+            const data = JSON.parse(readFileSync(modelsJsonPath, "utf8"));
+            const providers = (data && typeof data === "object" && data.providers && typeof data.providers === "object")
+                ? data.providers
+                : {};
+            for (const providerKey of Object.keys(providers)) {
+                const providerObj = providers[providerKey];
+                if (providerObj && Array.isArray(providerObj.models)) {
+                    for (const m of providerObj.models) {
+                        if (m && m.id) {
+                            localModels.push({
+                                id: m.id,
+                                name: m.name || m.id,
+                                provider: m.provider || providerKey
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    } catch (e) {
+        console.error("[Models JSON Error]", e.message);
+    }
+
+    // Store entries first; local entries only fill provider/model pairs the
+    // store does not already list.
+    let models = mergePiModelCatalogs(storeModels, localModels);
 
     // No inventamos un catálogo de modelos Pi CLI. Si ~/.pi/agent/models-store.json
     // no existe o no tiene entradas, reportamos como mínimo el modelo activo real,
@@ -1764,6 +1941,15 @@ class PiRpcManager {
         this.currentSessionPath = null;
         this.currentModelId = null;
         this.currentProvider = null;
+        /**
+         * Model switch requested while a turn was in flight. Applied
+         * deterministically at the next turn boundary (agent_end /
+         * auto_retry_end / idle-watchdog force-end) by
+         * _maybeApplyPendingModelChange(). Never applies mid-turn: killing a
+         * busy child would destroy the in-flight answer.
+         * @type {{modelId: string, provider: string|null} | null}
+         */
+        this.pendingModelChange = null;
         this.thinkingAnnounced = false;
         this.pendingTimeoutTimer = null;
         /**
@@ -1817,21 +2003,86 @@ class PiRpcManager {
         });
     }
 
+    /**
+     * Applies a model switch to the Pi RPC child.
+     *
+     * The child is PERSISTENT across turns, so a switch only takes effect on
+     * the next spawn (ensureStarted() builds --provider/--model from
+     * currentProvider/currentModelId). When Pi is idle we restart the child
+     * immediately; when a turn is in flight we never kill it mid-answer (that
+     * would destroy the in-flight result) — the change is queued in
+     * pendingModelChange and applied deterministically at the next turn
+     * boundary by _maybeApplyPendingModelChange(). This makes the previously
+     * fictional "encolado" log line real: before this fix the vars changed
+     * but the child never restarted, so a busy switch silently never applied.
+     *
+     * A request without a provider CLEARS the stale one (provider is not
+     * carried over from a previous selection), and the status surfaces follow
+     * the same rule so the app never shows a provider that is no longer in
+     * effect.
+     *
+     * @param {string} modelId
+     * @param {string|null} [provider]
+     * @returns {{ok: true, applied: boolean, queued?: boolean}}
+     */
     setModel(modelId, provider = null) {
-        const changed = (this.currentModelId !== modelId) || (provider && this.currentProvider !== provider);
+        const providerCleared = provider === null || provider === undefined || provider === "";
+        const effectiveProvider = providerCleared ? null : provider;
+
+        const modelChanged = this.currentModelId !== modelId;
+        const providerChanged = (this.currentProvider ?? null) !== effectiveProvider;
+        const changed = modelChanged || providerChanged;
+
+        // Apply the new values immediately: the status surfaces and the next
+        // ensureStarted() both read these fields, and the stale provider must
+        // never survive a provider-less switch.
         this.currentModelId = modelId;
-        if (provider) this.currentProvider = provider;
+        this.currentProvider = effectiveProvider;
 
         currentStatus.operatingAi = modelId;
-        if (provider) currentStatus.operatingProvider = provider;
+        currentStatus.operatingProvider = effectiveProvider;
 
-        if (changed && this.child && !this.child.killed) {
-            if (this.isBusy) {
-                console.warn(`[IDUPI Pi RPC] Cambio de modelo ${provider ? provider + '/' : ''}${modelId} encolado - hay un mensaje en vuelo, se aplicará al terminar`);
-                // Don't kill busy child - let current prompt finish, next ensureStarted will use new model
-                return;
-            }
-            console.log(`[IDUPI Pi RPC] Reiniciando subproceso Pi CLI para aplicar modelo único: ${provider ? provider + '/' : ''}${modelId}`);
+        if (!changed) {
+            return { ok: true, applied: false };
+        }
+
+        if (this.isBusy) {
+            // Never kill a busy child. Queue the change; the turn-boundary
+            // hook applies it right after the in-flight answer completes.
+            this.pendingModelChange = { modelId, provider: effectiveProvider };
+            console.warn(`[IDUPI Pi RPC] Cambio de modelo ${effectiveProvider ? effectiveProvider + '/' : ''}${modelId} encolado - hay un mensaje en vuelo, se aplicará al terminar la consulta`);
+            return { ok: true, applied: false, queued: true };
+        }
+
+        if (this.child && !this.child.killed) {
+            console.log(`[IDUPI Pi RPC] Reiniciando subproceso Pi CLI para aplicar modelo único: ${effectiveProvider ? effectiveProvider + '/' : ''}${modelId}`);
+            this.child.kill("SIGTERM");
+            this.child = null;
+            return { ok: true, applied: true };
+        }
+        // No live child yet (or it just closed): the next ensureStarted() picks
+        // up the new model on spawn — nothing to restart.
+        return { ok: true, applied: false };
+    }
+
+    /**
+     * Drains a queued model switch once Pi is idle. Called from every turn
+     * boundary (agent_end completion, auto_retry_end, idle-watchdog force-end)
+     * so the restart is deterministic: the change applies exactly when the
+     * in-flight answer is done, never mid-turn.
+     *
+     * Safe to call anywhere: it is a no-op without a queued change, and it
+     * re-checks isBusy so a brand-new turn that started between the boundary
+     * and this call is never disturbed (the change stays queued for the next
+     * boundary).
+     */
+    _maybeApplyPendingModelChange() {
+        if (!this.pendingModelChange) return;
+        if (this.isBusy) return; // another turn started — re-check at the next boundary
+        const pending = this.pendingModelChange;
+        this.pendingModelChange = null;
+        if (this.child && !this.child.killed) {
+            console.log(`[IDUPI Pi RPC] Aplicando modelo encolado: ${pending.provider ? pending.provider + '/' : ''}${pending.modelId}`);
             this.child.kill("SIGTERM");
             this.child = null;
         }
@@ -1870,6 +2121,11 @@ class PiRpcManager {
 
         this.child.on("close", (code) => {
             console.log(`[IDUPI Pi RPC] Proceso cerrado con código ${code}`);
+            // Phase 3 (fix-ui-request-selection): drop any pending stdin
+            // writers bound to this specific child so a late POST never
+            // tries to write to a dead pipe. The registry's 120s timer
+            // still owns the entry's terminal transition.
+            try { clearUiRequestStdinWritersForChild(this.child); } catch {}
             this.child = null;
             if (this.pendingReject) {
                 clearTimeout(this.pendingTimeoutTimer);
@@ -1921,6 +2177,7 @@ class PiRpcManager {
             activeTask.output = timeoutMsg;
             publishChatEvent(CHAT_EVENTS.MESSAGE_END, { text: timeoutMsg });
             settleResolve(timeoutMsg);
+            this._maybeApplyPendingModelChange();
         }, AGENT_CLI_TIMEOUT_MS);
     }
 
@@ -2234,6 +2491,74 @@ class PiRpcManager {
                 }
             }
 
+            // Phase 3 (fix-ui-request-selection, engine adapters): Pi's
+            // `extension_ui_request` carries every interactive prompt as
+            // { method: "select" | "confirm" | "input", ... }. The handler
+            // above only routes `setStatus`; the other methods must reach
+            // the PendingUiRequestRegistry so the chat app gets a
+            // `ui_request` SSE frame with a token it can echo back on POST
+            // /api/v1/chat/ui-response. Pi's persistent RPC child already
+            // uses `["pipe","pipe","pipe"]` (the default), so we just retain
+            // `this.child.stdin` as the answer sink.
+            if (event.type === "extension_ui_request"
+                && event.method !== "setStatus"
+                && typeof this.child?.stdin?.write === "function") {
+                const normalized = normalizePiUiRequest(event);
+                if (normalized) {
+                    const piSession = currentActivitySession("pi");
+                    const reg = uiRequestRegistry.register({
+                        sessionId: piSession,
+                        engine: "pi",
+                        method: normalized.method,
+                        options: normalized.options,
+                        title: normalized.title,
+                        message: normalized.message,
+                    });
+                    // Pi correlates a UI answer by the `id` it put on the
+                    // `extension_ui_request` frame (rpc-mode handleInputLine:
+                    // `pendingExtensionRequests.get(response.id)`). Without an
+                    // id no response frame can ever resolve the dialog, so we
+                    // do not install a writer — the registry entry still gets
+                    // its SSE frame and terminal expiry, but there is nothing
+                    // to write to stdin.
+                    const piRequestId = typeof event.id === "string" ? event.id : null;
+                    if (piRequestId === null) {
+                        console.warn(`[ui-request] Pi extension_ui_request sin id; no se puede responder por stdin (requestId=${reg.requestId})`);
+                    } else {
+                        const writer = (value) => {
+                            // Pi consumes JSON-RPC frames on stdin; a UI answer
+                            // is a correlated `extension_ui_response` frame
+                            // addressed to the PI request id, NOT the registry
+                            // requestId. Per rpc-mode's parseResponse:
+                            //   select/input → { type, id, value }   (option text / free text)
+                            //   confirm      → { type, id, confirmed } (boolean)
+                            //   expiry cancel→ { type, id, cancelled: true } (confirm/input blanket cancel)
+                            // `__child` lets the close-handler drop this writer
+                            // when the persistent RPC child is replaced.
+                            const ch = this.child;
+                            if (!ch || ch.killed || !ch.stdin || ch.stdin.destroyed) return false;
+                            let payload;
+                            if (value && typeof value === "object" && value.cancelled === true) {
+                                payload = { type: "extension_ui_response", id: piRequestId, cancelled: true };
+                            } else if (normalized.method === "confirm") {
+                                payload = { type: "extension_ui_response", id: piRequestId, confirmed: value === true };
+                            } else {
+                                payload = { type: "extension_ui_response", id: piRequestId, value };
+                            }
+                            try {
+                                ch.stdin.write(JSON.stringify(payload) + "\n");
+                                return true;
+                            } catch (err) {
+                                console.warn(`[ui-request] Pi stdin write failed for ${reg.requestId}: ${err?.message || err}`);
+                                return false;
+                            }
+                        };
+                        writer.__child = this.child;
+                        setUiRequestStdinWriter(reg.requestId, writer);
+                    }
+                }
+            }
+
             // Pi emits agent_end BEFORE an automatic retry as well, flagged
             // with willRetry (dist/core/agent-session.d.ts). Treating that as
             // the end of the turn closed the request on an attempt that had
@@ -2269,6 +2594,7 @@ class PiRpcManager {
                 this.thinkingAnnounced = false;
                 publishChatEvent(CHAT_EVENTS.THINKING, { active: false });
                 reject(new Error(event.finalError || `Pi agotó los reintentos en el intento ${event.attempt}`));
+                this._maybeApplyPendingModelChange();
             }
 
             if (event.type === "agent_end" && event.willRetry !== true && this.pendingResolve) {
@@ -2311,6 +2637,10 @@ class PiRpcManager {
                 this.pendingResolve = null;
                 this.pendingReject = null;
                 resolve(resultText);
+                // Turn boundary: apply a queued model switch now that Pi is
+                // idle (safe — the answer is delivered, the child restarts on
+                // the next ensureStarted with the new --provider/--model).
+                this._maybeApplyPendingModelChange();
             }
 
             noteUnmappedRpcEvent(event.type, event);
@@ -2727,6 +3057,99 @@ const handleRequest = async (req, res) => {
         const payload = clientTaskId ? taskRegistry.get(clientTaskId) : activeTask;
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(payload));
+        return;
+    }
+
+    // 1d. Respuesta autenticada a un UI Request pendiente (fix-ui-request-selection,
+    //     Phase 2 transport). El cuerpo lleva el valor exacto que el usuario eligió
+    //     junto con el token y sessionId emitidos en el SSE `ui_request`. El
+    //     registry valida TODO (token === entry.token === currentTokenFor(sessionId),
+    //     sessionId === entry.sessionId, exact-value por método) ANTES de tocar el
+    //     estado: un 400/404/409 nunca llega a _terminate, así que el timer de
+    //     120s sigue siendo capaz de auto-aprobar después. La escritura a
+    //     `child.stdin` se agrega en Phase 3 (spawn pipe para Claude/OpenCode);
+    //     por ahora este handler resuelve la entrada y emite `ui_request_resolved`
+    //     para que la app cierre el diálogo.
+    if (pathname.startsWith("/api/v1/chat/ui-response/") && req.method === "POST") {
+        const requestId = decodeURIComponent(
+            pathname.slice("/api/v1/chat/ui-response/".length),
+        );
+        if (!requestId) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "requestId requerido en la URL" }));
+            return;
+        }
+        let raw = "";
+        req.on("data", chunk => { raw += chunk; });
+        req.on("end", () => {
+            let body;
+            try {
+                body = raw ? JSON.parse(raw) : {};
+            } catch (err) {
+                res.writeHead(400, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ error: `body JSON inválido: ${err.message}` }));
+                return;
+            }
+            const { value, token, sessionId } = body || {};
+            // Validación de presencia ANTES del registry: una `token` faltante no
+            // es un "token mismatch" (409), es un body mal formado (400). Misma
+            // idea para sessionId y value.
+            if (typeof sessionId !== "string" || sessionId.length === 0) {
+                res.writeHead(400, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ error: "sessionId es requerido" }));
+                return;
+            }
+            if (typeof token === "undefined" || token === null) {
+                res.writeHead(400, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ error: "token es requerido" }));
+                return;
+            }
+            if (typeof value === "undefined") {
+                res.writeHead(400, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ error: "value es requerido" }));
+                return;
+            }
+            const result = uiRequestRegistry.resolve({ requestId, token, sessionId, value });
+            if (!result.ok) {
+                // 400 = exact-value rechazado; 404 = requestId desconocido;
+                // 409 = token stale o sessionId no coincide. El registry ya
+                // blanqueó el código, solo lo servimos al cliente.
+                res.writeHead(result.status, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ error: result.reason }));
+                return;
+            }
+            // Phase 3 (engine adapters): deliver the validated answer to the
+            // engine's stdin as ONE JSON line. The writer was installed by
+            // the adapter that produced this requestId (Pi captures the
+            // persistent RPC child; Claude/OpenCode retain the per-message
+            // spawn). A failure here is logged but does NOT undo the
+            // resolution — the entry is already terminal, the worst case is
+            // the engine's 300s taskkill. The writer is cleared either way
+            // so a re-POST on the same requestId short-circuits to 404.
+            const stdinOk = writeUiResponseToStdin(requestId, result.value);
+            clearUiRequestStdinWriter(requestId);
+            // Resuelto por el cliente. Espejamos la transición terminal en el bus
+            // SSE para que la app descarte el diálogo (mismo canal que usa el
+            // expire listener, con `resolution: "client"` para distinguir).
+            publishChatEvent(CHAT_EVENTS.UI_REQUEST_RESOLVED, {
+                requestId,
+                sessionId,
+                engine: result.entry.engine,
+                resolution: "client",
+                value: result.value,
+            });
+            console.log(
+                `[ui-request] CLIENT-RESOLVED method=${result.entry.method} ` +
+                `sessionId=${sessionId} requestId=${requestId} ` +
+                `value=${JSON.stringify(result.value)}`,
+            );
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+                status: "resolved",
+                requestId,
+                value: result.value,
+            }));
+        });
         return;
     }
 
@@ -3881,14 +4304,19 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
             child = spawn(target.exe, args, {
                 cwd: projPath,
                 windowsHide: true,
-                stdio: ["ignore", "pipe", "pipe"],
+                // Phase 3 (fix-ui-request-selection): stdin is now pipe so the
+                // POST handler can deliver the user's UI answer back into
+                // the engine as one JSON line. `bypassPermissions` at launch
+                // covers permission prompts; this pipe covers interactive
+                // questions that bypass does not.
+                stdio: ["pipe", "pipe", "pipe"],
                 env: process.env
             });
         } else if (target.js) {
             child = spawn(process.execPath, [target.js, ...args], {
                 cwd: projPath,
                 windowsHide: true,
-                stdio: ["ignore", "pipe", "pipe"],
+                stdio: ["pipe", "pipe", "pipe"],
                 env: process.env
             });
         } else if (target.cmdShim) {
@@ -3898,14 +4326,14 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
             child = spawn("cmd.exe", ["/c", target.cmdShim, ...args], {
                 cwd: projPath,
                 windowsHide: true,
-                stdio: ["ignore", "pipe", "pipe"],
+                stdio: ["pipe", "pipe", "pipe"],
                 env: process.env
             });
         } else {
             child = spawn(target.cmd, args, {
                 cwd: projPath,
                 windowsHide: true,
-                stdio: ["ignore", "pipe", "pipe"],
+                stdio: ["pipe", "pipe", "pipe"],
                 env: process.env
             });
         }
@@ -4046,6 +4474,39 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
                         activeTask.output = fullOutput;
                     }
                 }
+
+                // 6. Phase 3 (fix-ui-request-selection): Claude may emit an
+                // interactive question despite `--permission-mode
+                // bypassPermissions` (e.g. `ask_user_question`). Normalize
+                // and register so the chat app gets a `ui_request` SSE frame
+                // and can POST its answer back to the child's stdin.
+                const claudeUi = normalizeClaudeUiRequest(event);
+                if (claudeUi && typeof child.stdin?.write === "function" && !child.killed) {
+                    const reg = uiRequestRegistry.register({
+                        sessionId: currentActivitySession("claude"),
+                        engine: "claude",
+                        method: claudeUi.method,
+                        options: claudeUi.options,
+                        title: claudeUi.title,
+                        message: claudeUi.message,
+                    });
+                    const writer = (value) => {
+                        if (!child || child.killed || !child.stdin || child.stdin.destroyed) return false;
+                        try {
+                            child.stdin.write(JSON.stringify({
+                                type: "ui_response",
+                                requestId: reg.requestId,
+                                value,
+                            }) + "\n");
+                            return true;
+                        } catch (err) {
+                            console.warn(`[ui-request] Claude stdin write failed for ${reg.requestId}: ${err?.message || err}`);
+                            return false;
+                        }
+                    };
+                    writer.__child = child;
+                    setUiRequestStdinWriter(reg.requestId, writer);
+                }
             } catch (e) {
                 // Línea no-JSON de salida estándar
                 fullOutput += trimmed + "\n";
@@ -4085,6 +4546,11 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
             }
 
             publishChatEvent(CHAT_EVENTS.THINKING, { active: false });
+            // Phase 3 (fix-ui-request-selection): drop pending stdin writers
+            // bound to this Claude child so a late POST never tries to write
+            // to a dead pipe. The registry's 120s timer still owns the entry's
+            // terminal transition.
+            try { clearUiRequestStdinWritersForChild(child); } catch {}
             // A run can end with cards still open (a crash, a timeout, a kill).
             // Closing one of them and leaving the rest is the same single-slot
             // mistake at the end of the stream, so every one is closed.
@@ -4146,7 +4612,12 @@ function runOpenCodeCli(projPath, sessionId, message) {
         const child = spawn(opencodeExe, args, {
             cwd: projPath,
             windowsHide: true,
-            stdio: ["ignore", "pipe", "pipe"],
+            // Phase 3 (fix-ui-request-selection): stdin is now pipe so the
+            // POST handler can deliver the user's UI answer back into the
+            // engine as one JSON line. `--auto` at launch covers most
+            // permission prompts; this pipe covers interactive questions
+            // that `--auto` does not.
+            stdio: ["pipe", "pipe", "pipe"],
             env: process.env
         });
 
@@ -4232,6 +4703,39 @@ function runOpenCodeCli(projPath, sessionId, message) {
                         });
                     }
                 }
+
+                // Phase 3 (fix-ui-request-selection): OpenCode may surface a
+                // `question` part or a permission prompt despite `--auto`.
+                // Normalize through the engine adapter so the chat app gets a
+                // `ui_request` SSE frame and the answer routes back through
+                // child.stdin.
+                const ocUi = normalizeOpenCodeUiRequest(event);
+                if (ocUi && typeof child.stdin?.write === "function" && !child.killed) {
+                    const reg = uiRequestRegistry.register({
+                        sessionId: currentActivitySession("opencode"),
+                        engine: "opencode",
+                        method: ocUi.method,
+                        options: ocUi.options,
+                        title: ocUi.title,
+                        message: ocUi.message,
+                    });
+                    const writer = (value) => {
+                        if (!child || child.killed || !child.stdin || child.stdin.destroyed) return false;
+                        try {
+                            child.stdin.write(JSON.stringify({
+                                type: "ui_response",
+                                requestId: reg.requestId,
+                                value,
+                            }) + "\n");
+                            return true;
+                        } catch (err) {
+                            console.warn(`[ui-request] OpenCode stdin write failed for ${reg.requestId}: ${err?.message || err}`);
+                            return false;
+                        }
+                    };
+                    writer.__child = child;
+                    setUiRequestStdinWriter(reg.requestId, writer);
+                }
             } catch (e) {
                 fullOutput += trimmed + "\n";
                 boundary.append(trimmed + "\n");
@@ -4270,6 +4774,11 @@ function runOpenCodeCli(projPath, sessionId, message) {
                 processJsonLine(buffer);
             }
             publishChatEvent(CHAT_EVENTS.THINKING, { active: false });
+            // Phase 3 (fix-ui-request-selection): drop pending stdin writers
+            // bound to this OpenCode child so a late POST never writes to a
+            // dead pipe. The registry's 120s timer still owns the entry's
+            // terminal transition.
+            try { clearUiRequestStdinWritersForChild(child); } catch {}
 
             // The last message has no tool after it to close it, so the end of
             // the run does.

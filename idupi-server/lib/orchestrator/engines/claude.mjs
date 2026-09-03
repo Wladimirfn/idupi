@@ -100,10 +100,60 @@ export async function writeEngine(canonicalPhase, binding) {
     }
 }
 
+/**
+ * Normalize a raw UI request event from the Claude CLI into the canonical
+ * shape the PendingUiRequestRegistry expects.
+ *
+ * Claude (Anthropic SDK stream events) surfaces interactive prompts as
+ *   { type: "control_request" | "ask_user_question" | ...,
+ *     subtype: "select" | "confirm" | "input" | ...,
+ *     question?, options?, message? }
+ * The exact wire shape varies between Claude Code versions; this normalizer
+ * accepts the most common keys and ignores the rest. `bypassPermissions`
+ * short-circuits permission prompts at launch, so UI requests through this
+ * path are typically the rarer `ask_user_question` style — kept here so a
+ * future Claude build that re-enables interactive prompts has a typed seam.
+ *
+ * Pure function: no I/O, no logging.
+ *
+ * @param {object} event
+ * @returns {{ method: string, options: string[], title: string, message: string } | null}
+ */
+export function normalizeUiRequest(event) {
+    if (!event || typeof event !== "object") return null;
+    const method = typeof event.subtype === "string"
+        ? event.subtype
+        : (typeof event.method === "string" ? event.method : null);
+    if (method !== "select" && method !== "confirm" && method !== "input") return null;
+
+    const title = typeof event.title === "string"
+        ? event.title
+        : (typeof event.header === "string" ? event.header : "");
+    let message = "";
+    let options = [];
+    if (method === "select") {
+        message = typeof event.question === "string"
+            ? event.question
+            : (typeof event.message === "string" ? event.message : "");
+        if (Array.isArray(event.options)) {
+            for (const opt of event.options) {
+                if (typeof opt === "string") options.push(opt);
+                else if (opt && typeof opt === "object" && typeof opt.label === "string") options.push(opt.label);
+            }
+        }
+    } else {
+        message = typeof event.message === "string"
+            ? event.message
+            : (typeof event.question === "string" ? event.question : "");
+    }
+    return { method, options, title, message };
+}
+
 export const __testing = Object.freeze({
     readDoc,
     writeDoc,
     backupIfFirstWrite,
     backedUp,
     statePath,
+    normalizeUiRequest,
 });

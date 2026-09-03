@@ -70,12 +70,19 @@ test("a closed message is not discarded by a later retry", () => {
     );
 });
 
-test("the turn's end only publishes text no message_end had closed", () => {
+test("the turn's end publishes leftover text and only the guarded fallback", () => {
     const handler = handlerFor(/if \(event\.type === "agent_end" && event\.willRetry !== true && this\.pendingResolve\)/);
     assert.ok(handler, "no se encontró el cierre del turno");
     assert.match(handler, /leftover/, "agent_end debe publicar solo lo que quedó sin cerrar");
     const publishes = handler.match(/publishChatEvent\(CHAT_EVENTS\.MESSAGE_END/g) || [];
-    assert.equal(publishes.length, 1, "agent_end no puede reemitir un mensaje ya publicado");
+    // TWO guarded branches, at most ONE fires at runtime: the fallback is
+    // gated on `!publishedLeftover`, so agent_end never re-emits a message
+    // that a message_end already published. The count was updated from 1 when
+    // the "always publish via SSE" fix (100% of Pi's output) added the
+    // guarded fallback branch — the invariant under test is the guard, not a
+    // literal single call site.
+    assert.equal(publishes.length, 2, "leftover + fallback (mutuamente excluyentes en runtime)");
+    assert.match(handler, /!publishedLeftover/, "el fallback no puede reemitir un mensaje ya publicado");
 });
 
 test("the POST answers with the last message, not with the filler", () => {

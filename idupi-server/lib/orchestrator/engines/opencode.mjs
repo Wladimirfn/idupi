@@ -111,10 +111,73 @@ export async function writeEngine(canonicalPhase, binding) {
     }
 }
 
+/**
+ * Normalize a raw UI request event from the OpenCode CLI into the canonical
+ * shape the PendingUiRequestRegistry expects.
+ *
+ * OpenCode's stream protocol emits permission-style and question-style events
+ * as typed parts. The `--auto` launch flag suppresses most of them, but a
+ * permissive build (or a question that `--auto` does not cover) still lands
+ * here. The normalizer accepts the common part shapes:
+ *   { type: "question",      part: { question, options: [...] } }
+ *   { type: "permission",    part: { permission, patterns } }
+ *   { type: "tool_use",      part: { tool, state: { input: { ... } } } }
+ * and returns the canonical `{ method, options, title, message }` shape, or
+ * `null` when the event is not a UI request.
+ *
+ * Pure function: no I/O, no logging.
+ *
+ * @param {object} event
+ * @returns {{ method: string, options: string[], title: string, message: string } | null}
+ */
+export function normalizeUiRequest(event) {
+    if (!event || typeof event !== "object") return null;
+    const part = event.part && typeof event.part === "object" ? event.part : event;
+    const type = typeof event.type === "string" ? event.type : (typeof part.type === "string" ? part.type : "");
+
+    let method = null;
+    let message = "";
+    let options = [];
+
+    if (type === "question") {
+        // OpenCode questions: pick/confirm/input maps to confirm when ≤2 opts, else select.
+        if (Array.isArray(part.options) && part.options.length > 2) {
+            method = "select";
+            for (const opt of part.options) {
+                if (typeof opt === "string") options.push(opt);
+                else if (opt && typeof opt === "object" && typeof opt.label === "string") options.push(opt.label);
+            }
+        } else if (Array.isArray(part.options) && part.options.length > 0) {
+            method = "confirm";
+            options = part.options.map((o) => typeof o === "string" ? o : (o && typeof o.label === "string" ? o.label : ""));
+        } else {
+            method = "input";
+        }
+        message = typeof part.question === "string"
+            ? part.question
+            : (typeof part.message === "string" ? part.message : "");
+    } else if (type === "permission") {
+        // Permission prompts surface as confirm; bypass with --auto at launch,
+        // but a permissive build still emits these.
+        method = "confirm";
+        message = typeof part.permission === "string"
+            ? part.permission
+            : (typeof part.message === "string" ? part.message : "Permission requested");
+    } else {
+        return null;
+    }
+
+    const title = typeof part.header === "string"
+        ? part.header
+        : (typeof part.tool === "string" ? part.tool : "");
+    return { method, options, title, message };
+}
+
 export const __testing = Object.freeze({
     readDoc,
     writeDoc,
     backupIfFirstWrite,
     backedUp,
     opencodeConfigPath,
+    normalizeUiRequest,
 });

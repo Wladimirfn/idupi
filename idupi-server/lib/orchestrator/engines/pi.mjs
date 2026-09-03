@@ -131,6 +131,59 @@ export async function writeEngine(canonicalPhase, binding) {
     }
 }
 
+/**
+ * Normalize a raw `extension_ui_request` event from the Pi CLI into the
+ * canonical shape the PendingUiRequestRegistry expects.
+ *
+ * The Pi protocol emits every interactive prompt as
+ *   { type: "extension_ui_request", method: "select" | "confirm" | "input" | ... }
+ * with method-specific fields (`options`, `question`, `message`). The registry
+ * only cares about `{ method, options, title, message }`; everything else is
+ * either Pi-specific noise or freeform text the app can show.
+ *
+ * Returns `null` for events that are NOT UI prompts (e.g. `setStatus`,
+ * notifications) so callers can safely pipe every event through this function
+ * and only branch on `null`. Pure: no I/O, no logging, no side effects.
+ *
+ * @param {object} event   the raw extension_ui_request event
+ * @returns {{ method: string, options: string[], title: string, message: string } | null}
+ */
+export function normalizeUiRequest(event) {
+    if (!event || typeof event !== "object") return null;
+    const method = typeof event.method === "string" ? event.method : null;
+    if (method !== "select" && method !== "confirm" && method !== "input") return null;
+
+    // Real Pi events carry the prompt text in `title` / `message`, NOT in
+    // `header` / `question` — the verified capture shows
+    //   { type: "extension_ui_request", id, method: "select",
+    //     title: "[Choose] Which option do you choose?", options: [...] }
+    // with no `question` field at all. Fall back through both spellings so
+    // the card never renders blank when Pi asks.
+    const title = firstNonEmpty(event.title, event.header);
+    const message = firstNonEmpty(event.message, event.question);
+    let options = [];
+    if (method === "select") {
+        if (Array.isArray(event.options)) {
+            for (const opt of event.options) {
+                if (opt && typeof opt === "object" && typeof opt.label === "string") {
+                    options.push(opt.label);
+                } else if (typeof opt === "string") {
+                    options.push(opt);
+                }
+            }
+        }
+    }
+    return { method, options, title, message };
+}
+
+/** First non-empty string among the given fields, or "" when none is. */
+function firstNonEmpty(...fields) {
+    for (const field of fields) {
+        if (typeof field === "string" && field.length > 0) return field;
+    }
+    return "";
+}
+
 /** Surface internals for testing only. */
 export const __testing = Object.freeze({
     EMPTY_DOC,
@@ -139,4 +192,5 @@ export const __testing = Object.freeze({
     backupIfFirstWrite,
     backedUp,
     subagentsPath,
+    normalizeUiRequest,
 });
