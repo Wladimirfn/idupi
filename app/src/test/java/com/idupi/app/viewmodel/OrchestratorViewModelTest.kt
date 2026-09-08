@@ -171,11 +171,13 @@ class OrchestratorViewModelTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun `activeEngine defaults to opencode and selects pi or claude`() = runTest {
+    fun `activeEngine hydrates from server status and selects pi or claude`() = runTest {
         val viewModel = OrchestratorViewModel(FakeClientSource(fake))
         advanceUntilIdle()
 
-        assertEquals("opencode", viewModel.activeEngine.value)
+        // The OPENCODE seed is a pre-hydration placeholder: init refreshes
+        // from status, and the fake (like the server) reports "pi-cli".
+        assertEquals("pi", viewModel.activeEngine.value)
 
         viewModel.selectEngine("pi")
         assertEquals("pi", viewModel.activeEngine.value)

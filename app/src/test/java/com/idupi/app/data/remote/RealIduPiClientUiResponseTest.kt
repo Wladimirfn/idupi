@@ -1,10 +1,12 @@
 package com.idupi.app.data.remote
 
+import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.serializer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -66,10 +68,14 @@ class RealIduPiClientUiResponseTest {
         method.isAccessible = true
         val paramType = method.parameterTypes[0]
         assertTrue(
+            // NOTE: the `{ value -> ... }` lambda below MUST be the lazy block's
+            // return value, NOT a trailing lambda of assertTrue: Kotlin binds a
+            // lambda on the line after `)` to the call, which then matches no
+            // assertTrue overload. `return@lazy` makes the intent explicit.
             "toJsonElement parameter must be java.lang.Object (Kotlin Any); got $paramType",
-            paramType == Any::class.java || paramType == Object::class.java,
+            paramType == Any::class.java,
         )
-        { value: Any -> method.invoke(null, value) as JsonElement }
+        return@lazy { value: Any -> method.invoke(null, value) as JsonElement }
     }
 
     @Test
@@ -163,13 +169,16 @@ class RealIduPiClientUiResponseTest {
         // ktor's setBody(UiResponsePayload(...)) would emit.
         val payload = mapOf(
             "value" to toJsonElement(true),
-            "token" to "tok-7",
-            "sessionId" to "sess-1",
+            "token" to JsonPrimitive("tok-7"),
+            "sessionId" to JsonPrimitive("sess-1"),
         )
+        // MapSerializer<String, JsonElement> needs a Map<String, JsonElement>:
+        // raw Strings are wrapped in JsonPrimitive so the static types line up
+        // with the wire contract (and the encoded bytes stay identical).
         val encoded = Json.encodeToString(
-            kotlinx.serialization.builtins.MapSerializer(
-                kotlinx.serialization.builtins.serializer<String>(),
-                kotlinx.serialization.json.JsonElement.serializer(),
+            MapSerializer(
+                serializer<String>(),
+                JsonElement.serializer(),
             ),
             payload,
         )
@@ -185,13 +194,13 @@ class RealIduPiClientUiResponseTest {
     fun `wire body for a select-B answer encodes value as the JSON string "B"`() {
         val payload = mapOf(
             "value" to toJsonElement("B"),
-            "token" to "tok-7",
-            "sessionId" to "sess-1",
+            "token" to JsonPrimitive("tok-7"),
+            "sessionId" to JsonPrimitive("sess-1"),
         )
         val encoded = Json.encodeToString(
-            kotlinx.serialization.builtins.MapSerializer(
-                kotlinx.serialization.builtins.serializer<String>(),
-                kotlinx.serialization.json.JsonElement.serializer(),
+            MapSerializer(
+                serializer<String>(),
+                JsonElement.serializer(),
             ),
             payload,
         )
