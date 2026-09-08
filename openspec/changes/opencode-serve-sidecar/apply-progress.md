@@ -212,13 +212,34 @@ unchanged. Recorded in `design.md` Open Questions.
 | Focused test command and exact result | `node --test idupi-server/test/opencode-sidecar.test.mjs idupi-server/test/agent-cmdline.test.mjs idupi-server/test/ui-request-stdio.test.mjs` → tests 49, pass 49, fail 0, duration_ms ~6.25s |
 | Runtime harness command/scenario and exact result | `node scratch/reply-path-probe.mjs` → real `opencode serve` v1.18.29 spawned, design-intent `/api/session/{sid}/permission/{rid}/reply` returned 400 with `InvalidRequestError`; SDK plural-shape `/session/{id}/permissions/{id}` returned 500. Verdict: design-intent path is correct. |
 | Rollback boundary | Revert 6 files: `idupi-server/lib/agent-cmdline.mjs`, `idupi-server/index.mjs`, the 9 new RED tests in `idupi-server/test/opencode-sidecar.test.mjs`, the 3 new RED tests in `idupi-server/test/agent-cmdline.test.mjs`, `scratch/reply-path-probe.mjs`, and `openspec/changes/opencode-serve-sidecar/design.md` (revert the verdict). No Android files touched. No existing tests break (49/49 pass before and after the slice). |
+| PR 2 authored line count | ~972 additions + 72 deletions = ~1044 net (across 4 code files: index.mjs, agent-cmdline.mjs, agent-cmdline.test.mjs, the 9 new RED tests in opencode-sidecar.test.mjs, plus reply-path-probe.mjs). Excludes carry-forward commits 59748e8 (sidecar module + spike) and f551c7a (proposal + specs), both of which landed in PR 1 work but were never committed. |
+| Budget posture | **size:exception** — see Workload Budget section below. |
 
 ## Deviations from Design
 
 None on D1-D8. The reply-path probe resolved the open design question
 favorably — design.md's `REPLY_PATH` stays unchanged.
 
-Two non-blocking notes for PR 3 / verify:
+## Workload Budget
+
+PR 2 ships **over the default 400-line review budget** (1044 net lines
+authored across 4 code files + 1 probe; ~972 additions). The user
+explicitly scoped PR 2 to all four tasks (writer seam + runOpenCodeCli
+autoApprove branch + openCodeArgs --auto removal + expire routing),
+and the design's migration order makes this one cohesive work unit:
+the writer seam has no caller without the runOpenCodeCli branch, and
+the branch cannot use --auto removal without the argv flag. Splitting
+into 2 sub-PRs would require shipping half-wired seams. Per the
+skill's `size:exception` policy, the slice is reported as-is with the
+final line count and the rationale that drove the size.
+
+The 9 new RED tests in `opencode-sidecar.test.mjs` and 3 in
+`agent-cmdline.test.mjs` are the bulk of the size — every contract
+shift is pinned by a test, which is the project's verification
+discipline (the existing `ui-request-stdio.test.mjs` and PR 1's 16
+sidecar tests are all in the same spirit).
+
+## Non-blocking notes for PR 3 / verify
 
 1. `runOpenCodeCli` default `autoApprove=false` (sidecar-first) ships
    in PR 2. The Android app's call sites have not yet been updated to
