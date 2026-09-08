@@ -43,6 +43,12 @@ import { handleScreenRoute, shutdownScreen } from "./lib/screen-routes.mjs";
 import { resolveProjectFilePath } from "./lib/project-files.mjs";
 import { isProtectedSystemPath } from "./lib/system-paths.mjs";
 import { claudeArgs, openCodeArgs, normalizeOpenCodeModel } from "./lib/agent-cmdline.mjs";
+// OpenCode serve sidecar (opencode-serve-sidecar, PR 2): persistent
+// `opencode serve` per session gives the chat bridge a real answer path.
+// Imported once here so runOpenCodeCli's sidecar branch (autoApprove=false)
+// can construct + tear-down the sidecar; the module itself is hermetic and
+// testable in isolation under test/opencode-sidecar.test.mjs.
+import { OpenCodeSidecar } from "./lib/opencode-sidecar.mjs";
 import { mergePiModelCatalogs } from "./lib/pi-models.mjs";
 // Phase 3 (fix-ui-request-selection): pure normalizers that turn each
 // engine's raw UI-request event into the canonical shape the registry
@@ -113,12 +119,32 @@ uiRequestRegistry.on("expire", ({ entry, decision }) => {
     // requestId (already answered, child closed, or the engine had no id to
     // correlate), and the entry is terminal either way. The writer is cleared
     // so a late POST on the same requestId short-circuits to 404.
-    const stdinOk = writeUiResponseToStdin(entry.requestId, decision.value);
-    clearUiRequestStdinWriter(entry.requestId);
-    if (!stdinOk) {
+    //
+    // PR 2 (opencode-serve-sidecar): OpenCode via the sidecar is the
+    // exception. The spec's "OpenCode expiry cancels" scenario requires the
+    // permission to be REJECTED through the sidecar reply route (NOT
+    // blanket auto-approve). Per-engine routing: stdin-based engines keep
+    // the existing behaviour; OpenCode via sidecar calls reply(false) and
+    // logs source=auto_approve, value={cancelled:true}.
+    let writerOk;
+    let writerKind;
+    if (entry.engine === "opencode") {
+        // sidecar.reply(false) serializes to {reply:"reject"} — the engine's
+        // canonical "reject" enum. Late replies after the engine has dropped
+        // the ask return 404, which the sidecar normalizes to {ok:true,
+        // expired:true} and never throws.
+        writerOk = writeUiResponseToSidecar(entry.requestId, false);
+        clearUiRequestSidecarWriter(entry.requestId);
+        writerKind = "sidecar";
+    } else {
+        writerOk = writeUiResponseToStdin(entry.requestId, decision.value);
+        clearUiRequestStdinWriter(entry.requestId);
+        writerKind = "stdin";
+    }
+    if (!writerOk) {
         console.warn(
-            `[ui-request] expire sin writer de stdin para ${entry.requestId} ` +
-            `(engine=${entry.engine}) — el diálogo del motor puede seguir abierto hasta el taskkill`,
+            `[ui-request] expire sin writer de ${writerKind} para ${entry.requestId} ` +
+            `(engine=${entry.engine}) - el diálogo del motor puede seguir abierto hasta el taskkill`,
         );
     }
     publishChatEvent(CHAT_EVENTS.UI_REQUEST_RESOLVED, {
@@ -167,12 +193,44 @@ function writeUiResponseToStdin(requestId, value) {
     }
 }
 
+// PR 2 (opencode-serve-sidecar): mirror the stdin writer seam for the
+// OpenCode sidecar transport. The sidecar reply is async by design (POST
+// to the engine's reply route, 204/404 idempotent), but the writer contract
+// stays sync — the function returns true when a writer was registered and
+// accepted the value for delivery; the actual reply fires-and-forgets via
+// sidecar.reply(), and any non-ok result is logged asynchronously. The
+// `__child` back-pointer matches the stdin seam so a future
+// `clearUiRequest*WritersForChild(child)` can sweep both maps on a child
+// 'close'. Lives outside the registry on purpose, same rationale as the
+// stdin seam (registry contract = lifecycle only, no I/O).
+const uiRequestSidecarWriters = new Map(); // requestId → (value) => boolean
+
+function setUiRequestSidecarWriter(requestId, writer) {
+    if (typeof writer === "function") uiRequestSidecarWriters.set(requestId, writer);
+}
+
+function clearUiRequestSidecarWriter(requestId) {
+    uiRequestSidecarWriters.delete(requestId);
+}
+
+function writeUiResponseToSidecar(requestId, value) {
+    const writer = uiRequestSidecarWriters.get(requestId);
+    if (!writer) return false;
+    try {
+        return writer(value) === true;
+    } catch (err) {
+        console.warn(`[ui-request] sidecar write failed for ${requestId}: ${err?.message || err}`);
+        return false;
+    }
+}
+
 /**
  * Drop every writer bound to a specific engine child. Called from the
  * child 'close' handlers in runClaudeCli / runOpenCodeCli / PiRpcManager so a
  * late POST never tries to write to a dead pipe. Each writer carries a
  * `__child` back-pointer so we can identify its owner without introspecting
- * the closure.
+ * the closure. PR 2: sweeps BOTH the stdin map and the sidecar map so a
+ * dead child kills every writer bound to it regardless of transport.
  */
 function clearUiRequestStdinWritersForChild(child) {
     if (!child) return;
@@ -184,6 +242,11 @@ function clearUiRequestStdinWritersForChild(child) {
         if (writer && writer.__child === child) toDelete.push(requestId);
     }
     for (const requestId of toDelete) uiRequestStdinWriters.delete(requestId);
+    const toDeleteSidecar = [];
+    for (const [requestId, writer] of uiRequestSidecarWriters) {
+        if (writer && writer.__child === child) toDeleteSidecar.push(requestId);
+    }
+    for (const requestId of toDeleteSidecar) uiRequestSidecarWriters.delete(requestId);
 }
 
 // Orchestrator delegation: engines resolve via resolveEngine(); per-route
@@ -291,7 +354,8 @@ loadDefaultModel();
 function getAvailableModels() {
     if (currentStatus.activeEngine === "opencode") {
         try {
-            const raw = execSync("opencode models", { encoding: "utf8", timeout: 5000, maxBuffer: EXEC_MAX_BUFFER });
+            const opencodeExe = resolveOpenCodeExePath();
+            const raw = execFileSync(opencodeExe, ["models"], { encoding: "utf8", timeout: 5000, maxBuffer: EXEC_MAX_BUFFER });
             const lines = raw.split("\n").map(l => l.trim()).filter(l => l.length > 0 && !l.startsWith("Notice:") && !l.startsWith("Error:"));
             const realModels = [];
             for (const line of lines) {
@@ -752,7 +816,13 @@ class TerminalManager {
         // 3. Inspección REAL de Procesos y Terminales Abiertas en tu PC (Bun, Claude, Codex, Kimi, Node, Python, PowerShell, CMD, Deno)
         try {
             if (process.platform === "win32") {
-                const rawCsv = execSync('wmic process get caption,commandline,processid /format:csv', { encoding: "utf8", timeout: 4000, maxBuffer: EXEC_MAX_BUFFER });
+                // wmic was removed in Windows 11 24H2, so it always throws here
+                // now. Same 4-column CSV shape via CIM, header prepended because
+                // the parser below skips line 0. The "Get-CimInstance" token is
+                // intentional: the self-filter below ignores our own probe
+                // process by matching it in the command line.
+                const psOut = execSync('powershell -NoProfile -Command "Get-CimInstance Win32_Process | ForEach-Object { $env:COMPUTERNAME + \',\' + $_.Name + \',\' + $_.CommandLine + \',\' + $_.ProcessId }"', { encoding: "utf8", timeout: 8000, maxBuffer: EXEC_MAX_BUFFER });
+                const rawCsv = "Node,Caption,CommandLine,ProcessId\n" + psOut;
                 const lines = rawCsv.split("\n").filter(l => l.trim().length > 0);
 
                 for (let i = 1; i < lines.length; i++) {
@@ -1593,6 +1663,20 @@ function findSessionFilePath(sessionId) {
 }
 
 /**
+ * M2 (security audit): request-derived strings must NEVER be interpolated
+ * into a shell command. `execFileSync` with an argv array bypasses the shell
+ * entirely, and this allowlist rejects anything that is not a plausible CLI
+ * id before it ever reaches argv. Throws fail-closed: callers already turn
+ * throws into 4xx/502 responses.
+ */
+function assertSafeCliId(value, label) {
+    if (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value)) {
+        throw new Error(`${label} inválido: ${String(value).slice(0, 64)}`);
+    }
+    return value;
+}
+
+/**
  * History for one session, or null when there is genuinely nothing to read.
  * Throws when the session exists but reading it failed, so the caller can tell
  * "not found" apart from "found but unreadable" instead of reporting both as 404.
@@ -1601,7 +1685,8 @@ function getSessionHistoryById(sessionId) {
     let exportError = null;
     if (sessionId.startsWith("ses_")) {
         try {
-            const raw = execSync(`opencode export ${sessionId}`, { encoding: "utf8", timeout: 8000, maxBuffer: EXEC_MAX_BUFFER });
+            const opencodeExe = resolveOpenCodeExePath();
+            const raw = execFileSync(opencodeExe, ["export", assertSafeCliId(sessionId, "sessionId")], { encoding: "utf8", timeout: 8000, maxBuffer: EXEC_MAX_BUFFER });
             const jsonText = raw.slice(raw.indexOf("{"));
             const data = JSON.parse(jsonText);
             const messages = [];
@@ -3145,8 +3230,27 @@ const handleRequest = async (req, res) => {
             // resolution — the entry is already terminal, the worst case is
             // the engine's 300s taskkill. The writer is cleared either way
             // so a re-POST on the same requestId short-circuits to 404.
-            const stdinOk = writeUiResponseToStdin(requestId, result.value);
-            clearUiRequestStdinWriter(requestId);
+            //
+            // PR 2 (opencode-serve-sidecar): OpenCode via the sidecar takes a
+            // different transport — the answer goes through sidecar.reply()
+            // (POST to /api/session/{sid}/permission/{rid}/reply), NOT
+            // stdin. Routing by entry.engine keeps the resolve/expire path
+            // engine-agnostic above this line and isolates the sidecar to
+            // the opencode branch.
+            let writerOk;
+            if (result.entry.engine === "opencode") {
+                writerOk = writeUiResponseToSidecar(requestId, result.value);
+                clearUiRequestSidecarWriter(requestId);
+            } else {
+                writerOk = writeUiResponseToStdin(requestId, result.value);
+                clearUiRequestStdinWriter(requestId);
+            }
+            if (!writerOk) {
+                console.warn(
+                    `[ui-request] client-resolve sin writer para ${requestId} ` +
+                    `(engine=${result.entry.engine}) - la respuesta queda en el registry pero el motor no la recibió`,
+                );
+            }
             // Resuelto por el cliente. Espejamos la transición terminal en el bus
             // SSE para que la app descarte el diálogo (mismo canal que usa el
             // expire listener, con `resolution: "client"` para distinguir).
@@ -3871,11 +3975,16 @@ function getCustomSddProfiles() {
 const providerModelsCache = new Map();
 
 function getModelsForProvider(providerId) {
+    // Fail-fast on invalid input: the caller maps this throw to 400.
+    // (Exe failures below stay 200-empty + console.error: a sick CLI is
+    // not a bad request.)
+    assertSafeCliId(providerId, "providerId");
     if (providerModelsCache.has(providerId)) {
         return providerModelsCache.get(providerId);
     }
     try {
-        const raw = execSync(`opencode models "${providerId}"`, { encoding: "utf8", timeout: 4000, maxBuffer: EXEC_MAX_BUFFER });
+        const opencodeExe = resolveOpenCodeExePath();
+        const raw = execFileSync(opencodeExe, ["models", providerId], { encoding: "utf8", timeout: 4000, maxBuffer: EXEC_MAX_BUFFER });
         const lines = raw.split("\n").map(l => l.trim()).filter(l => l && !l.startsWith("Error") && !l.startsWith("opencode models"));
         const models = lines.map(line => {
             const parts = line.split("/");
@@ -3891,7 +4000,9 @@ function getModelsForProvider(providerId) {
             providerModelsCache.set(providerId, models);
             return models;
         }
-    } catch(e) {}
+    } catch(e) {
+        console.error(`[OpenCode Models] provider '${providerId}': ${e.message}`);
+    }
     return [];
 }
 
@@ -3899,9 +4010,14 @@ function getModelsForProvider(providerId) {
     if (pathname.startsWith("/api/v1/orchestrator/providers/") && pathname.endsWith("/models") && req.method === "GET") {
         const parts = pathname.split("/");
         const providerId = parts[5];
-        const models = getModelsForProvider(providerId);
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ provider: providerId, models }));
+        try {
+            const models = getModelsForProvider(providerId);
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ provider: providerId, models }));
+        } catch (err) {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: err.message }));
+        }
         return;
     }
 
@@ -4400,9 +4516,30 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
         // spawns are its children -- a tree-kill still reaches everything.
         const timeoutTimer = setTimeout(() => {
             if (settled) return;
+            settled = true;
             timedOut = true;
             console.warn(`[Claude CLI Timeout] Sin cierre tras ${AGENT_CLI_TIMEOUT_MS}ms, terminando el árbol de procesos (PID ${child.pid}).`);
             execFile("taskkill", ["/F", "/T", "/PID", String(child.pid)], () => {});
+            // Settle HERE, not in 'close': if taskkill fails or a grandchild
+            // (MCP server) holds stdout open, 'close' never fires and the
+            // promise -- and the app's 5-minute poll -- hangs forever in
+            // silence. A late 'close' is a no-op via `settled`. Same pattern
+            // as Pi's armIdleWatchdog. Cards still open are closed with an
+            // explicit no-result summary so they never spin forever.
+            try { clearUiRequestStdinWritersForChild(child); } catch {}
+            for (const card of subagentCards.drain()) {
+                publishChatEvent(CHAT_EVENTS.SUBAGENT_END, {
+                    id: card.id,
+                    name: card.name || "Subagent",
+                    summary: "Subagente finalizó sin devolver un resultado",
+                    ok: false
+                });
+            }
+            publishChatEvent(CHAT_EVENTS.THINKING, { active: false });
+            const timeoutMsg = `⚠️ Claude CLI no respondió dentro de ${AGENT_CLI_TIMEOUT_MS / 1000}s y fue detenido.`;
+            activeTask.output = timeoutMsg;
+            publishChatEvent(CHAT_EVENTS.MESSAGE_END, { text: timeoutMsg });
+            resolve(timeoutMsg);
         }, AGENT_CLI_TIMEOUT_MS);
 
         const processJsonLine = (line) => {
@@ -4716,9 +4853,21 @@ function runOpenCodeCli(projPath, sessionId, message, openCodeModel = null) {
         // reaches every descendant from the real root.
         const timeoutTimer = setTimeout(() => {
             if (settled) return;
+            settled = true;
             timedOut = true;
             console.warn(`[OpenCode CLI Timeout] Sin cierre tras ${AGENT_CLI_TIMEOUT_MS}ms, terminando el árbol de procesos (PID ${child.pid}).`);
             execFile("taskkill", ["/F", "/T", "/PID", String(child.pid)], () => {});
+            // Settle HERE, not in 'close': if taskkill fails or a grandchild
+            // (MCP server) holds stdout open, 'close' never fires and the
+            // promise -- and the app's 5-minute poll -- hangs forever in
+            // silence. A late 'close' is a no-op via `settled`. Same pattern
+            // as Pi's armIdleWatchdog and Claude's timeout above.
+            try { clearUiRequestStdinWritersForChild(child); } catch {}
+            publishChatEvent(CHAT_EVENTS.THINKING, { active: false });
+            const timeoutMsg = `⚠️ OpenCode no respondió dentro de ${AGENT_CLI_TIMEOUT_MS / 1000}s y fue detenido.`;
+            activeTask.output = timeoutMsg;
+            publishChatEvent(CHAT_EVENTS.MESSAGE_END, { text: timeoutMsg });
+            resolve(timeoutMsg);
         }, AGENT_CLI_TIMEOUT_MS);
 
         const processJsonLine = (line) => {
