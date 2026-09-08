@@ -49,9 +49,27 @@ export function normalizeOpenCodeModel(model, provider = "") {
     return provider ? `${provider}/${trimmed}` : trimmed;
 }
 
-/** OpenCode CLI argv. Same array principle: data never becomes syntax. */
-export function openCodeArgs({ model = "", provider = "", sessionId = "", message = "" }) {
-    const args = ["run", "--format", "json", "--auto"];
+/**
+ * OpenCode CLI argv. Same array principle: data never becomes syntax.
+ *
+ * `autoApprove` gates the spawn path (D8 in design.md): when `true` (the
+ * default, matching the historical behaviour) the launch flag `--auto`
+ * self-approves prompts and stdin is closed — the legacy fallback path.
+ * When `false` the flag is dropped so the CLI blocks on a real answer
+ * path; the caller (index.mjs L4704) supplies that answer through the
+ * OpenCode serve sidecar, NOT through stdin. The hostile-message invariant
+ * (one inert array element, no shell escape path) is preserved in BOTH
+ * modes — see agent-cmdline.test.mjs.
+ */
+export function openCodeArgs({
+    model = "",
+    provider = "",
+    sessionId = "",
+    message = "",
+    autoApprove = true,
+}) {
+    const args = ["run", "--format", "json"];
+    if (autoApprove) args.push("--auto");
     if (model) {
         args.push("-m", normalizeOpenCodeModel(model, provider));
     }
