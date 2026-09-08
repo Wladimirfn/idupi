@@ -93,7 +93,77 @@ chained PRs; it is small enough to ship in one reviewable slice.
       drift-detector comment so a future refactor that changes the routing
       rule fails the test on the FIRST run.
 
+## Phase 5c: Re-Verify Remediation (blocker #1 R5 + warning #3 vanish mirror)
+
+Reopened 2026-09-08 against the SECOND verify-report evidence revision
+`sha256:66e24d8817c8739d2b4293a3bdc49de3e9fea6c7a33c7efdf037006445f6ec22`
+(verdict FAIL: 1 CRITICAL + warnings). Targets the two failures the
+first remediation did not address:
+
+- [x] 5c.1 (CRITICAL R5 / toggle-ON unreachable) Chat route in
+      `idupi-server/index.mjs` reads the `X-OpenCode-Auto-Approve`
+      request header via a new pure helper
+      `idupi-server/lib/opencode-auto-approve-header.mjs`
+      (`parseOpenCodeAutoApproveHeader(headers)`) and threads the parsed
+      boolean into `runOpenCodeCli(... , autoApprove)` at the
+      `activeEngine === "opencode"` branch (~line 5330). Fail-closed
+      default: header `0`, absent, or any non-`"1"` value yields `false`
+      (sidecar-first path; no `--auto`; permission cards still emit on
+      SSE). Header `"1"` yields `true` (legacy `--auto` argv; no
+      sidecar spawned → no cards). New RED tests in
+      `idupi-server/test/opencode-sidecar.test.mjs` (REM/R5 × 3) pin
+      the wire shape (header value `"1"` → `true`; `"0"`/absent/non-`"1"`
+      → `false`), the wire constant name, and the lenient-whitespace
+      courtesy.
+- [x] 5c.2 (WARNING #3 / vanish-abort mirror) The
+      `runOpenCodeCli.onRemoved` body (index.mjs:5004-5089) is extracted
+      to `idupi-server/lib/ui-request-vanish.mjs`
+      (`applyVanishAbort({...})`). The production wiring and the
+      opencode-sidecar test suite now share ONE implementation. The
+      previous test-local `wireVanishAbort` mirror at
+      `opencode-sidecar.test.mjs:967` was a drift layer — its own
+      comment admitted it "Mirrors the runOpenCodeCli.onRemoved wiring".
+      An inline copy IS the drift layer; an imported helper is not.
+      The REM/R4 × 3 tests are extended with NEW assertions on the
+      production handler's exact side effects: `taskkill` argv
+      (`/F /T /PID <child.pid>`), BOTH `publishChatEvent` frames
+      (`UI_REQUEST_RESOLVED` + `MESSAGE_END`), and the sidecar-writer
+      clear — each branch asserts all five effects on the truly-
+      vanished path and ZERO effects on the deferred + ignored paths.
+
 ## Phase 6: Spec-Scenario Tests + Verification
 
 - [ ] 6.1 Map every scenario in both specs to a `node --test` case in `idupi-server/test/opencode-sidecar.test.mjs` (Toggle ON/OFF, Saved approval, Misconfigured, OpenCode expiry cancels, sidecar answer).
 - [ ] 6.2 Run `node --test idupi-server/test/opencode-sidecar.test.mjs idupi-server/test/agent-cmdline.test.mjs idupi-server/test/ui-request-stdio.test.mjs`.
+
+## Phase 5d: Re-Verify Remediation (R9 parity — single-test remediation)
+
+Reopened 2026-09-08 against the THIRD verify-report evidence revision
+`sha256:27a1feae2138ade8bca0db1a8e258b5730334f7850bd3d54fce219b1aaaf7f57`
+(verdict FAIL on incomplete evidence, 15/16 scenarios compliant — the
+admission gate refuses anything below 16/16). Targets the single
+remaining blocker: R9 "OpenCode like Pi" had no covering test. Per the
+spec's THEN clause — "rendering and validation match Pi's; only delivery
+differs (sidecar reply, not stdin)" — the parity assertion reads
+`method`, `options`, and `deadlineMs` off the registry entry. These are
+the user-facing fields the app's dialog renderer + exact-value validator
+consume; they MUST be engine-agnostic, with only the `engine` field
+varying (and that variance is the delivery-seam signal `index.mjs`
+branches on).
+
+- [x] 5d.1 (CRITICAL R9 parity) One new `node:test` case in
+      `idupi-server/test/opencode-sidecar.test.mjs` — `REM/R9:
+      PendingUiRequestRegistry produces identical method/options/
+      deadlineMs shape for OpenCode and Pi pend entries (only delivery
+      seam differs)`. Registers an OpenCode entry and a Pi entry against
+      the SAME production `PendingUiRequestRegistry`, with matching
+      `method: "select"` + `options: [...]` inputs, and asserts:
+      `ocHandle.deadlineMs === piHandle.deadlineMs`,
+      `ocEntry.method === piEntry.method`,
+      `deepEqual(ocEntry.options, piEntry.options)`,
+      `ocEntry.title === piEntry.title`,
+      `ocEntry.message === piEntry.message`,
+      `ocEntry.engine !== piEntry.engine` (the ONLY legitimate
+      difference — that is the delivery-seam signal). The per-engine
+      expiry-decision split is intentionally OUT of scope for R9 (lives
+      in the REM/REG block).

@@ -955,16 +955,33 @@ async function freshSidecarForVanish({ snapshot = [], port = 4300 } = {}) {
 }
 
 /**
- * Wire the production-shape vanish-abort handler over a registry + sidecar
- * pair. Mirrors the runOpenCodeCli.onRemoved wiring in index.mjs: tracks
- * the engine→registry requestId map, consults listPendingPermissions as a
- * snapshot fallback, and only force-expires the registry entry when the
- * snapshot confirms the permission is truly gone.
+ * Wire the production vanish-abort handler over a registry + sidecar
+ * pair. Phase 5c (opencode-serve-sidecar remediation): delegates to
+ * `lib/ui-request-vanish.mjs` so the production wiring in
+ * runOpenCodeCli.onRemoved (index.mjs) and this test share ONE
+ * implementation. The previous inline copy
+ * (`wireVanishAbort`, pre-Phase 5c) re-implemented the production
+ * handler and was a drift layer — its own comment admitted it "Mirrors
+ * the runOpenCodeCli.onRemoved wiring". An inline copy IS the drift
+ * layer; an imported helper is not. If the production handler's
+ * taskkill argv or its published event payloads ever change, this test
+ * fails on the FIRST run, not after a silent behaviour change ships.
  *
- * Kept inline in the test so the assertion surface is the exact event the
- * production handler emits (no helper layer to drift).
+ * The dependency bag (execFile / publishChatEvent / clearWriter /
+ * currentActivitySession) is captured by the closure so the REM/R4
+ * tests can assert on the exact side effects: taskkill argv, both
+ * publishChatEvent frames, the registry expire call.
+ *
+ * The `onAbort` callback fires exactly ONCE per vanish event, mirroring
+ * the production's sync return shape:
+ *   - result.ignored=true (unknown engine id): fired synchronously.
+ *   - else (registryRid resolved): fired asynchronously after the
+ *     production's snapshot lookup + abortTurn complete, OR never
+ *     (deferred / registry unaffected) — tests assert side effects
+ *     directly via `deps.events` / `deps.taskkillCalls` /
+ *     `deps.clearedWriters` after the wait loop.
  */
-function wireVanishAbort({ sidecar, registry, onAbort }) {
+function wireVanishAbort({ sidecar, registry, deps, onAbort }) {
     const engineToRegistry = new Map();
     sidecar.subscribeEvents({
         onAsk: (entry) => {
@@ -973,36 +990,98 @@ function wireVanishAbort({ sidecar, registry, onAbort }) {
                 options: entry.options || [], title: "x", message: entry.message || "",
             });
             engineToRegistry.set(entry.requestId, reg.requestId);
+            deps.lastAsk = entry;
         },
         onSaved: () => {},
         onRemoved: (entry) => {
-            (async () => {
-                const registryRid = engineToRegistry.get(entry.requestId);
-                if (!registryRid) return;
-                let snap = null;
-                try {
-                    snap = await sidecar.listPendingPermissions();
-                } catch {
-                    snap = null;
-                }
-                const stillPending = Array.isArray(snap)
-                    && snap.some((p) => (p?.id || p?.requestID) === entry.requestId);
-                if (stillPending) return;
-                const decision = registry.expire(registryRid);
-                onAbort({ engineRid: entry.requestId, registryRid, decision, snapshotAvailable: snap !== null });
-            })();
+            // Delegate to the production helper — single source of truth.
+            const result = deps.applyVanishAbortFn({
+                entry,
+                sidecar,
+                engineToRegistry,
+                uiRequestRegistry: registry,
+                child: deps.child,
+                clearUiRequestSidecarWriter: (rid) => deps.clearedWriters.push(rid),
+                execFile: deps.execFile,
+                publishChatEvent: (eventName, payload) => deps.events.push({ eventName, payload }),
+                currentActivitySession: () => deps.currentSessionId,
+                console: deps.console,
+                CHAT_EVENTS: deps.CHAT_EVENTS,
+            });
+            if (result.ignored) {
+                // Unknown engine id: no async work. Fire onAbort so the
+                // test sees the synchronous guard result.
+                onAbort({
+                    engineRid: entry.requestId,
+                    ignored: true,
+                    registryRid: undefined,
+                });
+            }
+            // Otherwise (registryRid resolved): the abort is fire-and-
+            // forget. Tests poll `deps.events` /
+            // `deps.taskkillCalls` / `deps.clearedWriters` after a
+            // bounded number of `setImmediate` yields. The production
+            // handler has emitted (or NOT emitted) its side effects by
+            // the time the snapshot round-trip settles.
         },
         onUnknown: () => {},
     });
     return engineToRegistry;
 }
 
+/**
+ * Build a fresh dependency bag for the vanish-abort tests. Captures
+ * execFile, publishChatEvent, and clearUiRequestSidecarWriter so the
+ * REM/R4 tests can assert the production handler's exact side effects.
+ * The `applyVanishAbortFn` is bound by the caller after the dynamic
+ * import resolves; until then the wireVanishAbort closure would crash,
+ * so tests must await `loadVanishAbort()` BEFORE pushing the SSE
+ * frames that trigger onRemoved.
+ */
+function makeVanishDeps({ child = { pid: 7777 }, sessionId = "ses_v" } = {}) {
+    const deps = {
+        child,
+        currentSessionId: sessionId,
+        events: [],
+        taskkillCalls: [],
+        clearedWriters: [],
+        console: {
+            log: () => {},
+            warn: () => {},
+            error: () => {},
+        },
+        CHAT_EVENTS: {
+            UI_REQUEST_RESOLVED: "UI_REQUEST_RESOLVED",
+            MESSAGE_END: "MESSAGE_END",
+            THINKING: "THINKING",
+        },
+        applyVanishAbortFn: null, // assigned by the test after loadVanishAbort()
+        lastAsk: null,
+    };
+    deps.execFile = (cmd, args, cb) => {
+        deps.taskkillCalls.push({ cmd, args });
+        if (typeof cb === "function") cb(null);
+    };
+    return deps;
+}
+
+/**
+ * Resolve the production applyVanishAbort import and bind it into the
+ * deps bag. Returns the resolved helper so tests can call it directly
+ * when they want synchronous assertions.
+ */
+async function loadVanishAbort() {
+    return await import("../lib/ui-request-vanish.mjs");
+}
+
 test("REM/R4: vanished permission (absent from snapshot) force-expires the registry entry", async () => {
     const { sidecar, httpRequest } = await freshSidecarForVanish({ snapshot: [], port: 4301 });
     const registry = new PendingUiRequestRegistry({ deadlineMs: 60_000, backstopMs: 300_000 });
-    let abortCount = 0;
-    let abortPayload = null;
-    wireVanishAbort({ sidecar, registry, onAbort: (p) => { abortCount += 1; abortPayload = p; } });
+    const { applyVanishAbort } = await loadVanishAbort();
+    const deps = makeVanishDeps({ child: { pid: 77001 }, sessionId: "ses_v" });
+    deps.applyVanishAbortFn = applyVanishAbort;
+    let ignoredCount = 0;
+    wireVanishAbort({ sidecar, registry, deps, onAbort: () => { ignoredCount += 1; } });
 
     // Drive an ask → snapshot lookup → vanish in one sequence.
     sidecar.subscribeEvents; // (no-op; the subscribeEvents above is already wired)
@@ -1021,16 +1100,54 @@ test("REM/R4: vanished permission (absent from snapshot) force-expires the regis
         "\n",
     );
 
-    // Wait for the listPendingPermissions round-trip + expire.
-    for (let i = 0; i < 20 && abortCount === 0; i += 1) {
+    // Wait for the listPendingPermissions round-trip + the fire-and-forget
+    // abort's microtask drain. The taskkill / publishChatEvent halves all
+    // land in deps.* during the same drain.
+    for (let i = 0; i < 40; i += 1) {
         await new Promise((r) => setImmediate(r));
     }
-    assert.equal(abortCount, 1, "vanish-abort MUST fire exactly once for a truly vanished permission");
-    assert.equal(abortPayload.engineRid, "per_vanish");
-    assert.ok(abortPayload.registryRid, "registryRid MUST be resolved from the engine→registry map");
-    assert.ok(abortPayload.decision, "the registry MUST have transitioned to terminal");
-    assert.equal(abortPayload.snapshotAvailable, true, "the snapshot MUST be available when the engine responded");
+
+    assert.equal(ignoredCount, 0, "no ignored guard for a known engine id");
     assert.equal(registry.count(), 0, "the registry MUST have no pending entries after the vanish abort");
+
+    // Phase 5c side-effect assertions (verify-prescribed contract):
+    // the production handler MUST taskkill the run child, MUST publish
+    // BOTH UI_REQUEST_RESOLVED and MESSAGE_END, and MUST clear the
+    // sidecar writer so a late reply cannot resurrect the request. The
+    // previous test-local mirror asserted none of these — its inline
+    // copy was the drift layer.
+    assert.equal(deps.taskkillCalls.length, 1, "the vanish-abort MUST taskkill the run child exactly once");
+    assert.deepEqual(
+        deps.taskkillCalls[0],
+        { cmd: "taskkill", args: ["/F", "/T", "/PID", "77001"] },
+        "the taskkill argv MUST match /F /T /PID <child.pid>",
+    );
+    const resolvedFrames = deps.events.filter((e) => e.eventName === "UI_REQUEST_RESOLVED");
+    const messageEndFrames = deps.events.filter((e) => e.eventName === "MESSAGE_END");
+    assert.equal(resolvedFrames.length, 1, "the vanish-abort MUST publish exactly one UI_REQUEST_RESOLVED frame");
+    assert.deepEqual(
+        resolvedFrames[0].payload,
+        {
+            requestId: resolvedFrames[0].payload.requestId,
+            sessionId: "ses_v",
+            engine: "opencode",
+            resolution: "cancelled",
+            value: { cancelled: true },
+        },
+        "the UI_REQUEST_RESOLVED payload MUST match the spec's vanish-abort terminality shape",
+    );
+    // The registry-requestId is generated by the registry itself; assert
+    // the resolved-frame requestId matches the cleared writer.
+    assert.equal(resolvedFrames[0].payload.requestId, deps.clearedWriters[0],
+        "the resolved-frame requestId MUST match the cleared sidecar writer");
+    assert.equal(messageEndFrames.length, 1, "the vanish-abort MUST publish exactly one MESSAGE_END frame");
+    assert.match(
+        messageEndFrames[0].payload.text,
+        /Permiso de OpenCode desapareció/,
+        "the MESSAGE_END text MUST be the Spanish abort notice from the spec",
+    );
+    assert.equal(deps.clearedWriters.length, 1,
+        "the vanish-abort MUST clear the per-requestId sidecar writer (terminality contract)");
 
     // And the snapshot path MUST have been hit.
     const snapshotCall = httpRequest.calls.find((c) => c.url?.endsWith("/api/permission"));
@@ -1043,8 +1160,11 @@ test("REM/R4: vanished permission that IS still in the snapshot does NOT abort t
         port: 4302,
     });
     const registry = new PendingUiRequestRegistry({ deadlineMs: 60_000, backstopMs: 300_000 });
-    let abortCount = 0;
-    wireVanishAbort({ sidecar, registry, onAbort: () => { abortCount += 1; } });
+    const { applyVanishAbort } = await loadVanishAbort();
+    const deps = makeVanishDeps({ child: { pid: 77002 }, sessionId: "ses_v" });
+    deps.applyVanishAbortFn = applyVanishAbort;
+    let ignoredCount = 0;
+    wireVanishAbort({ sidecar, registry, deps, onAbort: () => { ignoredCount += 1; } });
 
     const fakeChildForWire = sidecar._child;
     fakeChildForWire.stdout.push(
@@ -1063,11 +1183,21 @@ test("REM/R4: vanished permission that IS still in the snapshot does NOT abort t
         `data: ${JSON.stringify({ requestID: "per_still" })}\n` +
         "\n",
     );
-    for (let i = 0; i < 20; i += 1) {
+    for (let i = 0; i < 40; i += 1) {
         await new Promise((r) => setImmediate(r));
     }
-    assert.equal(abortCount, 0, "vanish-abort MUST NOT fire when the snapshot still reports the permission");
+    assert.equal(ignoredCount, 0, "no ignored guard for a known engine id");
     assert.equal(registry.count(), 1, "the registry entry MUST remain pending when the abort is deferred");
+
+    // Phase 5c: even on the deferred path, the taskkill / publishChatEvent
+    // halves MUST NOT fire (D7: do not kill anything when the engine still
+    // reports the id).
+    assert.equal(deps.taskkillCalls.length, 0, "no taskkill MUST fire while the snapshot still reports the permission");
+    const resolvedFrames = deps.events.filter((e) => e.eventName === "UI_REQUEST_RESOLVED");
+    const messageEndFrames = deps.events.filter((e) => e.eventName === "MESSAGE_END");
+    assert.equal(resolvedFrames.length, 0, "no UI_REQUEST_RESOLVED MUST publish on the deferred path");
+    assert.equal(messageEndFrames.length, 0, "no MESSAGE_END MUST publish on the deferred path");
+    assert.deepEqual(deps.clearedWriters, [], "no writer MUST be cleared on the deferred path");
 
     const snapshotCall = httpRequest.calls.find((c) => c.url?.endsWith("/api/permission"));
     assert.ok(snapshotCall, "the snapshot path MUST be consulted on every vanish signal");
@@ -1079,8 +1209,11 @@ test("REM/R4: vanished permission whose engine id is unknown to the run is ignor
     // The handler MUST NOT abort anything because there is nothing to abort.
     const { sidecar } = await freshSidecarForVanish({ snapshot: [], port: 4303 });
     const registry = new PendingUiRequestRegistry({ deadlineMs: 60_000, backstopMs: 300_000 });
-    let abortCount = 0;
-    wireVanishAbort({ sidecar, registry, onAbort: () => { abortCount += 1; } });
+    const { applyVanishAbort } = await loadVanishAbort();
+    const deps = makeVanishDeps({ child: { pid: 77003 }, sessionId: "ses_v" });
+    deps.applyVanishAbortFn = applyVanishAbort;
+    let ignoredPayload = null;
+    wireVanishAbort({ sidecar, registry, deps, onAbort: (p) => { ignoredPayload = p; } });
 
     sidecar._child.stdout.push(
         "event: permission.removed\n" +
@@ -1090,8 +1223,72 @@ test("REM/R4: vanished permission whose engine id is unknown to the run is ignor
     for (let i = 0; i < 20; i += 1) {
         await new Promise((r) => setImmediate(r));
     }
-    assert.equal(abortCount, 0, "unknown engine requestId MUST NOT trigger an abort");
+    assert.ok(ignoredPayload, "the unknown-engine-id branch MUST report via onAbort");
+    assert.equal(ignoredPayload.ignored, true, "the unknown-engine-id branch MUST flag ignored=true");
+    assert.equal(ignoredPayload.engineRid, "per_orphan");
     assert.equal(registry.count(), 0, "no registry entries to expire");
+
+    // Phase 5c: zero side effects on the ignored path — no kill, no SSE
+    // frames, no writer cleared. An earlier wiring that logged but did
+    // not act is exactly what the verify report flagged; the extracted
+    // helper preserves the early-return guard.
+    assert.equal(deps.taskkillCalls.length, 0, "no taskkill MUST fire on an unknown engine id");
+    const resolvedFrames = deps.events.filter((e) => e.eventName === "UI_REQUEST_RESOLVED");
+    const messageEndFrames = deps.events.filter((e) => e.eventName === "MESSAGE_END");
+    assert.equal(resolvedFrames.length, 0, "no UI_REQUEST_RESOLVED MUST publish on the ignored path");
+    assert.equal(messageEndFrames.length, 0, "no MESSAGE_END MUST publish on the ignored path");
+    assert.deepEqual(deps.clearedWriters, [], "no writer MUST be cleared on the ignored path");
+});
+
+// ---------------------------------------------------------------------------
+// R5 Auto-Approve Toggle header parser (Phase 5c, blocker #1 from the
+// re-verify verdict at sha256:66e24d8817c8739d2b4293a3bdc49de3e9fea6c7a33c7efdf037006445f6ec22)
+//
+// The verify-prescribed contract:
+//   - header "1" → runOpenCodeCli(... , autoApprove=true)
+//   - header "0" / absent / non-"1" → runOpenCodeCli(... , autoApprove=false)
+//
+// The thread-through into runOpenCodeCli is asserted via a focused test
+// on the pure helper parseOpenCodeAutoApproveHeader below; the
+// sidecar/--auto coupling is already pinned by the existing
+// agent-cmdline.test.mjs (autoApprove:false drops --auto).
+// ---------------------------------------------------------------------------
+
+test("REM/R5: parseOpenCodeAutoApproveHeader returns true when header is exactly '1'", async () => {
+    const { parseOpenCodeAutoApproveHeader } = await import("../lib/opencode-auto-approve-header.mjs");
+    assert.equal(parseOpenCodeAutoApproveHeader({ "x-opencode-auto-approve": "1" }), true,
+        "header value '1' MUST map to autoApprove=true (toggle ON → legacy --auto path)");
+    // Tolerate surrounding whitespace as a courtesy but nothing else.
+    assert.equal(parseOpenCodeAutoApproveHeader({ "x-opencode-auto-approve": " 1 " }), true,
+        "whitespace around '1' MUST still map to true (lenient)");
+});
+
+test("REM/R5: parseOpenCodeAutoApproveHeader returns false for '0', absent, and non-'1' values (fail-closed)", async () => {
+    const { parseOpenCodeAutoApproveHeader } = await import("../lib/opencode-auto-approve-header.mjs");
+    assert.equal(parseOpenCodeAutoApproveHeader({ "x-opencode-auto-approve": "0" }), false,
+        "header value '0' MUST map to autoApprove=false (sidecar-first path)");
+    assert.equal(parseOpenCodeAutoApproveHeader({}), false,
+        "absent header MUST map to autoApprove=false (sidecar-first path)");
+    assert.equal(parseOpenCodeAutoApproveHeader(undefined), false,
+        "undefined headers object MUST map to autoApprove=false (defensive)");
+    assert.equal(parseOpenCodeAutoApproveHeader(null), false,
+        "null headers object MUST map to autoApprove=false (defensive)");
+    assert.equal(parseOpenCodeAutoApproveHeader({ "x-opencode-auto-approve": "true" }), false,
+        "non-'1' literal strings MUST map to false (fail-closed)");
+    assert.equal(parseOpenCodeAutoApproveHeader({ "x-opencode-auto-approve": "yes" }), false,
+        "'yes' MUST map to false — the wire contract is the digit '1'");
+    assert.equal(parseOpenCodeAutoApproveHeader({ "x-opencode-auto-approve": "" }), false,
+        "empty value MUST map to false (defensive)");
+    assert.equal(parseOpenCodeAutoApproveHeader({ "x-opencode-auto-approve": " 0 " }), false,
+        "whitespace around '0' MUST still map to false");
+    assert.equal(parseOpenCodeAutoApproveHeader({ "x-opencode-auto-approve": "11" }), false,
+        "'11' MUST map to false — exact match on the digit '1' only");
+});
+
+test("REM/R5: parseOpenCodeAutoApproveHeader exposes the wire constant OPENCODE_AUTO_APPROVE_HEADER", async () => {
+    const mod = await import("../lib/opencode-auto-approve-header.mjs");
+    assert.equal(mod.OPENCODE_AUTO_APPROVE_HEADER, "x-opencode-auto-approve",
+        "the header constant MUST be the lowercase wire name (Node http.IncomingMessage.headers lowercases keys)");
 });
 
 // ---------------------------------------------------------------------------
@@ -1127,4 +1324,108 @@ test("REM/REG: buildAutoApproveDecision returns CANCEL for stdin-engine confirm/
     assert.deepEqual(piConfirm.value, { cancelled: true });
     assert.equal(piInput.source, "auto_approve");
     assert.deepEqual(piInput.value, { cancelled: true });
+});
+
+// ---------------------------------------------------------------------------
+// R9 Universal Engine Coverage — "OpenCode like Pi" parity
+//
+// Single-test remediation for the verify-report.md verdict FAIL at
+// sha256:27a1feae2138ade8bca0db1a8e258b5730334f7850bd3d54fce219b1aaaf7f57
+// (15/16 scenarios compliant). The spec's THEN clause:
+//
+//   "rendering and validation match Pi's; only delivery differs
+//    (sidecar reply, not stdin)"
+//
+// The user-facing fields the app's dialog renderer + validator consume off
+// a pend entry are exactly `method`, `options`, and `deadlineMs`. This test
+// pins the parity contract end-to-end: two pend entries registered through
+// the SAME production registry, one with engine="opencode" and one with
+// engine="pi-cli", MUST produce identical method/options/deadlineMs shape;
+// the engine field (and the resulting delivery-seam branch in index.mjs)
+// is the only thing that legitimately differs.
+// ---------------------------------------------------------------------------
+
+test("REM/R9: PendingUiRequestRegistry produces identical method/options/deadlineMs shape for OpenCode and Pi pend entries (only delivery seam differs)", async () => {
+    const { PendingUiRequestRegistry, UI_REQUEST_METHODS } = await import("../lib/ui-request-registry.mjs");
+    const registry = new PendingUiRequestRegistry({ deadlineMs: 60_000, backstopMs: 300_000 });
+
+    // Both engines ask the same select question with the same option set.
+    // Per R9, the user-visible pend shape MUST be identical across engines.
+    const sharedTitle = "Choose a tool";
+    const sharedMessage = "Pick one";
+    const sharedOptions = ["Todo", "Read", "Bash"];
+
+    const ocHandle = registry.register({
+        sessionId: "ses_parity_oc",
+        engine: "opencode",
+        method: UI_REQUEST_METHODS.SELECT,
+        options: sharedOptions,
+        title: sharedTitle,
+        message: sharedMessage,
+    });
+
+    const piHandle = registry.register({
+        sessionId: "ses_parity_pi",
+        engine: "pi-cli",
+        method: UI_REQUEST_METHODS.SELECT,
+        options: sharedOptions,
+        title: sharedTitle,
+        message: sharedMessage,
+    });
+
+    // deadlineMs is what the app reads off the register() return value to
+    // drive its countdown UI + answer-expiry timer. It is engine-agnostic
+    // by spec ("Universal Engine Coverage").
+    assert.equal(ocHandle.deadlineMs, piHandle.deadlineMs,
+        "OpenCode and Pi pend handles MUST report identical deadlineMs (the grace window is engine-agnostic)");
+    assert.equal(ocHandle.deadlineMs, 60_000,
+        "deadlineMs MUST equal the registry's configured grace window (no engine-specific override)");
+
+    const ocEntries = registry.pendingFor("ses_parity_oc");
+    const piEntries = registry.pendingFor("ses_parity_pi");
+    assert.equal(ocEntries.length, 1, "the OpenCode pend entry MUST be live");
+    assert.equal(piEntries.length, 1, "the Pi pend entry MUST be live");
+    const ocEntry = ocEntries[0];
+    const piEntry = piEntries[0];
+
+    // THE parity assertion the verify report flagged as missing — the
+    // three fields the app's renderer + validator read off the entry:
+    assert.equal(ocEntry.method, piEntry.method,
+        "OpenCode and Pi entries MUST have identical method (drives confirm/select/input rendering)");
+    assert.deepEqual(ocEntry.options, piEntry.options,
+        "OpenCode and Pi entries MUST have identical options (drives select dialog rendering AND exact-value validation)");
+    assert.deepEqual([...ocEntry.options].sort(), [...sharedOptions].sort(),
+        "the OpenCode options MUST equal the set the caller registered (no engine-specific munging)");
+    assert.deepEqual([...piEntry.options].sort(), [...sharedOptions].sort(),
+        "the Pi options MUST equal the set the caller registered (no engine-specific munging)");
+
+    // Title / message also flow to the dialog body without engine-specific
+    // mutation, per the spec's "rendering matches Pi's" clause.
+    assert.equal(ocEntry.title, piEntry.title,
+        "title MUST be engine-agnostic (drives the dialog header)");
+    assert.equal(ocEntry.message, piEntry.message,
+        "message MUST be engine-agnostic (drives the dialog body)");
+
+    // The ONLY legitimate difference between the two entries is the engine
+    // field — that is the signal index.mjs branches on to route the
+    // answer through sidecar.reply (opencode) vs stdin (pi). Everything
+    // else the app consumes is identical, which is the spec's parity
+    // promise.
+    assert.notEqual(ocEntry.engine, piEntry.engine,
+        "engine field MUST differ — that is the delivery-seam signal the route branches on");
+    assert.equal(ocEntry.engine, "opencode");
+    assert.equal(piEntry.engine, "pi-cli");
+
+    // Sanity: the registry exposes the pend entries in the count and the
+    // entries can be retrieved by requestId for the transport layer to
+    // resolve. None of these are engine-specific either.
+    assert.equal(registry.count(), 2, "both pend entries MUST count as pending");
+    const ocById = registry.pendingFor("ses_parity_oc")[0];
+    const piById = registry.pendingFor("ses_parity_pi")[0];
+    assert.equal(ocById.method, "select");
+    assert.equal(piById.method, "select");
+
+    // Expiry decision parity is intentionally OUT of scope for R9 — the
+    // per-engine split (OpenCode → CANCEL, stdin → blanket) is the
+    // REM/REG contract above. R9 only asserts the pend-shape contract.
 });
