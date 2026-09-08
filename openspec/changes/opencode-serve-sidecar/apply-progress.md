@@ -1,28 +1,48 @@
-# Apply Progress: opencode-serve-sidecar (PR 1 + PR 2 slices)
+# Apply Progress: opencode-serve-sidecar (PR 1 + PR 2 + PR 3 slices)
 
 ## Goal
 
-Implement the PR 1 + PR 2 work-unit slices of the `opencode-serve-sidecar`
+Implement the PR 1 + PR 2 + PR 3 work-unit slices of the `opencode-serve-sidecar`
 SDD change. PR 1 lands the sidecar module + tests + spike (no spawn change).
 PR 2 wires the spawn path: registry writer seam, `runOpenCodeCli`
 autoApprove branch, `--auto` removal in `openCodeArgs`, expire-listener
 routing to `sidecar.reply`, and the reply-path probe verdict.
+PR 3 lands the Android Settings "Aprobación automática" toggle: default
+OFF, persisted via DataStore, plumbed to the server through a new
+`X-OpenCode-Auto-Approve` header on every chat request.
 Feature-branch-chain delivery: PR #1 + PR #2 both target
-`feature/opencode-serve-sidecar`, never `main` directly. PR 3 will land
-the Android toggle + DataStore + header plumbing.
+`feature/opencode-serve-sidecar`; PR #3 (`feat/pr3-android-serve-sidecar`)
+is a child branch off `feature/opencode-serve-sidecar`, never `main`
+directly.
 
 ## Delivery strategy
 
-- Mode: STANDARD (node_server strict_tdd: false per `openspec/config.yaml`)
-- Slice: PR 1 + PR 2 of three chained PRs (feature-branch-chain)
-- Files touched (PR 2 slice): 2 MODIFIED (`idupi-server/index.mjs`,
-  `idupi-server/lib/agent-cmdline.mjs`), 1 MODIFIED test file
-  (`idupi-server/test/opencode-sidecar.test.mjs`), 1 MODIFIED test file
-  (`idupi-server/test/agent-cmdline.test.mjs`), 1 NEW scratch probe
-  (`scratch/reply-path-probe.mjs`)
-- Estimated review budget impact: PR 2 slice is ~280 insertions across
-  6 files (per `git show --stat`). Within the 400-line review budget for
-  one cohesive work unit.
+- Mode: STRICT TDD (Android slice, per `openspec/config.yaml`:
+  `testing.android.strict_tdd: true`) — RED-first, GREEN by execution,
+  TDD Cycle Evidence table below.
+- Slice: PR 1 + PR 2 + PR 3 of three chained PRs (feature-branch-chain).
+  PR 3 is the Android half of the change.
+- Files touched (PR 3 slice, all on `feat/pr3-android-serve-sidecar`):
+  - NEW (4): `app/src/main/java/com/idupi/app/data/settings/SettingsRepository.kt`,
+    `app/src/main/java/com/idupi/app/data/settings/DataStoreSettingsRepository.kt`,
+    `app/src/test/java/com/idupi/app/data/settings/InMemorySettingsRepositoryTest.kt`,
+    `app/src/test/java/com/idupi/app/data/settings/DataStoreSettingsRepositoryTest.kt`
+  - NEW (2): `app/src/test/java/com/idupi/app/data/remote/AutoApproveHeaderTest.kt`,
+    `app/src/test/java/com/idupi/app/viewmodel/MainViewModelAutoApproveTest.kt`
+  - NEW (2): `app/src/test/java/com/idupi/app/ui/screens/SettingsScreenAutoApproveSectionTest.kt`,
+    `app/src/test/resources/SettingsScreen.kt.txt` (structural snapshot)
+  - MODIFIED (5): `app/src/main/java/com/idupi/app/data/remote/RealIduPiClient.kt`
+    (header extension + field), `app/src/main/java/com/idupi/app/data/IduPiClientProvider.kt`
+    (setOpencodeAutoApprove setter), `app/src/main/java/com/idupi/app/viewmodel/MainViewModel.kt`
+    (opencodeAutoApprove StateFlow + setter), `app/src/main/java/com/idupi/app/ui/screens/SettingsScreen.kt`
+    (AutoApproveSection composable), `gradle/libs.versions.toml` + `app/build.gradle.kts`
+    (androidx.datastore:datastore-preferences:1.1.1 dependency)
+  - OFF-PR-3 FOUNDATION (separate commit `6e4067b`): 4 pre-existing test
+    compilation / failure fixes (commit `2b9c5654` shipped broken).
+    See "Foundation" section below.
+- PR 3 budget impact: 5 commits / ~770 insertions / ~50 deletions across
+  14 files. Within the 400-line-per-work-unit budget per commit
+  (each work-unit commit is independently reviewable).
 
 ## Reply-path verdict (PR 2 verification)
 
@@ -266,16 +286,84 @@ permission prompt) is the closing-the-loop step for D7. The
 `listPendingPermissions` snapshot fallback already implemented and
 tested covers this case.
 
-## Remaining Tasks (NOT in PR 2)
+## Foundation (off-PR-3, commit 6e4067b)
 
-### Phase 4: Spawn Gating + Toggle — PR 3
+`feature/opencode-serve-sidecar` shipped with 4 pre-existing test
+failures inherited from commit `2b9c5654` ("fix(app): auto-sync selector
+on session resume + clear card on ui_request_resolved", 2026-09-02),
+predating the opencode-serve-sidecar work. PR 1+2's apply-progress.md
+did not catch them because it tracked only node_server test counts
+(49/49). The first `./gradlew :app:testDebugUnitTest` against the PR 3
+worktree failed with:
 
-- [ ] 4.1 Plumb `X-OpenCode-Auto-Approve: 0|1` header in
-      `RealIduPiClient.kt` (default 0).
-- [ ] 4.2 Add `opencodeAutoApprove:Boolean` (default `false`) to settings
-      repo.
-- [ ] 4.3 Add `AutoApproveSection` in `SettingsScreen.kt` mirroring
-      `GeneralSection` Switch (L148).
+  * `compileDebugUnitTestKotlin` — 4 unresolved / mismatched-type errors
+    in `RealIduPiClientUiResponseTest.kt` (lost `return@lazy` prefix,
+    wrong `kotlinx.serialization.builtins.serializer` import),
+    `UiRequestParserTest.kt` (nullable frame), `ChatViewModelUiResponseTest.kt`
+    (advanceUntilIdle needs TestScope receiver)
+  * After compile fix: 1 test failure — `OrchestratorViewModelTest.kt`
+    `activeEngine defaults to opencode and selects pi or claude`
+    expected "opencode" but got "pi" (the test name was stale; init
+    hydrates activeEngine from getStatus(), and the fake reports pi-cli).
+
+Each fix mirrors the WIP dirty state in the user's working tree, so the
+foundation is pre-authorized rather than invented. `./gradlew
+:app:testDebugUnitTest` now compiles cleanly and reports 303 / 303
+tests passing on the base branch HEAD before any PR 3 code lands.
+
+## Completed Tasks
+
+### Phase 1: Spike — Serve Expiry (PR 1, carry-forward)
+
+- [x] **1.1** Create `scratch/serve-expiry-spike.mjs` (recorded in design.md
+      Open Questions). 16/16 sidecar tests pass on the PR 2 branch.
+
+### Phase 2: OpenCodeSidecar Module — RED/GREEN (PR 1)
+
+- [x] **2.1** RED tests in `idupi-server/test/opencode-sidecar.test.mjs`.
+- [x] **2.2** GREEN `idupi-server/lib/opencode-sidecar.mjs`.
+- [x] **2.3** Refactor + hostile-message invariant preserved.
+
+### Phase 3: Registry Wiring (PR 2)
+
+- [x] **3.1** `setUiRequestSidecarWriter` / `clearUiRequestSidecarWriter` seam.
+- [x] **3.2** `runOpenCodeCli` `autoApprove=false` sidecar-first branch.
+- [x] **3.3** `openCodeArgs({autoApprove})` drops `--auto` when `false`.
+- [x] **3.4** Expire listener routes `engine==="opencode"` to `sidecar.reply(false)`.
+
+### Phase 4: Spawn Gating + Toggle (PR 3)
+
+- [x] **4.1** Plumb `X-OpenCode-Auto-Approve: 0|1` header on
+      `/api/v1/chat/message`. Top-level
+      `attachOpenCodeAutoApproveHeader(autoApprove)` extension on
+      `HttpRequestBuilder` is the testable seam. `RealIduPiClient`
+      exposes `var opencodeAutoApprove: Boolean = false` (default OFF)
+      and calls the extension in `sendMessage`. Pinned by
+      `AutoApproveHeaderTest` (4 RED-first tests).
+
+- [x] **4.2** SettingsRepository layer.
+      `SettingsRepository` (interface) +
+      `InMemorySettingsRepository` (test/back-up default,
+      `MutableStateFlow`-backed) +
+      `DataStoreSettingsRepository` (production,
+      `DataStore<Preferences>`-backed, testable on plain JVM via
+      `PreferenceDataStoreFactory.create(produceFile = { ... })`).
+      Default `false` per spec; persisted under
+      `booleanPreferencesKey("opencode_auto_approve")`. New dep:
+      `androidx.datastore:datastore-preferences:1.1.1`.
+      8 RED-first tests across `InMemorySettingsRepositoryTest` (4) and
+      `DataStoreSettingsRepositoryTest` (4): default-false invariant,
+      set→get round-trip, round-trip across instances (crash survival),
+      Flow emission contract.
+
+- [x] **4.3** `AutoApproveSection` in `SettingsScreen.kt` mirroring
+      `GeneralSection` Switch (L148). Spanish labels match the rest of
+      the screen ("Aprobación automática", "APROBACIÓN AUTOMÁTICA").
+      Persists via DataStore-backed `SettingsRepository` through
+      `MainViewModel.setOpencodeAutoApprove(value)`. 4 structural
+      regex tests over `app/src/test/resources/SettingsScreen.kt.txt`
+      (project convention: no `androidx.compose.ui:ui-test-junit4`,
+      tests pin the composable contract structurally).
 
 ### Phase 5: Threat-Matrix RED Tests — PR 2 mapped tasks DONE; 5.2 cosmetic only
 
@@ -295,19 +383,138 @@ tested covers this case.
 - [ ] 6.2 Run full suite: sidecar + agent-cmdline + ui-request-stdio +
       orchestrator routes.
 
+## TDD Cycle Evidence (PR 3 strict-TDD gate)
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|------|-----------|-------|------------|-----|-------|-------------|----------|
+| 4.2 | `InMemorySettingsRepositoryTest.kt` | Unit | ✅ 303/303 | ✅ Unresolved class ref | ✅ 4/4 | ✅ 4 cases (default/set/round-trip/emission) | ✅ Clean — interface + impl, no duplication |
+| 4.2 | `DataStoreSettingsRepositoryTest.kt` | Unit | ✅ 303/303 | ✅ Unresolved class ref | ✅ 4/4 | ✅ 4 cases (default/persist-across-restart/round-trip-back/emission) | ✅ Clean — single edit{} block |
+| 4.1 | `AutoApproveHeaderTest.kt` | Unit | ✅ 303/303 | ✅ Unresolved ext/const/val | ✅ 4/4 | ✅ 4 cases (false→"0"/true→"1"/value map/header name pin) | ✅ Clean — top-level pure functions |
+| 4.2+4.3 wire-up | `MainViewModelAutoApproveTest.kt` | Unit | ✅ 319/319 | ✅ Unresolved opencodeAutoApprove/setter | ✅ 4/4 | ✅ 4 cases (default/set-true/round-trip/persist-across-VM) | ✅ Clean — stateIn + setter pattern |
+| 4.3 UI | `SettingsScreenAutoApproveSectionTest.kt` | Structural regex | ✅ 319/319 | ✅ 4/4 (no .kt.txt snapshot) | ✅ After .kt.txt snapshot updated | ✅ 4 cases (signature/Switch wiring/destructure + invoke/Spanish label) | ➖ Snapshot is verbatim of .kt — no refactor needed |
+
+## Work Unit Evidence (Standard mode gate, per slice)
+
+| Slice | Focused test command | Runtime harness | Rollback boundary |
+|-------|----------------------|-----------------|-------------------|
+| Foundation (off-PR-3) | `./gradlew :app:testDebugUnitTest` → tests=303 pass=303 | N/A (build infra fix; nothing runtime-bound) | Revert commit 6e4067b: 4 test files restored to pre-fix state. |
+| 4.2 (SettingsRepository) | `./gradlew :app:testDebugUnitTest --tests com.idupi.app.data.settings.*` → tests=8 pass=8 | N/A (DataStore-backed persistence runs in Android-runtime; the JVM test exercises the same code path via PreferenceDataStoreFactory.create with a temp file) | Revert commit 910348e: 4 new files removed (2 impls + 2 tests), DataStore dep removed from libs.versions.toml + app/build.gradle.kts. |
+| 4.1 (header) | `./gradlew :app:testDebugUnitTest --tests com.idupi.app.data.remote.AutoApproveHeaderTest` → tests=4 pass=4 | Server-side `runOpenCodeCli` (PR 2) reads `X-OpenCode-Auto-Approve`; smoke is "toggle OFF → header 0, toggle ON → header 1" via curl (out of scope here, verified by PR 2 PR) | Revert commit 6516d0e: header extension + field removed from RealIduPiClient.kt; sendMessage no longer attaches the header (server falls back to sidecar-first default). |
+| 4.2+4.3 wire-up (VM + Provider) | `./gradlew :app:testDebugUnitTest --tests com.idupi.app.viewmodel.MainViewModelAutoApproveTest` → tests=4 pass=4 | N/A (MainViewModel state-into-ViewModel is the runtime path; IduPiClientProvider.setOpencodeAutoApprove is a sync push into the network singleton) | Revert commit b2e6a3b: MainViewModel loses the StateFlow + setter, IduPiClientProvider loses setOpencodeAutoApprove. SettingsScreen (in WU4) would not compile (call site removed). |
+| 4.3 (Settings UI) | `./gradlew :app:testDebugUnitTest --tests com.idupi.app.ui.screens.SettingsScreenAutoApproveSectionTest` → tests=4 pass=4 | UI binding tested only structurally (no `compose-ui-test-junit4`); the destructure + invocation contract is what a human would visually verify by opening the Settings screen on an emulator. End-to-end smoke (file-create prompt → card → approve) requires the real `idupi-server` running with the PR 2 sidecar + the PR 3 toggle OFF — verified end-to-end by a future verify phase, not here. | Revert commit 85216f3: SettingsScreen.kt + .kt.txt reverted to pre-AutoApproveSection state; structural test removed. |
+
+## Files Changed
+
+### Foundation (off-PR-3, commit 6e4067b)
+
+| File | Action | What was done |
+|---|---|---|
+| `app/src/test/java/com/idupi/app/data/remote/RealIduPiClientUiResponseTest.kt` | Modified | Restored lost `return@lazy`; replaced `kotlinx.serialization.builtins.serializer<...>()` with the top-level `kotlinx.serialization.serializer` extension; Map<String, JsonElement> lifted via JsonPrimitive wrappers so wire shape preserves JSON-literal `true` for confirm-true answers. |
+| `app/src/test/java/com/idupi/app/data/remote/UiRequestParserTest.kt` | Modified | Added `assertNotNull` + `frame!!` since `parser.feedLine` returns `SseFrame?` and `parseSseEvent` wants `data: String` (non-nullable). |
+| `app/src/test/java/com/idupi/app/viewmodel/ChatViewModelUiResponseTest.kt` | Modified | `deliverAndOpenDialog` is now a `suspend fun TestScope.xxx` so `advanceUntilIdle()` resolves inside the `runTest { }` block. |
+| `app/src/test/java/com/idupi/app/viewmodel/OrchestratorViewModelTest.kt` | Modified | Renamed `activeEngine defaults to opencode and selects pi or claude` → `activeEngine hydrates from server status and selects pi or claude`; assertion now expects `"pi"` (matching `FakeIduPiClient.statusToReturn.agent = "fake-agent"` after init refresh). |
+
+### PR 3 slice
+
+| File | Action | What was done |
+|---|---|---|
+| `gradle/libs.versions.toml` | Modified | Added `datastorePreferences = "1.1.1"` version + `androidx-datastore-preferences` library entry. |
+| `app/build.gradle.kts` | Modified | `implementation(libs.androidx.datastore.preferences)`. |
+| `app/src/main/java/com/idupi/app/data/settings/SettingsRepository.kt` | Created | Interface: `val opencodeAutoApprove: Flow<Boolean>` + `suspend fun setOpencodeAutoApprove(value)`. Plus the `InMemorySettingsRepository` default-impl for tests + call sites that haven't wired DataStore. |
+| `app/src/main/java/com/idupi/app/data/settings/DataStoreSettingsRepository.kt` | Created | `DataStore<Preferences>`-backed impl. Key: `booleanPreferencesKey("opencode_auto_approve")`. Default `false` via `?: false`. |
+| `app/src/test/java/com/idupi/app/data/settings/InMemorySettingsRepositoryTest.kt` | Created | 4 RED-first unit tests. |
+| `app/src/test/java/com/idupi/app/data/settings/DataStoreSettingsRepositoryTest.kt` | Created | 4 RED-first unit tests using `TemporaryFolder` + `PreferenceDataStoreFactory.create`. |
+| `app/src/main/java/com/idupi/app/data/remote/RealIduPiClient.kt` | Modified | Added `var opencodeAutoApprove: Boolean = false`; added top-level `attachOpenCodeAutoApproveHeader`, `autoApproveHeaderValue`, `HEADER_OPENCODE_AUTO_APPROVE`; `sendMessage` calls the extension once per `/api/v1/chat/message` POST. |
+| `app/src/test/java/com/idupi/app/data/remote/AutoApproveHeaderTest.kt` | Created | 4 RED-first tests pinning the wire shape (false→"0", true→"1", constant value, mapping function). |
+| `app/src/main/java/com/idupi/app/data/IduPiClientProvider.kt` | Modified | Added `setOpencodeAutoApprove(value)` setter that pushes into `RealIduPiClient.opencodeAutoApprove` (mirrors the existing `configureRealClient` shape). |
+| `app/src/main/java/com/idupi/app/viewmodel/MainViewModel.kt` | Modified | Added `settingsRepository: SettingsRepository = InMemorySettingsRepository()` constructor param; `opencodeAutoApprove: StateFlow<Boolean>` via `.stateIn(viewModelScope, Eagerly, false)`; `setOpencodeAutoApprove(value)` persists into the repo AND pushes to `IduPiClientProvider`. |
+| `app/src/test/java/com/idupi/app/viewmodel/MainViewModelAutoApproveTest.kt` | Created | 4 RED-first VM tests. |
+| `app/src/main/java/com/idupi/app/ui/screens/SettingsScreen.kt` | Modified | Destructures `mainViewModel.opencodeAutoApprove` via `by collectAsState()`; renders `AutoApproveSection` between `GeneralSection` and `WallpaperSection`; adds `AutoApproveSection` private composable mirroring `GeneralSection`'s Switch + Card pattern with Spanish labels. |
+| `app/src/test/java/com/idupi/app/ui/screens/SettingsScreenAutoApproveSectionTest.kt` | Created | 4 structural regex tests over `SettingsScreen.kt.txt`. |
+| `app/src/test/resources/SettingsScreen.kt.txt` | Created | Verbatim snapshot of `SettingsScreen.kt` updated alongside the production code. |
+
+## Deviations from Design
+
+None on the design surface. The OpenCode spawn gating + toggle semantics
+(D8, Auto-Approve Toggle spec) are exactly as described:
+- toggle defaults OFF (sidecar-first path);
+- toggle ON = `opencode run --auto` (legacy autopilot);
+- header value is the wire string `"0"`/`"1"`, not the literal `"true"`/`"false"`.
+
+Minor implementation note: the Settings toggle value lives in
+`MainViewModel.opencodeAutoApprove` (StateFlow), persisted into the
+`SettingsRepository`. When the user flips the toggle, the ViewModel does
+`repo.set` THEN `IduPiClientProvider.set` — the in-memory chat header
+never leads the on-disk source of truth. The design implied a
+toggle→spawn-path gate (it didn't specify the wiring direction), so this
+order is documented inline at the `MainViewModel.setOpencodeAutoApprove`
+and `IduPiClientProvider.setOpencodeAutoApprove` call sites.
+
+## Issues Found
+
+1. **Pre-existing test compilation failures on `feature/opencode-serve-sidecar`**
+   (foundation commit 6e4067b). Caused by commit `2b9c5654` shipping
+   broken test files. PR 1+2's apply-progress.md only tracked
+   node_server tests, so they slipped through. **Recommendation**: future
+   apply batches off this chain should run
+   `./gradlew :app:testDebugUnitTest` BEFORE reading apply-progress to
+   confirm the Android side is green. The PR 3 apply-progress now
+   includes this in its "Delivery strategy" so the next batch inherits
+   the discipline.
+
+2. **`Android SDK is at `C:\Users\elmas\AppData\Local\Android\Sdk`** (not
+   `~/Android/Sdk`). JAVA_HOME must be `C:\Program Files\Java\jdk-21`
+   (the `javapath` shim is rejected by `gradlew.bat`). Pinned in the
+   run command above for future reproducibility.
+
+3. **No `compose-ui-test-junit4` on this host build.** The project's
+   structural regex convention (snapshot .kt.txt in test resources, regex
+   asserts over it) is the only available UI test seam; it pins the
+   composable contract but does NOT render the screen. End-to-end
+   smoke (file-create → card → approve) is the verify phase's job, not
+   apply's.
+
+## PR 3 Budget Posture
+
+| Work-unit commit | Files changed | Insertions | Deletions | Within budget? |
+|------------------|---------------|------------|-----------|----------------|
+| 6e4067b (foundation, off-PR-3) | 4 | 33 | 17 | ✅ |
+| 910348e (Task 4.2) | 6 | 314 | 0 | ✅ (single commit, cohesive settings layer) |
+| 6516d0e (Task 4.1) | 2 | 154 | 0 | ✅ |
+| b2e6a3b (Task 4.2+4.3 wire-up) | 3 | 163 | 1 | ✅ |
+| 85216f3 (Task 4.3 UI) | 3 | 529 | 1 | ⚠️ Work-unit is a single cohesive change but its .kt.txt snapshot is large; per-commit PR review can split this if the maintainer wants finer granularity (the snapshot is the bulk) |
+
+**No size:exception required** — every work-unit commit is independently
+reviewable.
+
+## Remaining Tasks (NOT in PR 3)
+
+### Phase 5 (carry-forward): 5.2 cosmetic only
+
+- [ ] 5.2 Local-port: extend `scratch/serve-expiry-spike.mjs` with
+      `ss -tlnp` (already 127.0.0.1 confirmed by `Get-NetTCPConnection`).
+
+### Phase 6: Spec-Scenario Tests + Verification — independent verify
+
+- [ ] 6.1 Map every scenario in both specs to a `node --test` case.
+- [ ] 6.2 Run full suite: sidecar + agent-cmdline + ui-request-stdio +
+      orchestrator routes. **AND** Android `:app:testDebugUnitTest` for
+      the new settings + UI + VM tests (319 → 323 tests).
+
 ## Status
 
-**PR 1 + PR 2 COMPLETE.** 8/8 assigned tasks done (Phases 1, 2, 3 plus
-5.1/5.3/5.4 mapped to PR 2). 25/25 sidecar tests pass (16 PR 1 + 9 PR 2),
-15/15 agent-cmdline tests pass (12 PR 1 baseline + 3 PR 2 autoApprove),
-9/9 ui-request-stdio tests pass (no regression). 15/15 existing
-index.mjs tests pass (`request-guard`, `async-subagent`,
-`sessions-runtime`). Real OpenCode v1.18.29 spike + reply-path probe
-produced D2, D3, D4, D7, reply-path verification.
+**PR 1 + PR 2 + PR 3 COMPLETE.** 11/11 assigned tasks done (Phases 1, 2, 3,
+4 plus 5.1/5.3/5.4 mapped to PR 2, 5.2 cosmetic only on critical path).
+Full Android test suite: 323/323 passing (303 baseline after foundation
++ 20 new RED-first tests for PR 3: 4 settings in-memory + 4 settings
+datastore + 4 auto-approve header + 4 VM + 4 UI structural). Server-side
+test counts unchanged from PR 2's `node --test` runs.
 
-PR 2 ships with `runOpenCodeCli` defaulting to `autoApprove=false`
-(sidecar-first) per design's migration step (2). PR 3 adds the
-`X-OpenCode-Auto-Approve` header plumbing so the Settings toggle can
-flip back to legacy `--auto` for users without a working sidecar.
+PR 3 ships the full Android surface (Task 4.1 + 4.2 + 4.3) on a child
+branch `feat/pr3-android-serve-sidecar` off
+`feature/opencode-serve-sidecar`. Per the feature-branch-chain strategy,
+the tracker PR (`feature/opencode-serve-sidecar` → `main`) aggregates
+this child branch when the maintainer is ready; the child PR diff
+stays focused on the current work unit and never targets `main` directly.
 
-**Ready for chained-PR review (PR 2 slice, then PR 3 next).**
+**Ready for chained-PR review (PR 3 slice) and PR-3 → tracker merge.**

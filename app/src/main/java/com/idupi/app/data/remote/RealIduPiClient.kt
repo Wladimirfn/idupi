@@ -136,6 +136,20 @@ class RealIduPiClient : IduPiClient {
     private var token: String = ""
     private var useHttps: Boolean = false
 
+    /**
+     * OpenCode auto-approve toggle (PR 3 / Task 4.1). When `true`, the spawn
+     * path on the server may launch `opencode run --auto` (legacy autopilot);
+     * when `false`, the sidecar is spawned and permission cards are surfaced.
+     *
+     * Defaults to `false` to keep the migration order safe: a fresh install
+     * gets cards instead of silently self-approving. `IduPiClientProvider`
+     * pushes the user's toggle choice here from the Settings Repository.
+     *
+     * @see com.idupi.app.data.settings.SettingsRepository
+     * @see <a href="../../../../../../../openspec/changes/opencode-serve-sidecar/design.md">design.md D8</a>
+     */
+    var opencodeAutoApprove: Boolean = false
+
     private val chatEventFlow = MutableSharedFlow<ChatEvent>(extraBufferCapacity = 64)
 
     private val json = Json {
@@ -524,6 +538,13 @@ class RealIduPiClient : IduPiClient {
                 // NAT to kill.
                 val response: ChatResponse = send(HttpMethod.Post, "/api/v1/chat/message") {
                     contentType(ContentType.Application.Json)
+                    // PR 3 / Task 4.1: ship the Settings toggle to the server
+                    // so `runOpenCodeCli` can branch between `opencode run --auto`
+                    // (toggle ON, autopilot) and the sidecar-first path (toggle
+                    // OFF, the default). The header is the single contract the
+                    // server reads — see design.md D8 and the AutoApproveHeaderTest
+                    // pinning for the wire shape.
+                    attachOpenCodeAutoApproveHeader(opencodeAutoApprove)
                     setBody(MessagePayload(message, clientTaskId))
                     timeout {
                         requestTimeoutMillis = 20_000
@@ -753,3 +774,32 @@ class RealIduPiClient : IduPiClient {
 
 @Serializable
 private data class ApplySddProfilePayload(val profileId: String)
+
+/**
+ * Wire header that carries the OpenCode auto-approve toggle to the server.
+ * The server-side reader in `runOpenCodeCli` (PR 2 / 3.2) looks this up to
+ * decide whether to launch `opencode run --auto` (`1`) or the sidecar-first
+ * path (`0`, the spec-mandated default).
+ */
+internal const val HEADER_OPENCODE_AUTO_APPROVE: String = "X-OpenCode-Auto-Approve"
+
+/**
+ * Maps the in-memory Boolean toggle to the wire-format string the server
+ * expects. `"0"`/`"1"` (not `"false"`/`"true"`) is what the server-side
+ * header parser accepts — the same wire-shape discipline that
+ * `RealIduPiClientUiResponseTest` pins for `UiResponsePayload`.
+ */
+internal fun autoApproveHeaderValue(autoApprove: Boolean): String =
+    if (autoApprove) "1" else "0"
+
+/**
+ * Attaches the OpenCode auto-approve header to a chat request. The single
+ * testable seam for Task 4.1: `AutoApproveHeaderTest` exercises this
+ * extension directly via `HttpRequestBuilder`, and `RealIduPiClient.sendMessage`
+ * calls it once per `/api/v1/chat/message` POST.
+ */
+internal fun io.ktor.client.request.HttpRequestBuilder.attachOpenCodeAutoApproveHeader(
+    autoApprove: Boolean,
+) {
+    header(HEADER_OPENCODE_AUTO_APPROVE, autoApproveHeaderValue(autoApprove))
+}
