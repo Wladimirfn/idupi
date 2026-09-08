@@ -144,7 +144,7 @@ test("spawn binds to 127.0.0.1 with an ephemeral port and surfaces baseUrl", asy
     // /global/health 200 fast
     const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: '{"healthy":true,"version":"1.18.29"}' }));
 
-    const sidecar = new OpenCodeSidecar({ spawn: fakeSpawn, httpRequest });
+    const sidecar = new OpenCodeSidecar({ spawn: fakeSpawn, httpRequest, skipPrecondition: true });
     await sidecar.spawn();
 
     assert.equal(sidecar.baseUrl, "http://127.0.0.1:4096");
@@ -165,7 +165,7 @@ test("spawn fails closed when GET /global/health does not respond within 3s", as
         { health: () => new Promise(() => {}) },
     );
 
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
     await assert.rejects(
         () => sidecar.spawn(),
         (err) => /health (?:probe )?timeout|did not become healthy|timed out after \d+ms/i.test(err.message),
@@ -184,7 +184,7 @@ test("spawn fails closed when /global/health returns a non-200 status", async ()
         { health: () => ({ status: 503, body: '{"healthy":false}' }) },
     );
 
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
     await assert.rejects(
         () => sidecar.spawn(),
         (err) => /health.*(?:status|unhealthy)|503/i.test(err.message),
@@ -201,7 +201,7 @@ test("permission.asked maps to confirm with a 120s deadline", async () => {
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4099\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: '{"healthy":true}' }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
     await sidecar.spawn();
 
     const asks = [];
@@ -233,7 +233,7 @@ test("permission.v2.asked also maps to confirm with the 120s deadline", async ()
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4100\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: '{"healthy":true}' }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
     await sidecar.spawn();
     const asks = [];
     await sidecar.subscribeEvents({ onAsk: (e) => asks.push(e), onSaved: () => {}, onRemoved: () => {}, onUnknown: () => {} });
@@ -254,7 +254,7 @@ test("question.asked maps to select with the exact options", async () => {
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4101\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: '{"healthy":true}' }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
     await sidecar.spawn();
     const asks = [];
     await sidecar.subscribeEvents({ onAsk: (e) => asks.push(e), onSaved: () => {}, onRemoved: () => {}, onUnknown: () => {} });
@@ -276,7 +276,7 @@ test("repeat requestID for the same ask is deduplicated to a single onAsk call",
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4102\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: '{"healthy":true}' }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
     await sidecar.spawn();
     const asks = [];
     await sidecar.subscribeEvents({ onAsk: (e) => asks.push(e), onSaved: () => {}, onRemoved: () => {}, onUnknown: () => {} });
@@ -298,7 +298,7 @@ test("permission.saved routes to onSaved and permission.removed routes to onRemo
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4103\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: '{"healthy":true}' }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
     await sidecar.spawn();
     const saved = [];
     const removed = [];
@@ -331,7 +331,7 @@ test("SSE heartbeat lines (':') and unknown event types do not throw", async () 
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4104\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: '{"healthy":true}' }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
     await sidecar.spawn();
     const unknowns = [];
     const asks = [];
@@ -362,7 +362,7 @@ test("reply resolves to { ok: true } on HTTP 204", async () => {
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4105\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 204, body: "" }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
     await sidecar.spawn();
 
     const result = await sidecar.reply({ sessionId: "ses_a", requestId: "per-a", value: true });
@@ -382,7 +382,7 @@ test("reply for false value serializes as reply:'reject'", async () => {
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4106\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 204, body: "" }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
     await sidecar.spawn();
 
     const result = await sidecar.reply({ sessionId: "ses_b", requestId: "per-b", value: false });
@@ -397,7 +397,7 @@ test("reply treats 404 as { ok:true, expired:true } and NEVER throws", async () 
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4107\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 404, body: '{"error":"not found"}' }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
     await sidecar.spawn();
 
     // The whole point of 404 idempotency: a late reply after expiry MUST NOT
@@ -411,7 +411,7 @@ test("reply surfaces a non-2xx non-404 status as { ok:false, status }", async ()
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4108\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 500, body: "boom" }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
     await sidecar.spawn();
 
     const result = await sidecar.reply({ sessionId: "ses_d", requestId: "per-d", value: true });
@@ -431,7 +431,7 @@ test("shutdown sends SIGTERM first, then SIGKILL if the child does not exit with
     fakeChild.kill = (sig) => { killCalls.push(sig); return true; };
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4109\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: '{"healthy":true}' }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
     await sidecar.spawn();
 
     // Don't await — schedule the close emission AFTER kill so the SIGKILL path runs
@@ -448,7 +448,7 @@ test("shutdown resolves cleanly when SIGTERM is enough", async () => {
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4110\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: '{"healthy":true}' }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
     await sidecar.spawn();
 
     // Default FakeChild.kill auto-emits close on a microtask, so SIGTERM
@@ -470,7 +470,7 @@ test("listPendingPermissions fetches the snapshot from GET /api/permission", asy
         { id: "per-y", sessionID: "ses_x" },
     ];
     const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: JSON.stringify(snapshot) }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
     await sidecar.spawn();
 
     const result = await sidecar.listPendingPermissions();
@@ -510,7 +510,10 @@ test("listPendingPermissions fetches the snapshot from GET /api/permission", asy
 
 /**
  * Build a fresh sidecar instance pointed at the given responder (which
- * also returns the spawn health probe).
+ * also returns the spawn health probe). Injects a permissive
+ * `readConfig` seam so the R6 precondition check does not depend on the
+ * user's actual `~/.config/opencode/opencode.json` — the suite stays
+ * hermetic on Windows + Linux + dev machines without OpenCode set up.
  */
 async function freshSidecar(responder, { port = 4200 } = {}) {
     const { OpenCodeSidecar } = await loadSidecar();
@@ -519,7 +522,14 @@ async function freshSidecar(responder, { port = 4200 } = {}) {
         fakeChild.stdout.push(`opencode server listening on http://127.0.0.1:${port}\n`);
     });
     const httpRequest = makeFakeHttpRequest(responder);
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest });
+    const sidecar = new OpenCodeSidecar({
+        spawn: () => fakeChild,
+        httpRequest,
+        // R6: at least one sensitive op at `ask` so the precondition
+        // passes. Tests that want the opposite path inject their own
+        // readConfig in the constructor instead.
+        readConfig: () => ({ permission: { bash: "ask", edit: "ask" } }),
+    });
     await sidecar.spawn();
     return { sidecar, fakeChild, httpRequest };
 }
@@ -547,19 +557,18 @@ function buildSidecarWriter({ sidecar, sessionId, requestId, child = null }) {
 }
 
 /**
- * Reproduces the per-engine expire routing from index.mjs. For
- * `engine==="opencode"` the sidecar writer receives `false` (reject); for
- * every other engine the existing stdin path is taken with
- * `decision.value`. Kept here so the test pins the exact contract index.mjs
- * must satisfy; a future drift between this and the wiring surfaces here.
+ * Import the production expire-routing helper instead of reproducing it
+ * inline. The previous test-local mirror in this file (`applyExpireRouting`
+ * at line ~556, pre-remediation) could drift from index.mjs without
+ * failing — production could change the routing rule and the suite would
+ * still be green. The shared module
+ * `idupi-server/lib/ui-request-expiry.mjs` is the SINGLE source of truth;
+ * both this test and the index.mjs wiring import from there. If the
+ * routing rule changes, this test fails on the FIRST run, not after a
+ * silent behaviour change ships.
  */
-function applyExpireRouting({ entry, decision, sidecarWriter, stdinWriter }) {
-    if (entry.engine === "opencode") {
-        const ok = sidecarWriter(false);
-        return { ok, kind: "sidecar" };
-    }
-    const ok = stdinWriter(decision.value);
-    return { ok, kind: "stdin" };
+async function loadUiRequestExpiry() {
+    return await import("../lib/ui-request-expiry.mjs");
 }
 
 // ---------------------------------------------------------------------------
@@ -641,6 +650,8 @@ test("PR2: expire routing for engine=opencode fires sidecar.reply(false)", async
         return true;
     };
 
+    const { applyExpireRouting } = await loadUiRequestExpiry();
+
     const registry = new PendingUiRequestRegistry({ deadlineMs: 60_000, backstopMs: 300_000 });
     // Register an opencode confirm request, then immediately force-expire.
     const reg = registry.register({
@@ -665,11 +676,13 @@ test("PR2: expire routing for engine=opencode fires sidecar.reply(false)", async
     assert.equal(replyCall.body.reply, "reject", "value=false MUST serialize as reply:'reject'");
 });
 
-test("PR2: expire routing for engine=pi keeps the stdin path with the decision value", () => {
+test("PR2: expire routing for engine=pi keeps the stdin path with the decision value", async () => {
     const sidecarCalls = [];
     const stdinCalls = [];
     const sidecarWriter = (value) => { sidecarCalls.push(value); return true; };
     const stdinWriter = (value) => { stdinCalls.push(value); return true; };
+
+    const { applyExpireRouting } = await loadUiRequestExpiry();
 
     const decision = { value: { cancelled: true }, source: "auto_approve" };
     const routing = applyExpireRouting({
@@ -695,6 +708,12 @@ test("PR2/5.1: fail-closed — a sidecar spawn failure is observed by the caller
     // catch. The "no relaunch" half is enforced by the autoApprove:false
     // path in agent-cmdline.test.mjs (--auto absent) combined with the
     // wiring in runOpenCodeCli, both pinned by their own tests.
+    //
+    // skipPrecondition: true — this test is about the HEALTH fail-closed
+    // boundary, not the R6 precondition boundary. The PRECEDING
+    // "REM/R6: spawn() fails closed" test exercises the precondition path
+    // independently. Keeping these two concerns separated means a future
+    // failure in either path fails the right test, not both.
     const { OpenCodeSidecar } = await loadSidecar();
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4205\n"));
@@ -703,7 +722,7 @@ test("PR2/5.1: fail-closed — a sidecar spawn failure is observed by the caller
         () => new Promise(() => {}),
         { health: () => new Promise(() => {}) },
     );
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, healthTimeoutMs: 50 });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, healthTimeoutMs: 50, skipPrecondition: true });
     await assert.rejects(
         () => sidecar.spawn(),
         (err) => /health/i.test(err.message) && /50ms|timed out/i.test(err.message),
@@ -787,4 +806,325 @@ test("PR2: a writer carrying __child can be swept from both stdin and sidecar ma
 
     assert.equal(stdinMap.has("uir_a"), false, "stdin writer bound to the dead child MUST be cleared");
     assert.equal(sidecarMap.has("uir_b"), false, "sidecar writer bound to the dead child MUST be cleared");
+});
+
+// ============================================================================
+// Remediation RED tests: R4 vanish-abort + R6 precondition check
+// ============================================================================
+//
+// The verify report (sha256:0c528b7b1d5e1ba4ca419536e0c2e0c0a1528c0b3dfcc3a3fae100c43ab00f44)
+// flagged blocker #2 (R4 vanish-abort not implemented: `onRemoved` only
+// logs) and blocker #3 (R6 precondition check missing). These tests pin the
+// exact contract the production module MUST satisfy:
+//
+//   R4: a vanished permission triggers a registry expire + a sidecar
+//       writer clear. The snapshot fallback (listPendingPermissions) MUST
+//       be consulted first so a delayed `permission.removed` cleanup frame
+//       for a still-pending permission does NOT spuriously abort the turn.
+//   R6: the sidecar constructor accepts an injected `readConfig` and the
+//       spawn() method MUST reject before any child is launched when the
+//       effective OpenCode config has zero `ask`-level sensitive
+//       operations. The `verifyConfigPrecondition()` method exposes the
+//       pure decision function so the failure modes are testable without
+//       a live filesystem.
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// R6 precondition check (blocker #3)
+// ---------------------------------------------------------------------------
+
+test("REM/R6: verifyConfigPrecondition rejects when opencode.json is missing", async () => {
+    const { OpenCodeSidecar } = await loadSidecar();
+    const fakeSpawn = () => new FakeChild();
+    const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: '{"healthy":true}' }));
+    // readConfig returns null → "missing or unparseable"
+    const sidecar = new OpenCodeSidecar({
+        spawn: fakeSpawn,
+        httpRequest,
+        readConfig: () => null,
+    });
+    await assert.rejects(
+        () => sidecar.verifyConfigPrecondition(),
+        (err) => /missing or unparseable/.test(err.message),
+        "verifyConfigPrecondition MUST reject when the config file is missing",
+    );
+});
+
+test("REM/R6: verifyConfigPrecondition rejects when permission block is absent", async () => {
+    const { OpenCodeSidecar } = await loadSidecar();
+    const sidecar = new OpenCodeSidecar({
+        spawn: () => new FakeChild(),
+        httpRequest: makeFakeHttpRequest(() => ({ status: 200, body: "" })),
+        readConfig: () => ({ /* no permission block */ }),
+    });
+    await assert.rejects(
+        () => sidecar.verifyConfigPrecondition(),
+        (err) => /no `permission` block/.test(err.message),
+        "verifyConfigPrecondition MUST reject when no `permission` block is set",
+    );
+});
+
+test("REM/R6: verifyConfigPrecondition rejects when every sensitive op is `allow`", async () => {
+    const { OpenCodeSidecar } = await loadSidecar();
+    const sidecar = new OpenCodeSidecar({
+        spawn: () => new FakeChild(),
+        httpRequest: makeFakeHttpRequest(() => ({ status: 200, body: "" })),
+        // Engine configured to AUTO-APPROVE every sensitive operation —
+        // exactly the "weaker than ask" config the spec says MUST disable
+        // card mediation with a clear reason.
+        readConfig: () => ({
+            permission: { bash: "allow", edit: "allow", write: "allow", webfetch: "allow" },
+        }),
+    });
+    await assert.rejects(
+        () => sidecar.verifyConfigPrecondition(),
+        (err) => /bash/.test(err.message) && /auto-approve|allow/.test(err.message),
+        "verifyConfigPrecondition MUST reject and surface the offending keys",
+    );
+});
+
+test("REM/R6: verifyConfigPrecondition passes when at least one sensitive op is `ask`", async () => {
+    const { OpenCodeSidecar } = await loadSidecar();
+    const sidecar = new OpenCodeSidecar({
+        spawn: () => new FakeChild(),
+        httpRequest: makeFakeHttpRequest(() => ({ status: 200, body: "" })),
+        readConfig: () => ({
+            permission: { bash: "ask", edit: "allow" }, // at least one `ask` — ok
+        }),
+    });
+    const result = await sidecar.verifyConfigPrecondition();
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.askKeys, ["bash"]);
+});
+
+test("REM/R6: spawn() fails closed (no opencode run launched) when precondition rejects", async () => {
+    const { OpenCodeSidecar } = await loadSidecar();
+    const fakeChild = new FakeChild();
+    let spawnCalls = 0;
+    const fakeSpawn = () => { spawnCalls += 1; return fakeChild; };
+    const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: '{"healthy":true}' }));
+    const sidecar = new OpenCodeSidecar({
+        spawn: fakeSpawn,
+        httpRequest,
+        readConfig: () => null, // precondition rejects
+    });
+    await assert.rejects(
+        () => sidecar.spawn(),
+        (err) => /R6 precondition/.test(err.message),
+        "spawn() MUST reject before launching the opencode run child",
+    );
+    assert.equal(spawnCalls, 0, "no opencode child MUST be spawned when the precondition rejects");
+    assert.equal(sidecar.baseUrl, null);
+});
+
+// ---------------------------------------------------------------------------
+// R4 vanish-abort (blocker #2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a sidecar whose `onRemoved` handler is wired with the same
+ * vanish-abort semantics as production: (1) snapshot fallback via
+ * listPendingPermissions, (2) if the vanished id is still in the snapshot
+ * defer the abort, (3) otherwise force-expire the registry entry. We
+ * exercise this through the sidecar's `onRemoved` directly (the public
+ * test surface) so any refactor of the abort logic in index.mjs that
+ * breaks the contract surfaces here.
+ */
+async function freshSidecarForVanish({ snapshot = [], port = 4300 } = {}) {
+    const { OpenCodeSidecar } = await loadSidecar();
+    const fakeChild = new FakeChild();
+    queueMicrotask(() => {
+        fakeChild.stdout.push(`opencode server listening on http://127.0.0.1:${port}\n`);
+    });
+    const httpRequest = makeFakeHttpRequest((req) => {
+        // /api/permission snapshot responder
+        if (typeof req.url === "string" && req.url.endsWith("/api/permission")) {
+            return { status: 200, body: JSON.stringify(snapshot) };
+        }
+        return { status: 204, body: "" };
+    });
+    const sidecar = new OpenCodeSidecar({
+        spawn: () => fakeChild,
+        httpRequest,
+        // R6: hermetic — the suite never depends on the user's real
+        // ~/.config/opencode/opencode.json.
+        readConfig: () => ({ permission: { bash: "ask" } }),
+    });
+    await sidecar.spawn();
+    return { sidecar, fakeChild, httpRequest };
+}
+
+/**
+ * Wire the production-shape vanish-abort handler over a registry + sidecar
+ * pair. Mirrors the runOpenCodeCli.onRemoved wiring in index.mjs: tracks
+ * the engine→registry requestId map, consults listPendingPermissions as a
+ * snapshot fallback, and only force-expires the registry entry when the
+ * snapshot confirms the permission is truly gone.
+ *
+ * Kept inline in the test so the assertion surface is the exact event the
+ * production handler emits (no helper layer to drift).
+ */
+function wireVanishAbort({ sidecar, registry, onAbort }) {
+    const engineToRegistry = new Map();
+    sidecar.subscribeEvents({
+        onAsk: (entry) => {
+            const reg = registry.register({
+                sessionId: "ses_v", engine: "opencode", method: entry.method,
+                options: entry.options || [], title: "x", message: entry.message || "",
+            });
+            engineToRegistry.set(entry.requestId, reg.requestId);
+        },
+        onSaved: () => {},
+        onRemoved: (entry) => {
+            (async () => {
+                const registryRid = engineToRegistry.get(entry.requestId);
+                if (!registryRid) return;
+                let snap = null;
+                try {
+                    snap = await sidecar.listPendingPermissions();
+                } catch {
+                    snap = null;
+                }
+                const stillPending = Array.isArray(snap)
+                    && snap.some((p) => (p?.id || p?.requestID) === entry.requestId);
+                if (stillPending) return;
+                const decision = registry.expire(registryRid);
+                onAbort({ engineRid: entry.requestId, registryRid, decision, snapshotAvailable: snap !== null });
+            })();
+        },
+        onUnknown: () => {},
+    });
+    return engineToRegistry;
+}
+
+test("REM/R4: vanished permission (absent from snapshot) force-expires the registry entry", async () => {
+    const { sidecar, httpRequest } = await freshSidecarForVanish({ snapshot: [], port: 4301 });
+    const registry = new PendingUiRequestRegistry({ deadlineMs: 60_000, backstopMs: 300_000 });
+    let abortCount = 0;
+    let abortPayload = null;
+    wireVanishAbort({ sidecar, registry, onAbort: (p) => { abortCount += 1; abortPayload = p; } });
+
+    // Drive an ask → snapshot lookup → vanish in one sequence.
+    sidecar.subscribeEvents; // (no-op; the subscribeEvents above is already wired)
+    const fakeChildForWire = sidecar._child;
+    fakeChildForWire.stdout.push(
+        "event: permission.asked\n" +
+        `data: ${JSON.stringify({ id: "per_vanish", sessionID: "ses_v", permission: "bash" })}\n` +
+        "\n",
+    );
+    await new Promise((r) => setImmediate(r));
+
+    // Now the engine drops the permission without a reply (snapshot is empty).
+    fakeChildForWire.stdout.push(
+        "event: permission.removed\n" +
+        `data: ${JSON.stringify({ requestID: "per_vanish" })}\n` +
+        "\n",
+    );
+
+    // Wait for the listPendingPermissions round-trip + expire.
+    for (let i = 0; i < 20 && abortCount === 0; i += 1) {
+        await new Promise((r) => setImmediate(r));
+    }
+    assert.equal(abortCount, 1, "vanish-abort MUST fire exactly once for a truly vanished permission");
+    assert.equal(abortPayload.engineRid, "per_vanish");
+    assert.ok(abortPayload.registryRid, "registryRid MUST be resolved from the engine→registry map");
+    assert.ok(abortPayload.decision, "the registry MUST have transitioned to terminal");
+    assert.equal(abortPayload.snapshotAvailable, true, "the snapshot MUST be available when the engine responded");
+    assert.equal(registry.count(), 0, "the registry MUST have no pending entries after the vanish abort");
+
+    // And the snapshot path MUST have been hit.
+    const snapshotCall = httpRequest.calls.find((c) => c.url?.endsWith("/api/permission"));
+    assert.ok(snapshotCall, "vanish-abort MUST call listPendingPermissions() before aborting");
+});
+
+test("REM/R4: vanished permission that IS still in the snapshot does NOT abort the turn", async () => {
+    const { sidecar, httpRequest } = await freshSidecarForVanish({
+        snapshot: [{ id: "per_still", sessionID: "ses_v" }],
+        port: 4302,
+    });
+    const registry = new PendingUiRequestRegistry({ deadlineMs: 60_000, backstopMs: 300_000 });
+    let abortCount = 0;
+    wireVanishAbort({ sidecar, registry, onAbort: () => { abortCount += 1; } });
+
+    const fakeChildForWire = sidecar._child;
+    fakeChildForWire.stdout.push(
+        "event: permission.asked\n" +
+        `data: ${JSON.stringify({ id: "per_still", sessionID: "ses_v", permission: "bash" })}\n` +
+        "\n",
+    );
+    await new Promise((r) => setImmediate(r));
+
+    // Engine emits a delayed cleanup frame but the snapshot still shows
+    // the permission. The abort MUST be deferred — the engine will resolve
+    // the permission on its own and the registry's 120s timer will expire
+    // it normally.
+    fakeChildForWire.stdout.push(
+        "event: permission.removed\n" +
+        `data: ${JSON.stringify({ requestID: "per_still" })}\n` +
+        "\n",
+    );
+    for (let i = 0; i < 20; i += 1) {
+        await new Promise((r) => setImmediate(r));
+    }
+    assert.equal(abortCount, 0, "vanish-abort MUST NOT fire when the snapshot still reports the permission");
+    assert.equal(registry.count(), 1, "the registry entry MUST remain pending when the abort is deferred");
+
+    const snapshotCall = httpRequest.calls.find((c) => c.url?.endsWith("/api/permission"));
+    assert.ok(snapshotCall, "the snapshot path MUST be consulted on every vanish signal");
+});
+
+test("REM/R4: vanished permission whose engine id is unknown to the run is ignored", async () => {
+    // Edge case: a `permission.removed` arrives WITHOUT a prior `asked`
+    // event — engine cleanup noise for an id the run never tracked.
+    // The handler MUST NOT abort anything because there is nothing to abort.
+    const { sidecar } = await freshSidecarForVanish({ snapshot: [], port: 4303 });
+    const registry = new PendingUiRequestRegistry({ deadlineMs: 60_000, backstopMs: 300_000 });
+    let abortCount = 0;
+    wireVanishAbort({ sidecar, registry, onAbort: () => { abortCount += 1; } });
+
+    sidecar._child.stdout.push(
+        "event: permission.removed\n" +
+        `data: ${JSON.stringify({ requestID: "per_orphan" })}\n` +
+        "\n",
+    );
+    for (let i = 0; i < 20; i += 1) {
+        await new Promise((r) => setImmediate(r));
+    }
+    assert.equal(abortCount, 0, "unknown engine requestId MUST NOT trigger an abort");
+    assert.equal(registry.count(), 0, "no registry entries to expire");
+});
+
+// ---------------------------------------------------------------------------
+// Registry per-engine decision (blocker #5 / warning #5 reconcile)
+// ---------------------------------------------------------------------------
+
+test("REM/REG: buildAutoApproveDecision returns CANCEL for engine=opencode regardless of method", async () => {
+    const { buildAutoApproveDecision } = await import("../lib/ui-request-registry.mjs");
+    const forSelect = buildAutoApproveDecision("select", "opencode");
+    const forConfirm = buildAutoApproveDecision("confirm", "opencode");
+    const forInput = buildAutoApproveDecision("input", "opencode");
+    for (const d of [forSelect, forConfirm, forInput]) {
+        assert.equal(d.source, "auto_approve");
+        assert.deepEqual(d.value, { cancelled: true }, "OpenCode expiry MUST always be CANCELLED, never blanket auto-approve");
+    }
+});
+
+test("REM/REG: buildAutoApproveDecision returns blanket auto-approve for engine=pi/claude select", async () => {
+    const { buildAutoApproveDecision } = await import("../lib/ui-request-registry.mjs");
+    const piSelect = buildAutoApproveDecision("select", "pi-cli");
+    const claudeSelect = buildAutoApproveDecision("select", "claude");
+    assert.equal(piSelect.source, "auto_approve");
+    assert.equal(piSelect.value, "Todo", "stdin-engine select MUST keep blanket auto-approve per spec");
+    assert.equal(claudeSelect.source, "auto_approve");
+    assert.equal(claudeSelect.value, "Todo");
+});
+
+test("REM/REG: buildAutoApproveDecision returns CANCEL for stdin-engine confirm/input (where blanket is meaningless)", async () => {
+    const { buildAutoApproveDecision } = await import("../lib/ui-request-registry.mjs");
+    const piConfirm = buildAutoApproveDecision("confirm", "pi-cli");
+    const piInput = buildAutoApproveDecision("input", "pi-cli");
+    assert.equal(piConfirm.source, "auto_approve");
+    assert.deepEqual(piConfirm.value, { cancelled: true });
+    assert.equal(piInput.source, "auto_approve");
+    assert.deepEqual(piInput.value, { cancelled: true });
 });

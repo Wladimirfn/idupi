@@ -96,14 +96,47 @@ export function validateUiAnswer(method, value, options) {
 
 /**
  * Builds the terminal decision the registry returns when its 120s timer
- * expires. Blanket auto-approve for `select` (spec: "Fallback MUST be blanket
- * auto-approve ('Todo': approve any request)"), and a `cancelled: true`
- * payload for the methods where "approve" is meaningless.
+ * expires. Per the ui-request-selection spec's Terminality/Deadline/Fallback
+ * requirement:
+ *
+ *   - "The fallback MUST be blanket auto-approve for stdin-based engines."
+ *     → stdin engines (pi, claude) at expiry yield the blanket value
+ *       (`"Todo"` for `select`; the `cancelled:true` sentinel for `confirm`
+ *       and `input`, where blanket auto-approve is meaningless).
+ *   - "For OpenCode via the sidecar, expiry MUST resolve as CANCELLED."
+ *     → engine === "opencode" always yields the `cancelled:true` sentinel,
+ *       regardless of method; the OpenCode expire listener routes the
+ *       permission rejection through sidecar.reply(false).
+ *
+ * The `IDUPI_UI_AUTO_APPROVE=1` opt-in extends the stdin-engine blanket
+ * behaviour: every method (not just `select`) returns the blanket value
+ * for stdin engines. OpenCode is never blanket-auto-approved, even with
+ * the opt-in — the sidecar contract requires explicit user consent.
+ *
+ * `source` stays "auto_approve" on purpose: the app closes the pending card
+ * on `requestId` regardless of resolution, so the wire contract is unchanged;
+ * the `value` is what tells a cancel apart from an approval.
  *
  * Pure function so a test can assert on the decision shape without spinning
  * up the registry.
  */
-export function buildAutoApproveDecision(method) {
+const UI_AUTO_APPROVE_BLANKET = process.env.IDUPI_UI_AUTO_APPROVE === "1";
+
+export function buildAutoApproveDecision(method, engine = "unknown") {
+    // OpenCode via the sidecar: expiry is ALWAYS a CANCELLED resolution,
+    // per the spec's "OpenCode expiry cancels" scenario. The expire
+    // listener in index.mjs routes the rejection through sidecar.reply(false)
+    // and logs source=auto_approve, value={cancelled:true}.
+    if (engine === "opencode") {
+        return { value: TERMINAL_CANCEL, source: "auto_approve" };
+    }
+    // Stdin-based engines (pi, claude): blanket auto-approve for select;
+    // confirm/input expire as CANCELLED where "approve" has no meaning.
+    // The opt-in flips confirm/input to blanket too, matching the historical
+    // pre-sidecar behaviour for quiet clients.
+    if (UI_AUTO_APPROVE_BLANKET) {
+        return { value: BLANKET_AUTO_APPROVE, source: "auto_approve" };
+    }
     if (method === UI_REQUEST_METHODS.SELECT) {
         return { value: BLANKET_AUTO_APPROVE, source: "auto_approve" };
     }
@@ -380,7 +413,7 @@ export class PendingUiRequestRegistry {
     _onTimerFire(requestId) {
         const entry = this._entries.get(requestId);
         if (!entry || entry.resolved) return null;
-        const decision = buildAutoApproveDecision(entry.method);
+        const decision = buildAutoApproveDecision(entry.method, entry.engine);
         this._terminate(entry, { source: decision.source, value: decision.value });
         const payload = { entry, decision };
         this._emit("expire", payload);

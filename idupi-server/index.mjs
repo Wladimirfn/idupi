@@ -49,6 +49,12 @@ import { claudeArgs, openCodeArgs, normalizeOpenCodeModel } from "./lib/agent-cm
 // can construct + tear-down the sidecar; the module itself is hermetic and
 // testable in isolation under test/opencode-sidecar.test.mjs.
 import { OpenCodeSidecar } from "./lib/opencode-sidecar.mjs";
+// Per-engine expire-routing helper (opencode-serve-sidecar remediation): the
+// shared module replaces the inline engine-branching the expire listener
+// used to own. Importing from one place keeps the test suite (test/
+// opencode-sidecar.test.mjs) and the production wiring in lock-step —
+// drift is now a single-file diff, not a silent behaviour change.
+import { applyExpireRouting } from "./lib/ui-request-expiry.mjs";
 import { mergePiModelCatalogs } from "./lib/pi-models.mjs";
 // Phase 3 (fix-ui-request-selection): pure normalizers that turn each
 // engine's raw UI-request event into the canonical shape the registry
@@ -120,27 +126,23 @@ uiRequestRegistry.on("expire", ({ entry, decision }) => {
     // correlate), and the entry is terminal either way. The writer is cleared
     // so a late POST on the same requestId short-circuits to 404.
     //
-    // PR 2 (opencode-serve-sidecar): OpenCode via the sidecar is the
-    // exception. The spec's "OpenCode expiry cancels" scenario requires the
-    // permission to be REJECTED through the sidecar reply route (NOT
-    // blanket auto-approve). Per-engine routing: stdin-based engines keep
-    // the existing behaviour; OpenCode via sidecar calls reply(false) and
-    // logs source=auto_approve, value={cancelled:true}.
-    let writerOk;
-    let writerKind;
-    if (entry.engine === "opencode") {
-        // sidecar.reply(false) serializes to {reply:"reject"} — the engine's
-        // canonical "reject" enum. Late replies after the engine has dropped
-        // the ask return 404, which the sidecar normalizes to {ok:true,
-        // expired:true} and never throws.
-        writerOk = writeUiResponseToSidecar(entry.requestId, false);
-        clearUiRequestSidecarWriter(entry.requestId);
-        writerKind = "sidecar";
-    } else {
-        writerOk = writeUiResponseToStdin(entry.requestId, decision.value);
-        clearUiRequestStdinWriter(entry.requestId);
-        writerKind = "stdin";
-    }
+    // PR 2 + remediation (opencode-serve-sidecar): OpenCode via the sidecar
+    // is the exception. The spec's "OpenCode expiry cancels" scenario
+    // requires the permission to be REJECTED through the sidecar reply
+    // route (NOT blanket auto-approve). Per-engine routing: stdin-based
+    // engines keep the existing behaviour; OpenCode via sidecar calls
+    // reply(false) and logs source=auto_approve, value={cancelled:true}.
+    //
+    // The routing rule lives in lib/ui-request-expiry.mjs so the test suite
+    // can exercise the same function index.mjs runs (drift-detector).
+    const { ok: writerOk, kind: writerKind } = applyExpireRouting({
+        entry,
+        decision,
+        sidecarWriter: (value) => writeUiResponseToSidecar(entry.requestId, value),
+        stdinWriter: (value) => writeUiResponseToStdin(entry.requestId, value),
+        clearSidecarWriter: (rid) => clearUiRequestSidecarWriter(rid),
+        clearStdinWriter: (rid) => clearUiRequestStdinWriter(rid),
+    });
     if (!writerOk) {
         console.warn(
             `[ui-request] expire sin writer de ${writerKind} para ${entry.requestId} ` +
@@ -4947,6 +4949,13 @@ async function runOpenCodeCli(projPath, sessionId, message, openCodeModel = null
         // forward-compat event types so the subscription never throws on a
         // new event shape.
         if (sidecar) {
+            // Map engine-side requestId → registry-side requestId so the
+            // vanish-abort path (onRemoved) can resolve the registry entry
+            // for a permission the engine dropped without a reply. Lives
+            // inside the sidecar subscription so a fresh run child gets a
+            // fresh map and a dead child never poisons the next one.
+            const engineToRegistryMap = new Map();
+
             sidecar.subscribeEvents({
                 onAsk: (entry) => {
                     // entry: { method, requestId, sessionId, deadlineMs, message?, options? }
@@ -4961,6 +4970,7 @@ async function runOpenCodeCli(projPath, sessionId, message, openCodeModel = null
                         title: "OpenCode",
                         message: entry.message || "",
                     });
+                    engineToRegistryMap.set(entry.requestId, reg.requestId);
                     const writer = (value) => {
                         if (!sidecar || !sidecar.baseUrl) return false;
                         // Fire-and-forget: sidecar.reply is async and
@@ -4992,13 +5002,90 @@ async function runOpenCodeCli(projPath, sessionId, message, openCodeModel = null
                     );
                 },
                 onRemoved: (entry) => {
-                    // D7 primary signal: the engine dropped a pending
-                    // permission without a reply. Without D7's vanish-abort
-                    // the turn would hang until the 300s taskkill. A future
-                    // PR (D7 follow-up) will wire abort-of-turn here.
-                    console.warn(
-                        `[opencode-sidecar] permission.removed requestId=${entry.requestId} — D7 vanish signal`,
-                    );
+                    // R4 VANISH-ABORT (opencode-serve-sidecar remediation):
+                    // OpenCode serve can drop pending permissions within
+                    // minutes, hanging the turn until the 300s taskkill.
+                    // The spec mandates we detect the vanished permission
+                    // and abort the affected turn instead.
+                    //
+                    // 1) Resolve the registry entry from the engine-side id.
+                    // 2) Use listPendingPermissions() as a snapshot fallback
+                    //    (D7): if the engine still reports the id, the
+                    //    permission is NOT actually vanished — ignore.
+                    // 3) If truly vanished: force-expire the registry
+                    //    entry, kill the run child, surface a chat event.
+                    const registryRid = engineToRegistryMap.get(entry.requestId);
+                    if (!registryRid) {
+                        console.warn(
+                            `[opencode-sidecar] permission.removed for unknown engine requestId=${entry.requestId} — ignoring`,
+                        );
+                        return;
+                    }
+                    const abortTurn = (reason) => {
+                        // Force-expire the registry entry so the chat
+                        // session sees a terminal resolution (cancelled
+                        // message + dropped card).
+                        try {
+                            uiRequestRegistry.expire(registryRid);
+                        } catch (err) {
+                            console.warn(`[opencode-sidecar] expire after vanish failed: ${err?.message || err}`);
+                        }
+                        // Drop the sidecar writer so a late reply can NOT
+                        // resurrect the request after the engine has been
+                        // killed (terminality contract — 5.3 threat matrix).
+                        try { clearUiRequestSidecarWriter(registryRid); } catch {}
+                        // Kill the run child tree so the turn aborts now,
+                        // not at the 300s AGENT_CLI_TIMEOUT_MS backstop.
+                        try {
+                            execFile("taskkill", ["/F", "/T", "/PID", String(child.pid)], () => {});
+                        } catch (err) {
+                            console.warn(`[opencode-sidecar] taskkill after vanish failed: ${err?.message || err}`);
+                        }
+                        publishChatEvent(CHAT_EVENTS.UI_REQUEST_RESOLVED, {
+                            requestId: registryRid,
+                            sessionId: currentActivitySession("opencode"),
+                            engine: "opencode",
+                            resolution: "cancelled",
+                            value: { cancelled: true },
+                        });
+                        publishChatEvent(CHAT_EVENTS.MESSAGE_END, {
+                            text: `⚠️ Permiso de OpenCode desapareció (${reason}); turno abortado.`,
+                        });
+                        console.warn(
+                            `[opencode-sidecar] VANISH-ABORT engine.requestId=${entry.requestId} ` +
+                            `registry.requestId=${registryRid} reason=${reason}`,
+                        );
+                    };
+                    // D7 snapshot fallback: confirm via the engine's pending
+                    // permission list before we kill anything. If the
+                    // engine still reports the id, treat the removed frame
+                    // as a delayed cleanup — the engine will resolve the
+                    // permission on its own and our timer will expire the
+                    // registry entry without aborting the turn.
+                    (async () => {
+                        let snapshot = null;
+                        try {
+                            if (sidecar && typeof sidecar.listPendingPermissions === "function") {
+                                snapshot = await sidecar.listPendingPermissions();
+                            }
+                        } catch (err) {
+                            console.warn(
+                                `[opencode-sidecar] listPendingPermissions failed during vanish check: ${err?.message || err}`,
+                            );
+                        }
+                        const stillPending = Array.isArray(snapshot)
+                            && snapshot.some((p) => {
+                                const id = (p && typeof p === "object") ? (p.id || p.requestID) : null;
+                                return id === entry.requestId;
+                            });
+                        if (stillPending) {
+                            console.log(
+                                `[opencode-sidecar] permission.removed ${entry.requestId} still in snapshot; deferring abort`,
+                            );
+                            return;
+                        }
+                        abortTurn(snapshot == null ? "snapshot-unavailable" : "not-in-snapshot");
+                    })();
                 },
                 onUnknown: (entry) => {
                     // Forward-compat: log unknown event types at debug level

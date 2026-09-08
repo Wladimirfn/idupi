@@ -16,6 +16,13 @@
 //
 // Contract (RED-tested by idupi-server/test/opencode-sidecar.test.mjs)
 // --------------------------------------------------------------------
+//   verifyConfigPrecondition() -> reads the effective OpenCode config from
+//                              disk and verifies at least one sensitive
+//                              operation is set to `ask`. Rejects if the
+//                              config is missing, unparseable, or weaker
+//                              than `ask` for every sensitive operation —
+//                              the sidecar MUST NOT spawn when the engine
+//                              is going to self-approve every prompt (R6).
 //   spawn()                  -> binds 127.0.0.1:0, parses the listen line,
 //                              then GET /global/health with a 3s budget.
 //                              Rejects on health timeout / non-200.
@@ -54,6 +61,9 @@
 
 import { spawn as nodeSpawn } from "node:child_process";
 import http from "node:http";
+import { readFileSync, existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { resolveOpenCodeExePath } from "./sessions.mjs";
@@ -89,6 +99,87 @@ const REPLY_PATH = (sid, rid) => `/api/session/${encodeURIComponent(sid)}/permis
 
 /** D7 fallback snapshot path. */
 const PERMISSIONS_SNAPSHOT_PATH = "/api/permission";
+
+/** Effective OpenCode config path. R6 precondition check reads this file
+ *  to verify at least one sensitive operation is set to `ask` before
+ *  sidecar spawn. */
+const DEFAULT_OPENCODE_CONFIG_PATH = join(homedir(), ".config", "opencode", "opencode.json");
+
+/** Sensitive operations the precondition check looks at. If any of these
+ *  is at `ask` level in the user's opencode.json, the engine is willing to
+ *  surface permission prompts to the sidecar and card mediation works.
+ *  If NONE is at `ask` (all `allow`, all `deny`, or all missing) the
+ *  sidecar cards will never fire and the user loses mediation silently —
+ *  the precondition check fails closed with a clear reason. */
+const SENSITIVE_PERMISSION_KEYS = Object.freeze([
+    "bash",
+    "edit",
+    "write",
+    "webfetch",
+    "patch",
+    "read",
+]);
+
+/**
+ * Default filesystem reader for the precondition check. Pure seam so tests
+ * can inject a fake `readDoc` and assert on the misconfigured path without
+ * touching the user's actual ~/.config/opencode/opencode.json.
+ */
+function defaultReadConfig(path) {
+    if (!existsSync(path)) return null;
+    try {
+        const text = readFileSync(path, "utf8");
+        const parsed = JSON.parse(text);
+        return (parsed && typeof parsed === "object") ? parsed : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Pure helper: given the parsed opencode.json document, decide whether the
+ * R6 precondition is satisfied. Returns `{ ok: true }` if at least one
+ * sensitive operation is at `ask`; otherwise `{ ok: false, reason }` with
+ * a short human-readable reason suitable for an error message. The reason
+ * is intentionally diagnostic so a user who hits this can fix the config
+ * without reading the spec.
+ */
+export function evaluatePermissionPrecondition(doc) {
+    if (doc == null || typeof doc !== "object") {
+        return {
+            ok: false,
+            reason: "opencode.json is missing or unparseable; sidecar cannot verify that the engine will surface `ask` prompts",
+        };
+    }
+    const perm = doc.permission;
+    if (perm == null || typeof perm !== "object") {
+        return {
+            ok: false,
+            reason: "opencode.json has no `permission` block; sensitive operations default to `allow` (auto-approve), so card mediation would never fire",
+        };
+    }
+    const askKeys = [];
+    const allowKeys = [];
+    const denyKeys = [];
+    for (const key of SENSITIVE_PERMISSION_KEYS) {
+        const v = perm[key];
+        if (v === "ask") askKeys.push(key);
+        else if (v === "allow") allowKeys.push(key);
+        else if (v === "deny") denyKeys.push(key);
+    }
+    if (askKeys.length === 0) {
+        const detail = allowKeys.length > 0
+            ? `the following sensitive operations are auto-approved: ${allowKeys.join(", ")}`
+            : denyKeys.length > 0
+                ? `the following sensitive operations are denied: ${denyKeys.join(", ")}`
+                : "no sensitive operation is set to `ask`";
+        return {
+            ok: false,
+            reason: `R6 precondition not satisfied: ${detail}. At least one of [${SENSITIVE_PERMISSION_KEYS.join(", ")}] MUST be at \`ask\` so the sidecar can mediate permission cards.`,
+        };
+    }
+    return { ok: true, askKeys };
+}
 
 // ---------------------------------------------------------------------------
 // Default httpRequest seam (node:http)
@@ -241,6 +332,20 @@ export class OpenCodeSidecar {
      *   budget for the post-spawn `/global/health` probe (D3).
      * @param {number} [opts.readyTimeoutMs=8000]
      *   budget for the listen-line parser to see `server listening on ...`.
+     * @param {string} [opts.configPath]
+     *   effective OpenCode config file path used by the R6 precondition
+     *   check. Defaults to `~/.config/opencode/opencode.json`. Tests inject
+     *   a temp file path so the suite is hermetic on Windows + Linux.
+     * @param {(path: string) => object | null} [opts.readConfig]
+     *   filesystem reader for the precondition check; defaults to a JSON
+     *   read of `configPath`. Tests inject a fake so they can drive both
+     *   "missing" and "misconfigured" cases without touching the real
+     *   user's opencode.json.
+     * @param {boolean} [opts.skipPrecondition=false]
+     *   when true, the sidecar skips the R6 precondition check entirely.
+     *   Production should NEVER set this; the seam exists for tests and
+     *   for the rare recovery path where a maintainer has explicitly
+     *   accepted the misconfiguration risk.
      */
     constructor({
         spawn = nodeSpawn,
@@ -248,12 +353,18 @@ export class OpenCodeSidecar {
         log = (msg) => console.log(`[opencode-sidecar] ${msg}`),
         healthTimeoutMs = 3_000,
         readyTimeoutMs = 8_000,
+        configPath = DEFAULT_OPENCODE_CONFIG_PATH,
+        readConfig = defaultReadConfig,
+        skipPrecondition = false,
     } = {}) {
         this._spawn = spawn;
         this._httpRequest = httpRequest;
         this._log = log;
         this._healthTimeoutMs = healthTimeoutMs;
         this._readyTimeoutMs = readyTimeoutMs;
+        this._configPath = configPath;
+        this._readConfig = readConfig;
+        this._skipPrecondition = skipPrecondition === true;
 
         /** @type {import("node:child_process").ChildProcess | null} */
         this._child = null;
@@ -276,6 +387,36 @@ export class OpenCodeSidecar {
     }
 
     /**
+     * R6 precondition: verify the effective OpenCode config enforces `ask`
+     * for at least one sensitive operation. Fail closed otherwise so the
+     * server does NOT silently launch `opencode serve` when the user has
+     * auto-approved every sensitive op — the sidecar cards would never
+     * fire and the user would lose mediation without a clear reason.
+     *
+     * Pure against the injected `readConfig` seam so tests can drive both
+     * the satisfied and the rejected paths without touching the user's
+     * real opencode.json.
+     */
+    async verifyConfigPrecondition() {
+        if (this._skipPrecondition) {
+            return { ok: true, skipped: true };
+        }
+        let doc;
+        try {
+            doc = this._readConfig(this._configPath);
+        } catch (err) {
+            throw new Error(
+                `[opencode-sidecar] R6 precondition check failed: cannot read ${this._configPath}: ${err.message}`,
+            );
+        }
+        const result = evaluatePermissionPrecondition(doc);
+        if (!result.ok) {
+            throw new Error(`[opencode-sidecar] ${result.reason}`);
+        }
+        return { ok: true, askKeys: result.askKeys };
+    }
+
+    /**
      * Spawn `opencode serve`, parse the listen line, probe /global/health.
      * Resolves once health succeeds. Rejects on listen-timeout, health
      * timeout, or non-200 health response.
@@ -293,6 +434,16 @@ export class OpenCodeSidecar {
             opencodeExe = resolveOpenCodeExePath();
         } catch (err) {
             throw new Error(`[opencode-sidecar] cannot resolve opencode exe: ${err.message}`);
+        }
+
+        // R6 precondition check runs BEFORE the sidecar child is spawned —
+        // if the engine is configured to auto-approve every sensitive op,
+        // launching the sidecar would surface zero cards and the user
+        // would lose mediation without a clear reason. Fail closed.
+        try {
+            await this.verifyConfigPrecondition();
+        } catch (err) {
+            throw new Error(`[opencode-sidecar] R6 precondition failed before spawn: ${err.message}`);
         }
 
         const child = this._spawn(opencodeExe, [...SERVE_ARGV], {
@@ -656,8 +807,12 @@ export class OpenCodeSidecar {
 export const __testing = Object.freeze({
     createSseParser,
     defaultHttpRequest,
+    defaultReadConfig,
+    evaluatePermissionPrecondition,
     REPLY_PATH,
     HEALTH_PATH,
     PERMISSIONS_SNAPSHOT_PATH,
+    SENSITIVE_PERMISSION_KEYS,
     SERVE_ARGV,
+    DEFAULT_OPENCODE_CONFIG_PATH,
 });

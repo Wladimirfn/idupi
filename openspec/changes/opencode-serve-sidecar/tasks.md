@@ -54,6 +54,45 @@ Chain strategy: pending
 - [x] 5.3 Answer-vs-deadline in same file: late `resolve()` after 120s + 404 → no throw, no second `expire`, registry cleared.
 - [x] 5.4 Reconnect replay: repeat `requestID` for `permission.v2.asked` → single `register()` call.
 
+## Phase 5b: Verify-Report Remediation (blocker #2, #3 + warning #5)
+
+Reopened 2026-09-08 against evidence revision
+`sha256:0c528b7b1d5e1ba4ca419536e0c2e0c0a1528c0b3dfcc3a3fae100c43ab00f44` (verdict FAIL).
+Remediation is a focused, single-batch cut that does NOT introduce new
+chained PRs; it is small enough to ship in one reviewable slice.
+
+- [x] 5b.1 (blocker #2 / R4 vanish-abort) `onRemoved` in `idupi-server/index.mjs`
+      wires the production vanish-abort: snapshot fallback via
+      `sidecar.listPendingPermissions()`, force-expire the registry entry on
+      confirmed vanish, kill the run child via taskkill, drop the sidecar
+      writer so a late reply cannot resurrect the request. RED tests in
+      `idupi-server/test/opencode-sidecar.test.mjs` (REM/R4 × 3) pin the
+      three contract branches (truly vanished → abort; still in snapshot →
+      defer; orphan requestId → no-op).
+- [x] 5b.2 (blocker #3 / R6 precondition) `OpenCodeSidecar` exposes
+      `verifyConfigPrecondition()` and `spawn()` calls it before launching
+      the opencode child. The check reads
+      `~/.config/opencode/opencode.json` via an injectable `readConfig`
+      seam and fails closed when no sensitive operation is at `ask`. RED
+      tests (REM/R6 × 5) cover the missing-config, missing-permission-block,
+      all-allow, at-least-one-ask, and spawn-fail-closed branches.
+- [x] 5b.3 (warning #5 / registry drift) `idupi-server/lib/ui-request-registry.mjs`
+      `buildAutoApproveDecision(method, engine)` reconciles the per-engine
+      semantics per the spec: OpenCode → `{cancelled:true}` for every
+      method; stdin engines → blanket auto-approve (`"Todo"`) for `select`,
+      `{cancelled:true}` for confirm/input where "approve" is meaningless;
+      `IDUPI_UI_AUTO_APPROVE=1` opt-in extends the stdin blanket to every
+      method without ever blanket-approving OpenCode. RED tests
+      (REM/REG × 3) pin the per-engine decision.
+- [x] 5b.4 (warning #4 / test-local mirror) The expire-routing helper
+      `applyExpireRouting` is extracted to
+      `idupi-server/lib/ui-request-expiry.mjs` (single source of truth);
+      `idupi-server/index.mjs` imports it for the production wiring and
+      `idupi-server/test/opencode-sidecar.test.mjs` imports it for the
+      suite. The test-local mirror is replaced with an import + a
+      drift-detector comment so a future refactor that changes the routing
+      rule fails the test on the FIRST run.
+
 ## Phase 6: Spec-Scenario Tests + Verification
 
 - [ ] 6.1 Map every scenario in both specs to a `node --test` case in `idupi-server/test/opencode-sidecar.test.mjs` (Toggle ON/OFF, Saved approval, Misconfigured, OpenCode expiry cancels, sidecar answer).
