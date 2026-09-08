@@ -43,9 +43,9 @@ Chain strategy: pending
 
 ## Phase 4: Spawn Gating + Toggle
 
-- [ ] 4.1 Plumb `X-OpenCode-Auto-Approve: 0|1` header in `app/src/main/java/com/idupi/app/data/remote/RealIduPiClient.kt` (default 0).
-- [ ] 4.2 Add `opencodeAutoApprove:Boolean` (default `false`) to settings repo.
-- [ ] 4.3 Add `AutoApproveSection` in `app/src/main/java/com/idupi/app/ui/screens/SettingsScreen.kt` mirroring `GeneralSection` Switch (L148); persist via DataStore.
+- [x] 4.1 Plumb `X-OpenCode-Auto-Approve: 0|1` header in `app/src/main/java/com/idupi/app/data/remote/RealIduPiClient.kt` (default 0).
+- [x] 4.2 Add `opencodeAutoApprove:Boolean` (default `false`) to settings repo.
+- [x] 4.3 Add `AutoApproveSection` in `app/src/main/java/com/idupi/app/ui/screens/SettingsScreen.kt` mirroring `GeneralSection` Switch (L148); persist via DataStore.
 
 ## Phase 5: Threat-Matrix RED Tests
 
