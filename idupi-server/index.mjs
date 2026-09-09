@@ -55,6 +55,20 @@ import { OpenCodeSidecar } from "./lib/opencode-sidecar.mjs";
 // opencode-sidecar.test.mjs) and the production wiring in lock-step —
 // drift is now a single-file diff, not a silent behaviour change.
 import { applyExpireRouting } from "./lib/ui-request-expiry.mjs";
+// R4 vanish-abort handler (opencode-serve-sidecar remediation, Phase 5c):
+// extracted out of index.mjs's runOpenCodeCli.onRemoved block so the
+// production wiring and the opencode-sidecar test suite share ONE
+// implementation. Same pattern as applyExpireRouting above: a single
+// source of truth means a future refactor of the snapshot-fallback rule
+// fails the test on the FIRST run, not after a silent behaviour change
+// ships.
+import { applyVanishAbort } from "./lib/ui-request-vanish.mjs";
+// X-OpenCode-Auto-Approve header parser (R5 toggle, Phase 5c): a pure
+// helper so the chat route can read the request header and thread the
+// flag into runOpenCodeCli without growing index.mjs further. The test
+// suite pins the wire shape (header "1" → autoApprove=true; "0"/absent
+// → autoApprove=false) on this module directly.
+import { parseOpenCodeAutoApproveHeader } from "./lib/opencode-auto-approve-header.mjs";
 import { mergePiModelCatalogs } from "./lib/pi-models.mjs";
 // Phase 3 (fix-ui-request-selection): pure normalizers that turn each
 // engine's raw UI-request event into the canonical shape the registry
@@ -5008,84 +5022,28 @@ async function runOpenCodeCli(projPath, sessionId, message, openCodeModel = null
                     // The spec mandates we detect the vanished permission
                     // and abort the affected turn instead.
                     //
-                    // 1) Resolve the registry entry from the engine-side id.
-                    // 2) Use listPendingPermissions() as a snapshot fallback
-                    //    (D7): if the engine still reports the id, the
-                    //    permission is NOT actually vanished — ignore.
-                    // 3) If truly vanished: force-expire the registry
-                    //    entry, kill the run child, surface a chat event.
-                    const registryRid = engineToRegistryMap.get(entry.requestId);
-                    if (!registryRid) {
-                        console.warn(
-                            `[opencode-sidecar] permission.removed for unknown engine requestId=${entry.requestId} — ignoring`,
-                        );
-                        return;
-                    }
-                    const abortTurn = (reason) => {
-                        // Force-expire the registry entry so the chat
-                        // session sees a terminal resolution (cancelled
-                        // message + dropped card).
-                        try {
-                            uiRequestRegistry.expire(registryRid);
-                        } catch (err) {
-                            console.warn(`[opencode-sidecar] expire after vanish failed: ${err?.message || err}`);
-                        }
-                        // Drop the sidecar writer so a late reply can NOT
-                        // resurrect the request after the engine has been
-                        // killed (terminality contract — 5.3 threat matrix).
-                        try { clearUiRequestSidecarWriter(registryRid); } catch {}
-                        // Kill the run child tree so the turn aborts now,
-                        // not at the 300s AGENT_CLI_TIMEOUT_MS backstop.
-                        try {
-                            execFile("taskkill", ["/F", "/T", "/PID", String(child.pid)], () => {});
-                        } catch (err) {
-                            console.warn(`[opencode-sidecar] taskkill after vanish failed: ${err?.message || err}`);
-                        }
-                        publishChatEvent(CHAT_EVENTS.UI_REQUEST_RESOLVED, {
-                            requestId: registryRid,
-                            sessionId: currentActivitySession("opencode"),
-                            engine: "opencode",
-                            resolution: "cancelled",
-                            value: { cancelled: true },
-                        });
-                        publishChatEvent(CHAT_EVENTS.MESSAGE_END, {
-                            text: `⚠️ Permiso de OpenCode desapareció (${reason}); turno abortado.`,
-                        });
-                        console.warn(
-                            `[opencode-sidecar] VANISH-ABORT engine.requestId=${entry.requestId} ` +
-                            `registry.requestId=${registryRid} reason=${reason}`,
-                        );
-                    };
-                    // D7 snapshot fallback: confirm via the engine's pending
-                    // permission list before we kill anything. If the
-                    // engine still reports the id, treat the removed frame
-                    // as a delayed cleanup — the engine will resolve the
-                    // permission on its own and our timer will expire the
-                    // registry entry without aborting the turn.
-                    (async () => {
-                        let snapshot = null;
-                        try {
-                            if (sidecar && typeof sidecar.listPendingPermissions === "function") {
-                                snapshot = await sidecar.listPendingPermissions();
-                            }
-                        } catch (err) {
-                            console.warn(
-                                `[opencode-sidecar] listPendingPermissions failed during vanish check: ${err?.message || err}`,
-                            );
-                        }
-                        const stillPending = Array.isArray(snapshot)
-                            && snapshot.some((p) => {
-                                const id = (p && typeof p === "object") ? (p.id || p.requestID) : null;
-                                return id === entry.requestId;
-                            });
-                        if (stillPending) {
-                            console.log(
-                                `[opencode-sidecar] permission.removed ${entry.requestId} still in snapshot; deferring abort`,
-                            );
-                            return;
-                        }
-                        abortTurn(snapshot == null ? "snapshot-unavailable" : "not-in-snapshot");
-                    })();
+                    // Phase 5c: the handler body is extracted to
+                    // `lib/ui-request-vanish.mjs` so the production wiring
+                    // and the opencode-sidecar test suite share ONE
+                    // implementation. The previous inline copy was a
+                    // drift layer (test-local `wireVanishAbort` mirrored
+                    // this exact block); the extracted function asserts
+                    // its own taskkill + publishChatEvent side effects in
+                    // tests, so a future refactor cannot silently change
+                    // behaviour.
+                    applyVanishAbort({
+                        entry,
+                        sidecar,
+                        engineToRegistry: engineToRegistryMap,
+                        uiRequestRegistry,
+                        child,
+                        clearUiRequestSidecarWriter,
+                        execFile,
+                        publishChatEvent,
+                        currentActivitySession,
+                        console,
+                        CHAT_EVENTS,
+                    });
                 },
                 onUnknown: (entry) => {
                     // Forward-compat: log unknown event types at debug level
@@ -5327,7 +5285,19 @@ async function runOpenCodeCli(projPath, sessionId, message, openCodeModel = null
                         }
                         agentOutput = await runClaudeCli(activeProj.path, activeClaudeSessionId, isNewClaudeSession, activeClaudeModelId, userMessage);
                     } else if (currentStatus.activeEngine === "opencode") {
-                        agentOutput = await runOpenCodeCli(activeProj.path, activeOpenCodeSessionId, userMessage, activeOpenCodeModel);
+                        // R5 Auto-Approve Toggle (opencode-serve-sidecar
+                        // remediation, Phase 5c): read the toggle header
+                        // from the chat request and thread the boolean into
+                        // runOpenCodeCli so header "1" yields the legacy
+                        // `--auto` path and header "0"/absent yields the
+                        // sidecar-first path. Fail-closed default is the
+                        // sidecar path (no header → no auto-approval).
+                        // The Android client (RealIduPiClient.kt) emits
+                        // exactly "0" or "1" per
+                        // AutoApproveHeaderTest; the parser tolerates
+                        // surrounding whitespace but nothing else.
+                        const autoApprove = parseOpenCodeAutoApproveHeader(req.headers);
+                        agentOutput = await runOpenCodeCli(activeProj.path, activeOpenCodeSessionId, userMessage, activeOpenCodeModel, autoApprove);
                         if (!activeOpenCodeSessionId) {
                             try {
                                 const rawDb = execSync('opencode db "SELECT id FROM session ORDER BY time_updated DESC LIMIT 1" --format json', { encoding: "utf8", maxBuffer: EXEC_MAX_BUFFER });
