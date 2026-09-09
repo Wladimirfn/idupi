@@ -31,7 +31,7 @@ android {
     signingConfigs {
         create("release") {
             storeFile = file("idupi-release.keystore")
-            storePassword = "***REMOVED***"
+storePassword = "***REMOVED***"
             keyAlias = "idupi"
             keyPassword = "***REMOVED***"
         }
