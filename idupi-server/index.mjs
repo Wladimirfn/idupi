@@ -4447,7 +4447,7 @@ function resolveClaudeSpawnTarget() {
     }
     // Last probe: try to run claude --version directly (covers npx/pnpx edge cases)
     try {
-        execFileSync("claude", ["--version"], { encoding: "utf8", timeout: 3000, maxBuffer: 4096 });
+        execFileSync("claude", ["--version"], { encoding: "utf8", timeout: 3000, maxBuffer: EXEC_MAX_BUFFER });
         console.warn(`[Claude Resolve] claude --version ok, fallback a spawn("claude")`);
         claudeSpawnTargetCache = { cmd: "claude" };
         return claudeSpawnTargetCache;
