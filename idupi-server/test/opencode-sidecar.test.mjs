@@ -44,6 +44,15 @@ import { PendingUiRequestRegistry } from "../lib/ui-request-registry.mjs";
 
 const UI_REQUEST_DEADLINE_MS = 120_000; // mirror lib/cli-constants.mjs
 
+/** Stable fake exe path the test suite hands to the sidecar's `resolveExe`
+ *  seam. The shim reader (`resolveOpenCodeExePath`) reads from
+ *  `~/AppData/Roaming/npm/opencode.cmd` on Windows / npm's bin shim on
+ *  Linux — neither is guaranteed on a CI runner, so every constructor
+ *  below that reaches `spawn()` injects this fake to keep the suite
+ *  hermetic. Locally the shim exists, so this seam is a no-op for
+ *  day-to-day development. */
+const FAKE_OPENCODE_EXE = "/fake/opencode.exe";
+
 // ---------------------------------------------------------------------------
 // Test fixtures: fake spawn child + fake HTTP responder.
 // ---------------------------------------------------------------------------
@@ -144,7 +153,7 @@ test("spawn binds to 127.0.0.1 with an ephemeral port and surfaces baseUrl", asy
     // /global/health 200 fast
     const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: '{"healthy":true,"version":"1.18.29"}' }));
 
-    const sidecar = new OpenCodeSidecar({ spawn: fakeSpawn, httpRequest, skipPrecondition: true });
+    const sidecar = new OpenCodeSidecar({ spawn: fakeSpawn, httpRequest, skipPrecondition: true, resolveExe: () => FAKE_OPENCODE_EXE });
     await sidecar.spawn();
 
     assert.equal(sidecar.baseUrl, "http://127.0.0.1:4096");
@@ -165,7 +174,7 @@ test("spawn fails closed when GET /global/health does not respond within 3s", as
         { health: () => new Promise(() => {}) },
     );
 
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true, resolveExe: () => FAKE_OPENCODE_EXE });
     await assert.rejects(
         () => sidecar.spawn(),
         (err) => /health (?:probe )?timeout|did not become healthy|timed out after \d+ms/i.test(err.message),
@@ -184,7 +193,7 @@ test("spawn fails closed when /global/health returns a non-200 status", async ()
         { health: () => ({ status: 503, body: '{"healthy":false}' }) },
     );
 
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true, resolveExe: () => FAKE_OPENCODE_EXE });
     await assert.rejects(
         () => sidecar.spawn(),
         (err) => /health.*(?:status|unhealthy)|503/i.test(err.message),
@@ -201,7 +210,7 @@ test("permission.asked maps to confirm with a 120s deadline", async () => {
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4099\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: '{"healthy":true}' }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true, resolveExe: () => FAKE_OPENCODE_EXE });
     await sidecar.spawn();
 
     const asks = [];
@@ -233,7 +242,7 @@ test("permission.v2.asked also maps to confirm with the 120s deadline", async ()
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4100\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: '{"healthy":true}' }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true, resolveExe: () => FAKE_OPENCODE_EXE });
     await sidecar.spawn();
     const asks = [];
     await sidecar.subscribeEvents({ onAsk: (e) => asks.push(e), onSaved: () => {}, onRemoved: () => {}, onUnknown: () => {} });
@@ -254,7 +263,7 @@ test("question.asked maps to select with the exact options", async () => {
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4101\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: '{"healthy":true}' }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true, resolveExe: () => FAKE_OPENCODE_EXE });
     await sidecar.spawn();
     const asks = [];
     await sidecar.subscribeEvents({ onAsk: (e) => asks.push(e), onSaved: () => {}, onRemoved: () => {}, onUnknown: () => {} });
@@ -276,7 +285,7 @@ test("repeat requestID for the same ask is deduplicated to a single onAsk call",
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4102\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: '{"healthy":true}' }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true, resolveExe: () => FAKE_OPENCODE_EXE });
     await sidecar.spawn();
     const asks = [];
     await sidecar.subscribeEvents({ onAsk: (e) => asks.push(e), onSaved: () => {}, onRemoved: () => {}, onUnknown: () => {} });
@@ -298,7 +307,7 @@ test("permission.saved routes to onSaved and permission.removed routes to onRemo
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4103\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: '{"healthy":true}' }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true, resolveExe: () => FAKE_OPENCODE_EXE });
     await sidecar.spawn();
     const saved = [];
     const removed = [];
@@ -331,7 +340,7 @@ test("SSE heartbeat lines (':') and unknown event types do not throw", async () 
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4104\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: '{"healthy":true}' }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true, resolveExe: () => FAKE_OPENCODE_EXE });
     await sidecar.spawn();
     const unknowns = [];
     const asks = [];
@@ -362,7 +371,7 @@ test("reply resolves to { ok: true } on HTTP 204", async () => {
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4105\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 204, body: "" }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true, resolveExe: () => FAKE_OPENCODE_EXE });
     await sidecar.spawn();
 
     const result = await sidecar.reply({ sessionId: "ses_a", requestId: "per-a", value: true });
@@ -382,7 +391,7 @@ test("reply for false value serializes as reply:'reject'", async () => {
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4106\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 204, body: "" }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true, resolveExe: () => FAKE_OPENCODE_EXE });
     await sidecar.spawn();
 
     const result = await sidecar.reply({ sessionId: "ses_b", requestId: "per-b", value: false });
@@ -397,7 +406,7 @@ test("reply treats 404 as { ok:true, expired:true } and NEVER throws", async () 
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4107\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 404, body: '{"error":"not found"}' }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true, resolveExe: () => FAKE_OPENCODE_EXE });
     await sidecar.spawn();
 
     // The whole point of 404 idempotency: a late reply after expiry MUST NOT
@@ -411,7 +420,7 @@ test("reply surfaces a non-2xx non-404 status as { ok:false, status }", async ()
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4108\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 500, body: "boom" }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true, resolveExe: () => FAKE_OPENCODE_EXE });
     await sidecar.spawn();
 
     const result = await sidecar.reply({ sessionId: "ses_d", requestId: "per-d", value: true });
@@ -431,7 +440,7 @@ test("shutdown sends SIGTERM first, then SIGKILL if the child does not exit with
     fakeChild.kill = (sig) => { killCalls.push(sig); return true; };
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4109\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: '{"healthy":true}' }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true, resolveExe: () => FAKE_OPENCODE_EXE });
     await sidecar.spawn();
 
     // Don't await — schedule the close emission AFTER kill so the SIGKILL path runs
@@ -448,7 +457,7 @@ test("shutdown resolves cleanly when SIGTERM is enough", async () => {
     const fakeChild = new FakeChild();
     queueMicrotask(() => fakeChild.stdout.push("opencode server listening on http://127.0.0.1:4110\n"));
     const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: '{"healthy":true}' }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true, resolveExe: () => FAKE_OPENCODE_EXE });
     await sidecar.spawn();
 
     // Default FakeChild.kill auto-emits close on a microtask, so SIGTERM
@@ -470,7 +479,7 @@ test("listPendingPermissions fetches the snapshot from GET /api/permission", asy
         { id: "per-y", sessionID: "ses_x" },
     ];
     const httpRequest = makeFakeHttpRequest(() => ({ status: 200, body: JSON.stringify(snapshot) }));
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, skipPrecondition: true, resolveExe: () => FAKE_OPENCODE_EXE });
     await sidecar.spawn();
 
     const result = await sidecar.listPendingPermissions();
@@ -529,6 +538,8 @@ async function freshSidecar(responder, { port = 4200 } = {}) {
         // passes. Tests that want the opposite path inject their own
         // readConfig in the constructor instead.
         readConfig: () => ({ permission: { bash: "ask", edit: "ask" } }),
+        // CI hermetic: skip the shim reader; we already stub `spawn`.
+        resolveExe: () => FAKE_OPENCODE_EXE,
     });
     await sidecar.spawn();
     return { sidecar, fakeChild, httpRequest };
@@ -722,7 +733,7 @@ test("PR2/5.1: fail-closed — a sidecar spawn failure is observed by the caller
         () => new Promise(() => {}),
         { health: () => new Promise(() => {}) },
     );
-    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, healthTimeoutMs: 50, skipPrecondition: true });
+    const sidecar = new OpenCodeSidecar({ spawn: () => fakeChild, httpRequest, healthTimeoutMs: 50, skipPrecondition: true, resolveExe: () => FAKE_OPENCODE_EXE });
     await assert.rejects(
         () => sidecar.spawn(),
         (err) => /health/i.test(err.message) && /50ms|timed out/i.test(err.message),
@@ -907,6 +918,7 @@ test("REM/R6: spawn() fails closed (no opencode run launched) when precondition 
         spawn: fakeSpawn,
         httpRequest,
         readConfig: () => null, // precondition rejects
+        resolveExe: () => FAKE_OPENCODE_EXE,
     });
     await assert.rejects(
         () => sidecar.spawn(),
@@ -949,6 +961,7 @@ async function freshSidecarForVanish({ snapshot = [], port = 4300 } = {}) {
         // R6: hermetic — the suite never depends on the user's real
         // ~/.config/opencode/opencode.json.
         readConfig: () => ({ permission: { bash: "ask" } }),
+        resolveExe: () => FAKE_OPENCODE_EXE,
     });
     await sidecar.spawn();
     return { sidecar, fakeChild, httpRequest };

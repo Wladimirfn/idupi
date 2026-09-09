@@ -346,6 +346,14 @@ export class OpenCodeSidecar {
      *   Production should NEVER set this; the seam exists for tests and
      *   for the rare recovery path where a maintainer has explicitly
      *   accepted the misconfiguration risk.
+     * @param {() => string} [opts.resolveExe=resolveOpenCodeExePath]
+     *   factory that returns the absolute path to the `opencode` binary
+     *   to invoke. Defaults to the production
+     *   `resolveOpenCodeExePath` (reads the npm shim from disk). Tests
+     *   inject a fake `() => "/fake/opencode.exe"` so the suite stays
+     *   hermetic on CI runners where the shim does not exist (CI had
+     *   26 tests failing because `spawn()` called the shim reader
+     *   unconditionally before any test seam could intervene).
      */
     constructor({
         spawn = nodeSpawn,
@@ -356,6 +364,7 @@ export class OpenCodeSidecar {
         configPath = DEFAULT_OPENCODE_CONFIG_PATH,
         readConfig = defaultReadConfig,
         skipPrecondition = false,
+        resolveExe = resolveOpenCodeExePath,
     } = {}) {
         this._spawn = spawn;
         this._httpRequest = httpRequest;
@@ -365,6 +374,7 @@ export class OpenCodeSidecar {
         this._configPath = configPath;
         this._readConfig = readConfig;
         this._skipPrecondition = skipPrecondition === true;
+        this._resolveExe = resolveExe;
 
         /** @type {import("node:child_process").ChildProcess | null} */
         this._child = null;
@@ -431,7 +441,7 @@ export class OpenCodeSidecar {
 
         let opencodeExe;
         try {
-            opencodeExe = resolveOpenCodeExePath();
+            opencodeExe = this._resolveExe();
         } catch (err) {
             throw new Error(`[opencode-sidecar] cannot resolve opencode exe: ${err.message}`);
         }
