@@ -241,9 +241,10 @@ class UiRequestParserTest {
         assertNull(parser.feedLine("data: \"token\":11,\"method\":\"input\",\"title\":\"t\",\"message\":\"m\","))
         assertNull(parser.feedLine("data: \"deadlineMs\":120000,\"sessionId\":\"sess\"}"))
         val frame = parser.feedLine("")
-        assertEquals("ui_request", frame?.event)
+        assertNotNull("frame must be complete after the terminating blank line", frame)
+        assertEquals("ui_request", frame!!.event)
 
-        val event = parseSseEvent(json, frame?.event, frame?.data)
+        val event = parseSseEvent(json, frame!!.event, frame!!.data)
         val received = event as ChatEvent.UiRequestReceived
         // deadlineAt is derived from `System.currentTimeMillis() + deadlineMs`,
         // so we cannot assert an exact value. Every other field is deterministic.

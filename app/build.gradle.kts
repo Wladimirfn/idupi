@@ -31,9 +31,9 @@ android {
     signingConfigs {
         create("release") {
             storeFile = file("idupi-release.keystore")
-            storePassword = "Idupi2026Store"
+storePassword = "***REMOVED***"
             keyAlias = "idupi"
-            keyPassword = "Idupi2026Store"
+            keyPassword = "***REMOVED***"
         }
     }
     buildTypes {
@@ -87,6 +87,9 @@ dependencies {
     implementation(libs.ktor.client.content.negotiation)
     implementation(libs.ktor.serialization.kotlinx.json)
     implementation(libs.kotlinx.serialization.json)
+
+    // DataStore-backed settings persistence (PR 3 / Task 4.2).
+    implementation(libs.androidx.datastore.preferences)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

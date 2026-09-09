@@ -8,6 +8,7 @@ import com.idupi.app.domain.model.ChatEvent
 import com.idupi.app.domain.model.MessageSender
 import com.idupi.app.domain.model.UiRequest
 import com.idupi.app.domain.model.UiRequestMethod
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -60,7 +61,10 @@ class ChatViewModelUiResponseTest {
         sessionId = sessionId,
     )
 
-    private suspend fun deliverAndOpenDialog(
+    // TestScope receiver: `advanceUntilIdle()` is a TestScope extension, so
+    // a bare helper without receiver does not resolve it (unresolved
+    // reference); every call site already runs inside runTest.
+    private suspend fun TestScope.deliverAndOpenDialog(
         viewModel: ChatViewModel,
         request: UiRequest = pendingRequest(),
     ) {

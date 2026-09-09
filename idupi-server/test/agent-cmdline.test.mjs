@@ -99,3 +99,54 @@ test("openCode args never double the provider prefix on a catalog id", () => {
     });
     assert.deepEqual(args, ["run", "--format", "json", "--auto", "-m", "opencode/muse-spark-1.3-contributor-free", "-s", "ses_x", "hola"]);
 });
+
+// --- openCodeArgs autoApprove: PR 2 sidecar toggle seam --------------------
+//
+// The toggle gates only the spawn path (D8 in design.md). ON keeps the legacy
+// `--auto` self-approve behaviour; OFF drops `--auto` so the CLI waits on the
+// sidecar's HTTP answer route. The hostile-message invariant MUST be
+// preserved in both modes (one JSON-string element, no shell escape path).
+
+test("openCode args drop --auto when autoApprove is false (sidecar mode)", () => {
+    const args = openCodeArgs({
+        autoApprove: false,
+        model: "opencode-go/gpt-5.6-luna",
+        provider: "opencode-go",
+        sessionId: "ses_x",
+        message: "hola",
+    });
+    // The hostile-message invariant: message is still ONE array element.
+    assert.deepEqual(args, [
+        "run", "--format", "json",
+        "-m", "opencode-go/gpt-5.6-luna",
+        "-s", "ses_x",
+        "hola",
+    ]);
+    assert.equal(args.includes("--auto"), false, "--auto MUST be absent when autoApprove is false");
+    // Hostile message stays one element.
+    const evilArgs = openCodeArgs({ autoApprove: false, message: EVIL });
+    assert.equal(evilArgs[evilArgs.length - 1], EVIL, "hostile message MUST stay one inert element when autoApprove is false");
+    assert.equal(evilArgs.includes("--auto"), false);
+});
+
+test("openCode args keep --auto when autoApprove is true (legacy mode)", () => {
+    const args = openCodeArgs({
+        autoApprove: true,
+        model: "opencode-go/gpt-5.6-luna",
+        sessionId: "ses_x",
+        message: "hola",
+    });
+    assert.deepEqual(args, [
+        "run", "--format", "json", "--auto",
+        "-m", "opencode-go/gpt-5.6-luna",
+        "-s", "ses_x",
+        "hola",
+    ]);
+});
+
+test("openCode args default to autoApprove=true (legacy --auto) when unspecified", () => {
+    // Backwards-compat: existing call sites that do not pass autoApprove
+    // MUST keep producing --auto so no regression slips into the legacy path.
+    const args = openCodeArgs({ message: "hola" });
+    assert.equal(args.includes("--auto"), true, "default MUST remain --auto (legacy self-approve)");
+});
