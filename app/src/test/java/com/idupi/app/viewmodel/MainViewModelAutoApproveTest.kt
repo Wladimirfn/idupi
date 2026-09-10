@@ -3,6 +3,8 @@ package com.idupi.app.viewmodel
 import com.idupi.app.FakeClientSource
 import com.idupi.app.FakeIduPiClient
 import com.idupi.app.MainDispatcherRule
+import com.idupi.app.data.IduPiClientProvider
+import com.idupi.app.data.remote.RealIduPiClient
 import com.idupi.app.data.settings.InMemorySettingsRepository
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -103,6 +105,40 @@ class MainViewModelAutoApproveTest {
                 "persisted value (true); this is the crash-survival " +
                 "invariant the DataStore-backed repository guarantees",
             secondViewModel.opencodeAutoApprove.value,
+        )
+    }
+
+    /**
+     * Drift fix: the `init` block MUST read the persisted repo value ONCE and
+     * push it to [IduPiClientProvider] so the next `/api/v1/chat/message`
+     * carries the matching `X-OpenCode-Auto-Approve` header on a fresh
+     * process / VM (re)create. Without this, a cold launch with the toggle
+     * persisted ON shows the UI as ON but silently sends `0` to the server.
+     */
+    @Test
+    fun `init syncs persisted opencodeAutoApprove true to the chat header singleton`() = runTest {
+        // Defensive reset: IduPiClientProvider is a process-wide singleton and
+        // other tests in the same JVM may have flipped the field.
+        IduPiClientProvider.setOpencodeAutoApprove(false)
+        assertFalse(
+            "precondition: provider singleton MUST start at false before the VM is built",
+            (IduPiClientProvider.client as RealIduPiClient).opencodeAutoApprove,
+        )
+
+        // Simulate the post-restart scenario: DataStore already holds ON.
+        settings.setOpencodeAutoApprove(true)
+
+        // Note: do NOT call viewModel.setOpencodeAutoApprove(...) — that path
+        // is already covered above. This test proves init does the push on
+        // its own, without any user action.
+        MainViewModel(FakeClientSource(fake), settings)
+        advanceUntilIdle()
+
+        assertTrue(
+            "MainViewModel.init MUST push the persisted repo value to the " +
+                "chat header singleton so the next /api/v1/chat/message " +
+                "carries X-OpenCode-Auto-Approve: 1 on a fresh process / VM recreate",
+            (IduPiClientProvider.client as RealIduPiClient).opencodeAutoApprove,
         )
     }
 }
