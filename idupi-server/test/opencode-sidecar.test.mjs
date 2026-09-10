@@ -908,6 +908,159 @@ test("REM/R6: verifyConfigPrecondition passes when at least one sensitive op is 
     assert.deepEqual(result.askKeys, ["bash"]);
 });
 
+// ---------------------------------------------------------------------------
+// R6 pattern-aware: opencode.json's `permission` block may express a tool
+// as either a top-level "ask"/"allow"/"deny" string OR as an object of
+// `{ "<pattern>": "ask"|"allow"|"deny", ... }` (the real-world shape users
+// run with `git commit *` / `git push *` set to `ask` while everything else
+// stays `allow`). The precondition MUST recursively scan the per-tool block
+// and count an `ask` at any depth toward the R6 satisfied-state, BUT a
+// pattern object built only from `allow` or `deny` leaves that tool
+// non-satisfied. Crucially: `ask` set on a NON-sensitive tool (e.g.
+// `question`) MUST NOT count toward bash/edit/write/webfetch/patch/read,
+// so a config like `{ question: "ask", bash: "allow", ... }` still fails
+// closed.
+// ---------------------------------------------------------------------------
+
+test("REM/R6-pattern: passes when a sensitive tool sets `ask` inside a pattern object", async () => {
+    const { OpenCodeSidecar } = await loadSidecar();
+    const sidecar = new OpenCodeSidecar({
+        spawn: () => new FakeChild(),
+        httpRequest: makeFakeHttpRequest(() => ({ status: 200, body: "" })),
+        readConfig: () => ({
+            // Real-world shape: top-level `allow`, bash narrows `git commit`
+            // and `git push` to `ask`. The R6 check MUST recognise the
+            // nested `ask` value and pass the precondition for bash.
+            permission: {
+                bash: { "git commit *": "ask", "git push *": "ask" },
+                edit: "allow",
+                write: "allow",
+                webfetch: "allow",
+            },
+        }),
+    });
+    const result = await sidecar.verifyConfigPrecondition();
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.askKeys, ["bash"]);
+});
+
+test("REM/R6-pattern: passes when `ask` is buried one or more levels deep inside a pattern object", async () => {
+    const { OpenCodeSidecar } = await loadSidecar();
+    const sidecar = new OpenCodeSidecar({
+        spawn: () => new FakeChild(),
+        httpRequest: makeFakeHttpRequest(() => ({ status: 200, body: "" })),
+        readConfig: () => ({
+            // Defensive case: a category wrapper around the pattern map.
+            // Real configs do not ship this shape today, but the R6 check
+            // MUST be depth-insensitive so any future schema change keeps
+            // behaving correctly.
+            permission: {
+                bash: { patterns: { "git push *": "ask" } },
+                edit: "allow",
+            },
+        }),
+    });
+    const result = await sidecar.verifyConfigPrecondition();
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.askKeys, ["bash"]);
+});
+
+test("REM/R6-pattern: rejects (allow-only) when a sensitive tool's patterns are all `allow`", async () => {
+    const { OpenCodeSidecar } = await loadSidecar();
+    const sidecar = new OpenCodeSidecar({
+        spawn: () => new FakeChild(),
+        httpRequest: makeFakeHttpRequest(() => ({ status: 200, body: "" })),
+        readConfig: () => ({
+            // Pattern object exists but every entry is `allow` — engine
+            // auto-approves everything for that tool, so card mediation
+            // would never fire. R6 fails closed.
+            permission: {
+                bash: { "git commit *": "allow", "git push *": "allow" },
+                edit: "allow",
+            },
+        }),
+    });
+    await assert.rejects(
+        () => sidecar.verifyConfigPrecondition(),
+        (err) => /R6 precondition/.test(err.message) && /auto-approved/.test(err.message),
+        "verifyConfigPrecondition MUST reject when sensitive ops are allow-only via patterns",
+    );
+});
+
+test("REM/R6-pattern: rejects (deny-only) when a sensitive tool's patterns are all `deny`", async () => {
+    const { OpenCodeSidecar } = await loadSidecar();
+    const sidecar = new OpenCodeSidecar({
+        spawn: () => new FakeChild(),
+        httpRequest: makeFakeHttpRequest(() => ({ status: 200, body: "" })),
+        readConfig: () => ({
+            // Pattern object exists but every entry is `deny` — engine
+            // refuses every invocation of that tool, so card mediation
+            // could never prompt either. R6 fails closed.
+            permission: {
+                bash: { "git commit *": "deny", "git push *": "deny" },
+                edit: "deny",
+            },
+        }),
+    });
+    await assert.rejects(
+        () => sidecar.verifyConfigPrecondition(),
+        (err) => /R6 precondition/.test(err.message) && /denied/.test(err.message),
+        "verifyConfigPrecondition MUST reject when sensitive ops are deny-only via patterns",
+    );
+});
+
+test("REM/R6-pattern: `ask` on a NON-sensitive tool does NOT count toward the R6 satisfied-state", async () => {
+    const { OpenCodeSidecar } = await loadSidecar();
+    const sidecar = new OpenCodeSidecar({
+        spawn: () => new FakeChild(),
+        httpRequest: makeFakeHttpRequest(() => ({ status: 200, body: "" })),
+        readConfig: () => ({
+            // Distractor: `question` is set to `ask` (a tool outside the
+            // sensitive list) but every sensitive tool is allow-only.
+            // The R6 check MUST ignore the distractor and fail closed;
+            // bash remains non-satisfied because nobody ever set it to
+            // `ask`. This guards against future code drift that might
+            // over-eagerly count any `ask` string anywhere in the doc.
+            permission: {
+                question: "ask",
+                external: { question: "ask" }, // nested distractor
+                bash: "allow",
+                edit: "allow",
+                write: "allow",
+                webfetch: "allow",
+                patch: "allow",
+                read: "allow",
+            },
+        }),
+    });
+    await assert.rejects(
+        () => sidecar.verifyConfigPrecondition(),
+        (err) => /R6 precondition/.test(err.message) && /auto-approved/.test(err.message),
+        "verifyConfigPrecondition MUST reject when only NON-sensitive tools are at `ask`",
+    );
+});
+
+test("REM/R6-pattern: a sensitive tool mixing `ask` and `allow` patterns still counts as satisfied", async () => {
+    const { OpenCodeSidecar } = await loadSidecar();
+    const sidecar = new OpenCodeSidecar({
+        spawn: () => new FakeChild(),
+        httpRequest: makeFakeHttpRequest(() => ({ status: 200, body: "" })),
+        readConfig: () => ({
+            // Mixed-shape: bash narrows `git push` to `ask` while keeping
+            // `git status` allow. The mixed entrypoints legitimately need
+            // card mediation for pushes, so the engine WILL surface an
+            // `ask` prompt for that pattern — R6 must recognise it.
+            permission: {
+                bash: { "git status *": "allow", "git push *": "ask" },
+                edit: "allow",
+            },
+        }),
+    });
+    const result = await sidecar.verifyConfigPrecondition();
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.askKeys, ["bash"]);
+});
+
 test("REM/R6: spawn() fails closed (no opencode run launched) when precondition rejects", async () => {
     const { OpenCodeSidecar } = await loadSidecar();
     const fakeChild = new FakeChild();

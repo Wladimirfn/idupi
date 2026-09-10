@@ -137,12 +137,56 @@ function defaultReadConfig(path) {
 }
 
 /**
+ * Recursive helper for one tool's `permission` slot. The OpenCode config
+ * shape in the wild is either a top-level string ("ask" / "allow" / "deny")
+ * or a per-pattern object whose string leaves — and rarely (today, never,
+ * but defensively) one more wrapper level deep — can be `"ask"`, `"allow"`,
+ * or `"deny"`. Returns the set of decision verbs observed at any depth so
+ * the caller can decide whether the tool is satisfied, auto-approved, or
+ * denied. Non-string / non-object leaves are deliberately ignored so a
+ * future schema extension (numeric limits, regex objects, etc.) cannot
+ * accidentally flip the decision.
+ *
+ * Scope: only walks the value rooted at one sensitive key. The R6 check
+ * MUST NOT reuse this helper to scan across keys, or an `ask` set on a
+ * non-sensitive tool (e.g. `question`) would bleed into bash/edi/etc. and
+ * silently weaken the precondition.
+ */
+function scanPermissionSlot(v) {
+    let hasAsk = false;
+    let hasAllow = false;
+    let hasDeny = false;
+    const walk = (node) => {
+        if (node === "ask") hasAsk = true;
+        else if (node === "allow") hasAllow = true;
+        else if (node === "deny") hasDeny = true;
+        else if (node != null && typeof node === "object") {
+            for (const inner of Object.values(node)) walk(inner);
+        }
+        // Any other leaf (number, boolean, null, unknown string) is
+        // intentionally ignored — only the three canonical verbs matter.
+    };
+    walk(v);
+    return { hasAsk, hasAllow, hasDeny };
+}
+
+/**
  * Pure helper: given the parsed opencode.json document, decide whether the
  * R6 precondition is satisfied. Returns `{ ok: true }` if at least one
  * sensitive operation is at `ask`; otherwise `{ ok: false, reason }` with
  * a short human-readable reason suitable for an error message. The reason
  * is intentionally diagnostic so a user who hits this can fix the config
  * without reading the spec.
+ *
+ * R6 pattern-aware: the per-tool slot may be either a top-level string
+ * ("ask" / "allow" / "deny") or an object of `{ "<pattern>": "ask"|"allow"|"deny", ... }`
+ * (the real-world shape users run with `git commit *` / `git push *` set
+ * to `ask` and everything else set to `allow`). The check recurses into
+ * the per-tool value so an `ask` at any depth satisfies the tool, and
+ * likewise an all-`allow` or all-`deny` pattern object marks the tool as
+ * non-satisfied. The scan is strictly scoped to the six sensitive keys —
+ * `ask` set on a non-sensitive tool (e.g. `question`) cannot satisfy bash,
+ * edit, write, webfetch, patch, or read, by design.
  */
 export function evaluatePermissionPrecondition(doc) {
     if (doc == null || typeof doc !== "object") {
@@ -162,10 +206,10 @@ export function evaluatePermissionPrecondition(doc) {
     const allowKeys = [];
     const denyKeys = [];
     for (const key of SENSITIVE_PERMISSION_KEYS) {
-        const v = perm[key];
-        if (v === "ask") askKeys.push(key);
-        else if (v === "allow") allowKeys.push(key);
-        else if (v === "deny") denyKeys.push(key);
+        const { hasAsk, hasAllow, hasDeny } = scanPermissionSlot(perm[key]);
+        if (hasAsk) askKeys.push(key);
+        if (hasAllow) allowKeys.push(key);
+        if (hasDeny) denyKeys.push(key);
     }
     if (askKeys.length === 0) {
         const detail = allowKeys.length > 0
