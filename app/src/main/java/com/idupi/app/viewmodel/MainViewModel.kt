@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -63,6 +64,17 @@ class MainViewModel(
     }
 
     init {
+        // Drift fix: read the persisted OpenCode auto-approve toggle ONCE
+        // and push it to the chat-header singleton so the next
+        // `/api/v1/chat/message` POST carries the matching
+        // `X-OpenCode-Auto-Approve` header on a fresh process / VM (re)create.
+        // Without this, a cold launch with the toggle persisted ON shows the
+        // Settings UI as ON but the chat silently sends `0` to the server.
+        viewModelScope.launch {
+            settingsRepository.opencodeAutoApprove
+                .first()
+                .let(IduPiClientProvider::setOpencodeAutoApprove)
+        }
         refreshStatus()
     }
 
