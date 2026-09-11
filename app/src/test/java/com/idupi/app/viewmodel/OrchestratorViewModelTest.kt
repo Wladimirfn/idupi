@@ -356,4 +356,99 @@ class OrchestratorViewModelTest {
         viewModel.syncEngine(null)
         assertEquals("a null engine must be a no-op", before, viewModel.activeEngine.value)
     }
+
+    // ------------------------------------------------------------------
+    // fix/orchestrator-engine-tabs — regression: tapping OpenCode/Claude
+    // in the motor selector must NOT snap the active engine back to Pi.
+    // Root cause: selectEngine() flipped _activeEngine optimistically and
+    // then called refreshStatus(), whose syncEngineFromStatus(st) would
+    // overwrite _activeEngine with the server's still-stale activeEngine
+    // (default "pi-cli" on the real server between round-trips, and on
+    // any test double that doesn't echo the selectEngine write). The
+    // selector visually jumped back to Pi and the per-engine tabs became
+    // unreachable. Pin the contract: once the user has chosen an engine
+    // in this ViewModel, server snapshots are ignored until recreation.
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `selectEngine survives refreshStatus that still reports the old engine`() = runTest {
+        // The fake's default orchestratorStatusToReturn keeps activeEngine
+        // pinned at "pi-cli" — i.e. it does NOT echo back selectEngine calls.
+        // That matches the real server's brief window between POST /engine
+        // and the next GET /status. With the bug present, this scenario
+        // snaps the selector back to Pi on every tap (regression).
+        assertEquals("pi-cli", fake.orchestratorStatusToReturn.activeEngine)
+
+        val viewModel = OrchestratorViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+        // init re-hydrated from the server's default → engine is Pi.
+        assertEquals(OrchestratorEngine.PI, viewModel.activeEngine.value)
+
+        viewModel.selectEngine(OrchestratorEngine.OPENCODE)
+        advanceUntilIdle()
+        assertEquals(
+            "user-selected engine must NOT be clobbered by a stale server status",
+            OrchestratorEngine.OPENCODE,
+            viewModel.activeEngine.value,
+        )
+
+        viewModel.selectEngine(OrchestratorEngine.CLAUDE)
+        advanceUntilIdle()
+        assertEquals(
+            "switching engines must also stick when the server hasn't confirmed yet",
+            OrchestratorEngine.CLAUDE,
+            viewModel.activeEngine.value,
+        )
+
+        // A subsequent manual refreshStatus must still not clobber the user choice.
+        viewModel.refreshStatus()
+        advanceUntilIdle()
+        assertEquals(
+            "manual refresh must respect an explicit engine selection",
+            OrchestratorEngine.CLAUDE,
+            viewModel.activeEngine.value,
+        )
+    }
+
+    @Test
+    fun `syncEngine from resumed session survives refreshStatus`() = runTest {
+        // Same regression class, navigation entry point: AppNavigation calls
+        // syncEngine(engine) on session resume, then refreshStatus() runs
+        // from the post-resume hook. Without the latch, the stale
+        // activeEngine="pi-cli" status overwrites the resumed engine.
+        val viewModel = OrchestratorViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+        assertEquals(OrchestratorEngine.PI, viewModel.activeEngine.value)
+
+        viewModel.syncEngine(OrchestratorEngine.CLAUDE)
+        viewModel.refreshStatus()
+        advanceUntilIdle()
+        assertEquals(
+            "resumed-session engine must NOT be clobbered by a stale server status",
+            OrchestratorEngine.CLAUDE,
+            viewModel.activeEngine.value,
+        )
+    }
+
+    @Test
+    fun `selectEngine with unknown id keeps the previous engine and leaves the latch armed`() = runTest {
+        // Unknown ids are a no-op, but the latch state must remain consistent:
+        // a prior explicit choice is still respected, AND the latch stays
+        // armed so a stale server status does not undo it.
+        fake.orchestratorStatusToReturn = OrchestratorStatus(activeEngine = "pi-cli")
+        val viewModel = OrchestratorViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+
+        viewModel.selectEngine(OrchestratorEngine.OPENCODE)
+        advanceUntilIdle()
+        assertEquals(OrchestratorEngine.OPENCODE, viewModel.activeEngine.value)
+
+        viewModel.selectEngine("copilot") // unknown
+        advanceUntilIdle()
+        assertEquals(
+            "unknown id must NOT clobber the prior explicit engine",
+            OrchestratorEngine.OPENCODE,
+            viewModel.activeEngine.value,
+        )
+    }
 }

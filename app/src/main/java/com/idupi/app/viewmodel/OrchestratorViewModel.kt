@@ -66,6 +66,19 @@ class OrchestratorViewModel(
     private val _activeEngine = MutableStateFlow(OrchestratorEngine.OPENCODE)
     val activeEngine: StateFlow<String> = _activeEngine.asStateFlow()
 
+    /**
+     * Latches to `true` the first time the user (or navigation, via
+     * [syncEngine]) makes an explicit engine choice in this ViewModel's
+     * lifetime. Once latched, [syncEngineFromStatus] must NOT overwrite
+     * `_activeEngine` with a server-reported value — the server can briefly
+     * report a stale `pi-cli` right after `selectEngine` (still processing
+     * or a test double that does not echo the switch), and that overwrite
+     * is what caused the orchestrator-selector to snap back when the user
+     * tapped OpenCode/Claude (regression). A fresh ViewModel re-hydrates
+     * from status on its own, so reset is implicit on recreation.
+     */
+    private var userHasExplicitEngine: Boolean = false
+
     private val _activeTab = MutableStateFlow(OrchestratorTab.FASES)
     val activeTab: StateFlow<OrchestratorTab> = _activeTab.asStateFlow()
 
@@ -113,6 +126,7 @@ class OrchestratorViewModel(
             return
         }
         _activeEngine.value = engine
+        userHasExplicitEngine = true
         // Sync with server - universal, not hardcoded to this machine's path
         viewModelScope.launch {
             try {
@@ -131,8 +145,14 @@ class OrchestratorViewModel(
      * Syncs local activeEngine with server's activeEngine (called after
      * session resume or status refresh). Ensures Pi/OpenCode/Claude each
      * show their own models independently, as before.
+     *
+     * Suppressed while [userHasExplicitEngine] is latched: a stale
+     * `activeEngine="pi-cli"` from the server (status snapshot taken
+     * before `selectEngine` round-tripped, or a test fake that does not
+     * echo the switch) would otherwise snap the selector back to Pi.
      */
     fun syncEngineFromStatus(status: OrchestratorStatus?) {
+        if (userHasExplicitEngine) return
         val serverEngine = status?.activeEngine?.let { raw ->
             when {
                 raw == "pi-cli" -> OrchestratorEngine.PI
@@ -151,6 +171,11 @@ class OrchestratorViewModel(
      * navigation) so the orchestrator selector flips immediately instead of
      * waiting for a status round-trip. Mirrors the canonical-id mapping in
      * [syncEngineFromStatus]; an unknown/null engine is a no-op.
+     *
+     * An accepted flip also latches [userHasExplicitEngine] so a subsequent
+     * `refreshStatus()` (the screen's `LaunchedEffect`, the resume
+     * post-hook, the manual refresh button) cannot clobber the resumed
+     * session's engine with a stale server value.
      */
     fun syncEngine(engine: String?) {
         val canonical = when {
@@ -160,6 +185,7 @@ class OrchestratorViewModel(
         }
         if (canonical != null && canonical != _activeEngine.value) {
             _activeEngine.value = canonical
+            userHasExplicitEngine = true
         }
     }
 
