@@ -100,27 +100,33 @@ type Monitor struct {
 	ScaleFactor float64 `json:"scaleFactor"`
 }
 
-func enumerateMonitors() ([]Monitor, error) {
-	type entry struct {
-		mi  monitorInfoEx
-		dpi uint32
+type monitorEntry struct {
+	mi  monitorInfoEx
+	dpi uint32
+}
+
+var enumMonitorsCb = syscall.NewCallback(func(hMon, hdc uintptr, lprc *rect, data uintptr) uintptr {
+	if data == 0 {
+		return 0
 	}
-	var entries []entry
-	cb := syscall.NewCallback(func(hMon, hdc uintptr, lprc *rect, data uintptr) uintptr {
-		var mi monitorInfoEx
-		mi.CbSize = uint32(unsafe.Sizeof(mi))
-		if r, _, _ := procGetMonitorInfoW.Call(hMon, uintptr(unsafe.Pointer(&mi))); r != 0 {
-			e := entry{mi: mi, dpi: 96}
-			var dx, dy uint32
-			if r, _, _ := procGetDpiForMonitor.Call(hMon, dpiEffective,
-				uintptr(unsafe.Pointer(&dx)), uintptr(unsafe.Pointer(&dy))); r == 0 && dx > 0 {
-				e.dpi = dx
-			}
-			entries = append(entries, e)
+	entries := (*[]monitorEntry)(unsafe.Pointer(data))
+	var mi monitorInfoEx
+	mi.CbSize = uint32(unsafe.Sizeof(mi))
+	if r, _, _ := procGetMonitorInfoW.Call(hMon, uintptr(unsafe.Pointer(&mi))); r != 0 {
+		e := monitorEntry{mi: mi, dpi: 96}
+		var dx, dy uint32
+		if r, _, _ := procGetDpiForMonitor.Call(hMon, dpiEffective,
+			uintptr(unsafe.Pointer(&dx)), uintptr(unsafe.Pointer(&dy))); r == 0 && dx > 0 {
+			e.dpi = dx
 		}
-		return 1
-	})
-	if r, _, err := procEnumDisplayMonitors.Call(0, 0, cb, 0); r == 0 {
+		*entries = append(*entries, e)
+	}
+	return 1
+})
+
+func enumerateMonitors() ([]Monitor, error) {
+	var entries []monitorEntry
+	if r, _, err := procEnumDisplayMonitors.Call(0, 0, enumMonitorsCb, uintptr(unsafe.Pointer(&entries))); r == 0 {
 		return nil, fmt.Errorf("EnumDisplayMonitors failed: %v", err)
 	}
 	out := make([]Monitor, 0, len(entries))
