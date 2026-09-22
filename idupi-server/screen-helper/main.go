@@ -159,18 +159,10 @@ func dispatch(out *bufio.Writer, req *request) {
 			writeError(out, req.ID, err)
 			return
 		}
-		if req.Width != nil && req.Height != nil && len(monitors) > 1 {
-			target := monitors[len(monitors)-1]
-			for _, m := range monitors {
-				if !m.Primary {
-					target = m
-				}
-			}
-			if !target.Primary {
-				_ = resizeDisplay(target.Name, *req.Width, *req.Height)
-				if refreshed, err2 := enumerateMonitors(); err2 == nil {
-					monitors = refreshed
-				}
+		if req.Text != "" && req.Width != nil && req.Height != nil {
+			_ = resizeDisplay(req.Text, *req.Width, *req.Height)
+			if refreshed, err2 := enumerateMonitors(); err2 == nil {
+				monitors = refreshed
 			}
 		}
 		writeControl(out, req.ID, map[string]any{
