@@ -16,6 +16,11 @@ import { ScreenHelper, ensureHelperBuilt } from "./screen-helper.mjs";
 import { createScreenStream } from "./screen-stream.mjs";
 import { QUALITY_LADDER } from "./screen-quality.mjs";
 import { encodeControl, encodeFrame } from "./screen-protocol.mjs";
+import {
+    disableVirtualDisplay,
+    enableVirtualDisplay,
+    getVirtualDisplayState,
+} from "./virtual-display.mjs";
 
 const execFileP = promisify(execFile);
 const helperDir = join(
@@ -152,6 +157,47 @@ export async function handleScreenRoute(req, res, pathname) {
         return true;
     }
 
+    // Virtual Extra Monitor (GET state / POST enable or disable extended display)
+    if (pathname === "/api/v1/screen/virtual-display" && req.method === "GET") {
+        try {
+            const helper = await getAuxHelper();
+            const monitors = await helper.list();
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({
+                ok: true,
+                ...getVirtualDisplayState(),
+                monitors,
+            }));
+        } catch (err) {
+            res.writeHead(502, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: err.message }));
+        }
+        return true;
+    }
+
+    if (pathname === "/api/v1/screen/virtual-display" && req.method === "POST") {
+        let body = "";
+        req.on("data", (chunk) => { body += chunk; });
+        req.on("end", async () => {
+            try {
+                const parsed = JSON.parse(body || "{}");
+                const helper = await getAuxHelper();
+                const result = parsed.enabled
+                    ? await enableVirtualDisplay(helper, {
+                        width: parsed.width,
+                        height: parsed.height,
+                    })
+                    : await disableVirtualDisplay(helper);
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify(result));
+            } catch (err) {
+                res.writeHead(502, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ error: err.message }));
+            }
+        });
+        return true;
+    }
+
     // Remote input: normalised coordinates against ONE monitor, resolved to
     // absolute virtual-desktop units inside the Go helper. Ships enabled --
     // IDUPI_REMOTE_INPUT=0 downgrades it to a 403 even for a valid token.
@@ -270,6 +316,16 @@ export async function handleScreenRoute(req, res, pathname) {
             req.on("close", () => {
                 stream.stop();
                 screenSessions.delete(sid);
+                setTimeout(async () => {
+                    if (screenSessions.size === 0 && getVirtualDisplayState().active) {
+                        try {
+                            const helper = await getAuxHelper();
+                            await disableVirtualDisplay(helper);
+                        } catch {
+                            /* ignore cleanup error */
+                        }
+                    }
+                }, 5000);
             });
             await stream.start();
         } catch (err) {

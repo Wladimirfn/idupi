@@ -152,6 +152,36 @@ func dispatch(out *bufio.Writer, req *request) {
 		writeControl(out, req.ID, map[string]any{
 			"ok": true,
 		})
+	case "display_extend":
+		_ = setDisplayTopologyExtend()
+		monitors, err := enumerateMonitors()
+		if err != nil {
+			writeError(out, req.ID, err)
+			return
+		}
+		if req.Width != nil && req.Height != nil && len(monitors) > 1 {
+			target := monitors[len(monitors)-1]
+			for _, m := range monitors {
+				if !m.Primary {
+					target = m
+				}
+			}
+			if !target.Primary {
+				_ = resizeDisplay(target.Name, *req.Width, *req.Height)
+				if refreshed, err2 := enumerateMonitors(); err2 == nil {
+					monitors = refreshed
+				}
+			}
+		}
+		writeControl(out, req.ID, map[string]any{
+			"ok": true, "monitors": monitors,
+		})
+	case "display_internal":
+		_ = setDisplayTopologyInternal()
+		monitors, _ := enumerateMonitors()
+		writeControl(out, req.ID, map[string]any{
+			"ok": true, "monitors": monitors,
+		})
 	default:
 		writeError(out, req.ID, fmt.Errorf("unknown cmd %q", req.Cmd))
 	}
