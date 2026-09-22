@@ -8,7 +8,7 @@
 // the bearer token is verified upstream.
 
 import { execFile, spawn } from "node:child_process";
-import { statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -32,9 +32,27 @@ let auxBuildPromise = null;
 let auxHelper = null;
 
 async function ensureAuxHelperBuilt() {
-    if (!auxBuildPromise) {
+    let stale = true;
+    try {
+        const exeStat = statSync(auxHelperExe);
+        stale = readdirSync(helperDir)
+            .filter((f) => f.endsWith(".go"))
+            .some((f) => {
+                try {
+                    return statSync(join(helperDir, f)).mtimeMs > exeStat.mtimeMs;
+                } catch {
+                    return false;
+                }
+            });
+    } catch {
+        stale = true;
+    }
+    if (stale && !auxBuildPromise) {
         auxBuildPromise = (async () => {
             try {
+                if (auxHelper) {
+                    auxHelper.recycle();
+                }
                 await execFileP(
                     "go",
                     ["build", "-ldflags=-s -w", "-o", auxHelperExe, "."],
@@ -43,10 +61,13 @@ async function ensureAuxHelperBuilt() {
                 return auxHelperExe;
             } catch {
                 return ensureHelperBuilt();
+            } finally {
+                auxBuildPromise = null;
             }
         })();
     }
-    return auxBuildPromise;
+    if (auxBuildPromise) return auxBuildPromise;
+    return auxHelperExe;
 }
 
 async function getAuxHelper() {
@@ -187,7 +208,13 @@ export async function handleScreenRoute(req, res, pathname) {
                         width: parsed.width,
                         height: parsed.height,
                     })
-                    : await disableVirtualDisplay(helper);
+                    : await disableVirtualDisplay(helper, {
+                        fullUnload: Boolean(parsed.fullUnload),
+                    });
+                // Recycle capture and input helpers so their Windows GDI session
+                // picks up the new display topology cleanly without restarting the server.
+                screenHelper.recycle();
+                inputHelper?.recycle();
                 res.writeHead(200, { "Content-Type": "application/json" });
                 res.end(JSON.stringify(result));
             } catch (err) {

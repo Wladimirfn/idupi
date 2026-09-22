@@ -24,41 +24,68 @@ const helperDir = join(
   "screen-helper",
 );
 const helperExe = join(helperDir, "idupi-screen.exe");
+const fallbackHelperExe = join(helperDir, "idupi-aux.exe");
+const activeHelpers = new Set();
+let currentHelperBinary = helperExe;
 
 // Distribution decision (brief §9.1): compile on the user's machine at first
 // use when the binary is missing, so no binary is committed to the repo.
 // Rebuild ALSO when any .go source is newer than the exe: a stale binary
-// built before a fix silently ships the old behaviour forever (the fullscreen
-// keyboard bug lived in exactly such a stale exe).
+// built before a fix silently ships the old behaviour forever.
 let buildPromise = null;
 export function ensureHelperBuilt() {
+  let stale = true;
+  try {
+    const exeStat = statSync(currentHelperBinary);
+    stale = readdirSync(helperDir)
+      .filter((f) => f.endsWith(".go"))
+      .some((f) => {
+        try {
+          return statSync(join(helperDir, f)).mtimeMs > exeStat.mtimeMs;
+        } catch {
+          return false;
+        }
+      });
+  } catch {
+    stale = true;
+  }
+
+  if (!stale) {
+    return Promise.resolve(currentHelperBinary);
+  }
+
   if (!buildPromise) {
     buildPromise = (async () => {
-      let stale = true; // missing/unreadable exe => build
       try {
-        const exeStat = statSync(helperExe);
-        stale = readdirSync(helperDir)
-          .filter((f) => f.endsWith(".go"))
-          .some((f) => {
-            try {
-              return statSync(join(helperDir, f)).mtimeMs > exeStat.mtimeMs;
-            } catch {
-              return false; // unreadable source: trust the exe
-            }
-          });
-      } catch {
-        // exe missing or unreadable: build it.
+        for (const h of activeHelpers) {
+          h.recycle();
+        }
+        await new Promise((r) => setTimeout(r, 80));
+        try {
+          await execFileP(
+            "go",
+            ["build", "-ldflags=-s -w", "-o", helperExe, "."],
+            { cwd: helperDir },
+          );
+          currentHelperBinary = helperExe;
+        } catch {
+          await execFileP(
+            "go",
+            ["build", "-ldflags=-s -w", "-o", fallbackHelperExe, "."],
+            { cwd: helperDir },
+          );
+          currentHelperBinary = fallbackHelperExe;
+        }
+        for (const h of activeHelpers) {
+          if (h.command === helperExe || h.command === fallbackHelperExe) {
+            h.command = currentHelperBinary;
+          }
+          h.recycle();
+        }
+        return currentHelperBinary;
+      } finally {
+        buildPromise = null;
       }
-      if (stale) {
-        await execFileP(
-          "go",
-          ["build", "-ldflags=-s -w", "-o", helperExe, "."],
-          {
-            cwd: helperDir,
-          },
-        );
-      }
-      return helperExe;
     })();
   }
   return buildPromise;
@@ -78,6 +105,7 @@ export class ScreenHelper {
     this.nextId = 1;
     // id -> { resolve, reject, timer, wantFrame }
     this.pending = new Map();
+    activeHelpers.add(this);
   }
 
   ensureStarted() {
@@ -192,6 +220,14 @@ export class ScreenHelper {
       { cmd: "capture", monitor, width, height, quality },
       { wantFrame: true },
     ).then((r) => ({ meta: r.meta ?? r, jpeg: r.jpeg }));
+  }
+
+  recycle() {
+    if (!this.child || this.child.exitCode !== null) {
+      this.child = null;
+      return;
+    }
+    this.child.kill();
   }
 
   stop() {

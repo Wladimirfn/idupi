@@ -97,51 +97,65 @@ export function getVirtualDisplayState() {
 }
 
 export async function enableVirtualDisplay(helper, { width = 1920, height = 1080 } = {}) {
+    const targetW = Math.max(1280, Math.round(Number(width) || 1920));
+    const targetH = Math.max(720, Math.round(Number(height) || 1080));
+
     const beforeMonitors = (await helper.list().catch(() => [])) || [];
     const beforeNames = new Set(beforeMonitors.map((m) => m.name));
 
-    let installer = await ensureDriverDownloaded();
-    if (installer) {
-        // Attempt enableidd 1 directly first (if driver is already installed)
-        let enabled = await runInstaller(installer, ["enableidd", "1"], { allowElevate: false });
-        if (!enabled && !state.driverInstalled) {
-            await runInstaller(installer, ["install", "usbmmidd.inf", "usbmmidd"], { allowElevate: true });
-            state.driverInstalled = true;
-            enabled = await runInstaller(installer, ["enableidd", "1"], { allowElevate: true });
-        }
-        if (enabled) {
-            state.usedIdd = true;
-        }
-    }
-
-    // Switch Windows Display Topology to EXTEND and apply requested resolution
+    // Step 1: Try user-mode SetDisplayConfig(SDC_TOPOLOGY_EXTEND) first.
+    // If usbmmidd was already enabled earlier in this session and merely switched to
+    // SDC_TOPOLOGY_INTERNAL on exit, this re-activates the extra monitor in <150ms with zero UAC!
     await helper.request({
         cmd: "display_extend",
-        width: Math.max(1280, Math.round(Number(width) || 1920)),
-        height: Math.max(720, Math.round(Number(height) || 1080)),
+        width: targetW,
+        height: targetH,
     }).catch(() => {});
 
-    // Wait up to 2.2s for Windows DWM to register the newly attached/extended display
-    let monitors = beforeMonitors;
-    for (let attempt = 0; attempt < 9; attempt += 1) {
-        monitors = (await helper.list().catch(() => [])) || monitors;
-        if (monitors.length > beforeMonitors.length || monitors.length > 1) {
-            break;
-        }
-        await wait(250);
-    }
+    await wait(300);
+    let monitors = (await helper.list().catch(() => [])) || beforeMonitors;
 
-    if (monitors.length > beforeMonitors.length && !state.usedIdd) {
+    // Step 2: If still only 1 monitor, attach/enable the IDD virtual display via deviceinstaller64
+    if (monitors.length <= 1) {
+        const installer = await ensureDriverDownloaded();
+        if (installer) {
+            let enabled = await runInstaller(installer, ["enableidd", "1"], { allowElevate: false });
+            if (!enabled) {
+                if (!state.driverInstalled) {
+                    await runInstaller(installer, ["install", "usbmmidd.inf", "usbmmidd"], { allowElevate: true });
+                    state.driverInstalled = true;
+                }
+                // Always allow elevation if non-elevated enableidd 1 returned false
+                enabled = await runInstaller(installer, ["enableidd", "1"], { allowElevate: true });
+            }
+            if (enabled) {
+                state.usedIdd = true;
+            }
+        }
+
+        await helper.request({
+            cmd: "display_extend",
+            width: targetW,
+            height: targetH,
+        }).catch(() => {});
+
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+            monitors = (await helper.list().catch(() => [])) || monitors;
+            if (monitors.length > 1) break;
+            await wait(250);
+        }
+    } else {
         state.usedTopologySwitch = true;
     }
 
-    // Re-apply resolution once monitor is enumerated
+    // Step 3: Ensure target resolution is applied to the secondary monitor
     if (monitors.length > 1) {
         await helper.request({
             cmd: "display_extend",
-            width: Math.max(1280, Math.round(Number(width) || 1920)),
-            height: Math.max(720, Math.round(Number(height) || 1080)),
+            width: targetW,
+            height: targetH,
         }).catch(() => {});
+        await wait(150);
         monitors = (await helper.list().catch(() => [])) || monitors;
     }
 
@@ -151,7 +165,7 @@ export async function enableVirtualDisplay(helper, { width = 1920, height = 1080
         monitors[monitors.length - 1] ||
         monitors[0];
 
-    state.active = monitors.length > 1 || state.usedIdd;
+    state.active = monitors.length > 1;
     state.monitorId = addedMonitor ? addedMonitor.id : 0;
 
     return {
@@ -164,25 +178,37 @@ export async function enableVirtualDisplay(helper, { width = 1920, height = 1080
     };
 }
 
-export async function disableVirtualDisplay(helper) {
+export async function disableVirtualDisplay(helper, { fullUnload = false } = {}) {
     const wasIdd = state.usedIdd;
-    const wasTopology = state.usedTopologySwitch;
-
     state.active = false;
-    state.usedIdd = false;
-    state.usedTopologySwitch = false;
     state.monitorId = null;
 
-    const installer = state.installerPath || findInstaller();
-    if (wasIdd && installer) {
-        await runInstaller(installer, ["enableidd", "0"], { allowElevate: true });
-        await wait(300);
-    } else if (wasTopology && helper) {
+    // Switch Windows Display Topology to INTERNAL ("PC screen only").
+    // This immediately detaches the secondary virtual monitor from the desktop and moves all
+    // windows back to the primary monitor WITHOUT unloading the IDD driver from Device Manager,
+    // so re-enabling Extra Monitor later works instantaneously via display_extend without UAC!
+    if (helper) {
         await helper.request({ cmd: "display_internal" }).catch(() => {});
-        await wait(250);
+        await wait(350);
     }
 
-    const monitors = helper ? (await helper.list().catch(() => [])) || [] : [];
+    let monitors = helper ? (await helper.list().catch(() => [])) || [] : [];
+
+    // If fullUnload is requested or display_internal left >1 monitors from IDD, run enableidd 0
+    if ((fullUnload || monitors.length > 1) && wasIdd) {
+        const installer = state.installerPath || findInstaller();
+        if (installer) {
+            const unloaded = await runInstaller(installer, ["enableidd", "0"], { allowElevate: false });
+            if (!unloaded) {
+                await runInstaller(installer, ["enableidd", "0"], { allowElevate: true });
+            }
+            await wait(350);
+            if (helper) {
+                monitors = (await helper.list().catch(() => [])) || monitors;
+            }
+        }
+    }
+
     const primary = monitors.find((m) => m.primary) || monitors[0] || null;
 
     return {

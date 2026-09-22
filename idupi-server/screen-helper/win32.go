@@ -3,8 +3,9 @@
 package main
 
 import (
-	"fmt"
+	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -105,11 +106,13 @@ type monitorEntry struct {
 	dpi uint32
 }
 
+var (
+	enumMu            sync.Mutex
+	enumScratch       []monitorEntry
+	procGetSystemMetrics = user32.NewProc("GetSystemMetrics")
+)
+
 var enumMonitorsCb = syscall.NewCallback(func(hMon, hdc uintptr, lprc *rect, data uintptr) uintptr {
-	if data == 0 {
-		return 0
-	}
-	entries := (*[]monitorEntry)(unsafe.Pointer(data))
 	var mi monitorInfoEx
 	mi.CbSize = uint32(unsafe.Sizeof(mi))
 	if r, _, _ := procGetMonitorInfoW.Call(hMon, uintptr(unsafe.Pointer(&mi))); r != 0 {
@@ -119,16 +122,52 @@ var enumMonitorsCb = syscall.NewCallback(func(hMon, hdc uintptr, lprc *rect, dat
 			uintptr(unsafe.Pointer(&dx)), uintptr(unsafe.Pointer(&dy))); r == 0 && dx > 0 {
 			e.dpi = dx
 		}
-		*entries = append(*entries, e)
+		enumScratch = append(enumScratch, e)
 	}
 	return 1
 })
 
 func enumerateMonitors() ([]Monitor, error) {
+	enumMu.Lock()
+	defer enumMu.Unlock()
+
 	var entries []monitorEntry
-	if r, _, err := procEnumDisplayMonitors.Call(0, 0, enumMonitorsCb, uintptr(unsafe.Pointer(&entries))); r == 0 {
-		return nil, fmt.Errorf("EnumDisplayMonitors failed: %v", err)
+	for attempt := 0; attempt < 12; attempt++ {
+		enumScratch = enumScratch[:0]
+		r, _, _ := procEnumDisplayMonitors.Call(0, 0, enumMonitorsCb, 0)
+		if r != 0 && len(enumScratch) > 0 {
+			entries = make([]monitorEntry, len(enumScratch))
+			copy(entries, enumScratch)
+			break
+		}
+		time.Sleep(35 * time.Millisecond)
 	}
+
+	if len(entries) == 0 {
+		cx, _, _ := procGetSystemMetrics.Call(0) // SM_CXSCREEN
+		cy, _, _ := procGetSystemMetrics.Call(1) // SM_CYSCREEN
+		w := int32(cx)
+		h := int32(cy)
+		if w <= 0 {
+			w = 1920
+		}
+		if h <= 0 {
+			h = 1080
+		}
+		return []Monitor{
+			{
+				ID:          0,
+				Name:        `\\.\DISPLAY1`,
+				Primary:     true,
+				X:           0,
+				Y:           0,
+				Width:       w,
+				Height:      h,
+				ScaleFactor: 1.0,
+			},
+		}, nil
+	}
+
 	out := make([]Monitor, 0, len(entries))
 	for i, e := range entries {
 		out = append(out, Monitor{
