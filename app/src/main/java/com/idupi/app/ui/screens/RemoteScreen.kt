@@ -316,6 +316,24 @@ fun RemoteScreen(
                                 modifier = Modifier.fillMaxSize(),
                                 fillScreen = true,
                             )
+                            // Quick-exit pill moved from TopEnd to the BOTTOM
+                            // of the image viewport (owner report): at the
+                            // top-right it sat exactly over the Windows
+                            // minimize/maximize/close buttons of a maximized
+                            // remote window and stole those taps. Anchoring
+                            // it INSIDE the image box keeps it above the
+                            // keyboard strip (never over the split keys) while
+                            // freeing the whole top-right corner of the PC.
+                            FullscreenToggleButton(
+                                locked = true,
+                                onToggle = {
+                                    orientationLocked = false
+                                    resetTransform()
+                                },
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .padding(bottom = 16.dp, end = 12.dp),
+                            )
                         }
                         if (keyboardOpen) {
                             SplitKeyboard(
@@ -428,16 +446,6 @@ fun RemoteScreen(
                     LaunchedEffect(keyboardOpen) {
                         if (!keyboardOpen) viewModel.clearKeyboardPreview()
                     }
-                    FullscreenToggleButton(
-                        locked = true,
-                        onToggle = {
-                            orientationLocked = false
-                            resetTransform()
-                        },
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(6.dp),
-                    )
                     FloatingBubble(
                         onKeyboard = {
                             keyboardOpen = !keyboardOpen
@@ -483,94 +491,111 @@ fun RemoteScreen(
                         modifier = Modifier.fillMaxSize(),
                         fillScreen = false,
                     )
-                    Row(
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                        .padding(6.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Surface(
-                        shape = RoundedCornerShape(50),
-                        color = if (state.remoteInputEnabled)
-                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
-                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-                    ) {
-                        Text(
-                            text = buildString {
-                                append("${state.fps} fps")
-                                append(if (state.remoteInputEnabled) " · input activo" else " · input apagado")
-                                state.activeQuality?.let { append(" · $it") }
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (state.remoteInputEnabled) MaterialTheme.colorScheme.onPrimaryContainer
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                        )
-                    }
-                    if (imageScale > 1f || panOffset != Offset.Zero) {
-                        Surface(
-                            shape = RoundedCornerShape(50),
-                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
-                            modifier = Modifier.clickable(onClick = { resetTransform() }),
-                        ) {
-                            Text(
-                                text = "Zoom %.1fx · reset".format(imageScale),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurface,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
-                            )
-                        }
-                    }
-                    FilterChip(
-                        selected = controlsVisible,
-                        onClick = { controlsVisible = !controlsVisible },
-                        label = { Text("Controles") }
-                    )
-                }
-
-                // YouTube's corner promise (owner request): tap to lock
-                // landscape fullscreen without rotating; tap again to let
-                // the phone decide.
-                FullscreenToggleButton(
-                    locked = orientationLocked,
-                    onToggle = {
-                        orientationLocked = !orientationLocked
-                        resetTransform()
-                    },
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(6.dp),
-                )
-
-                if (controlsVisible) {
-                    Card(
+                    // Bottom-anchored status strip. It used to sit at
+                    // TopCenter, where it permanently covered the remote
+                    // browser's tab strip and swallowed every tap along the
+                    // top of the PC screen (owner report). Moving it to the
+                    // bottom frees the whole top edge, and stacking it in the
+                    // SAME Column as the controls card it toggles guarantees
+                    // it can never overlap that card.
+                    Column(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
-                            .fillMaxWidth()
-                            .padding(8.dp)
-                            .heightIn(max = 340.dp)
+                            .fillMaxWidth(),
                     ) {
-                        Column(
-                            modifier = Modifier
-                                .verticalScroll(controlsScroll)
-                                .padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            MonitorPickerRow(state = state, viewModel = viewModel)
-                            ScreenControls(
-                                state = state,
-                                viewModel = viewModel,
-                                onQualitySelect = { viewModel.setScreenQuality(it) },
-                                imageScale = imageScale,
-                                panOffset = panOffset,
-                                onZoom = onTrackpadZoom,
-                                onResetTransform = { resetTransform() },
-                                scrollState = controlsScroll,
+                        Box(modifier = Modifier.fillMaxWidth()) {
+                            Row(
+                                modifier = Modifier
+                                    .align(Alignment.BottomStart)
+                                    .padding(6.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(50),
+                                    color = if (state.remoteInputEnabled)
+                                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.7f)
+                                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                                ) {
+                                    Text(
+                                        text = buildString {
+                                            append("${state.fps} fps")
+                                            append(if (state.remoteInputEnabled) " · input activo" else " · input apagado")
+                                            state.activeQuality?.let { append(" · $it") }
+                                        },
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (state.remoteInputEnabled) MaterialTheme.colorScheme.onPrimaryContainer
+                                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                    )
+                                }
+                                if (imageScale > 1f || panOffset != Offset.Zero) {
+                                    Surface(
+                                        shape = RoundedCornerShape(50),
+                                        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.85f),
+                                        modifier = Modifier.clickable(onClick = { resetTransform() }),
+                                    ) {
+                                        Text(
+                                            text = "Zoom %.1fx · reset".format(imageScale),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                                        )
+                                    }
+                                }
+                                FilterChip(
+                                    selected = controlsVisible,
+                                    onClick = { controlsVisible = !controlsVisible },
+                                    label = { Text("Controles") }
+                                )
+                            }
+
+                            // YouTube's corner promise (owner request): tap
+                            // to lock landscape fullscreen without rotating;
+                            // tap again to let the phone decide. Moved from
+                            // TopEnd to BottomEnd -- at the top-right it
+                            // intercepted the Windows minimize/maximize/close
+                            // buttons of the remote window.
+                            FullscreenToggleButton(
+                                locked = orientationLocked,
+                                onToggle = {
+                                    orientationLocked = !orientationLocked
+                                    resetTransform()
+                                },
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .padding(bottom = 16.dp, end = 12.dp),
                             )
                         }
+
+                        if (controlsVisible) {
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(8.dp)
+                                    .heightIn(max = 340.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier
+                                        .verticalScroll(controlsScroll)
+                                        .padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    MonitorPickerRow(state = state, viewModel = viewModel)
+                                    ScreenControls(
+                                        state = state,
+                                        viewModel = viewModel,
+                                        onQualitySelect = { viewModel.setScreenQuality(it) },
+                                        imageScale = imageScale,
+                                        panOffset = panOffset,
+                                        onZoom = onTrackpadZoom,
+                                        onResetTransform = { resetTransform() },
+                                        scrollState = controlsScroll,
+                                    )
+                                }
+                            }
+                        }
                     }
-                }
                 }
             }
         } else {
@@ -609,6 +634,10 @@ fun RemoteScreen(
                         },
                         modifier = Modifier.fillMaxWidth(),
                     )
+                    // Portrait keeps the same rule as landscape: the pill
+                    // lives at the BOTTOM-right, never at TopEnd -- at the
+                    // top-right it covered the Windows minimize/maximize/close
+                    // buttons of a maximized remote window and stole the taps.
                     FullscreenToggleButton(
                         locked = orientationLocked,
                         onToggle = {
@@ -616,8 +645,8 @@ fun RemoteScreen(
                             resetTransform()
                         },
                         modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .padding(6.dp),
+                            .align(Alignment.BottomEnd)
+                            .padding(bottom = 16.dp, end = 12.dp),
                     )
                 }
 

@@ -98,3 +98,29 @@ test("a stale ack from a previous window is ignored", async () => {
     assert.ok(frames.length >= before, "stale ack must be ignored without killing pacing");
     await stream.stop();
 });
+
+test("lost acks expire so a stalled window recovers on its own", async () => {
+    const helper = fakeHelper();
+    const stream = paced(helper);
+    const frames = [];
+    stream.onFrame((f) => frames.push(f));
+
+    await stream.start();
+    // No acks at all: the unacked window fills and capture stalls.
+    await settle(200);
+    const stalled = frames.length;
+    assert.ok(stalled >= 4, `window should fill before stalling, got ${stalled}`);
+    // Still inside STALE_ACK_TIMEOUT_MS -> the stall holds.
+    await settle(80);
+    assert.equal(frames.length, stalled, "captures must stay stalled while frames are fresh");
+
+    // Past the timeout with STILL no acks: expired frames leave the window and
+    // the timer captures again -- a dropped ack costs a timeout, not the
+    // session.
+    await settle(1050);
+    assert.ok(
+        frames.length > stalled,
+        `captures must resume once stale frames expire, got ${frames.length}`
+    );
+    await stream.stop();
+});

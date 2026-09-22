@@ -10,8 +10,9 @@
 // (congestion telemetry) and bound an unacked WINDOW -- when K frames have
 // been sent without any ack coming back, captures SKIP instead of queueing,
 // so what reaches the phone is always fresh content, never a stale backlog.
-// The client keeps acking exactly as before; nothing changes on the wire
-// format or the app side.
+// Frames whose ack never arrives expire after STALE_ACK_TIMEOUT_MS, so a lost
+// ack can never wedge the window shut. The client keeps acking exactly as
+// before; nothing changes on the wire format or the app side.
 
 import { EventEmitter } from "node:events";
 
@@ -19,6 +20,15 @@ import { createLadderController, QUALITY_LADDER } from "./screen-quality.mjs";
 
 /** Max frames sent without any ack returning before captures skip. */
 const UNACKED_WINDOW = 4;
+
+/**
+ * Unacked frames older than this are assumed lost and their slot is
+ * reclaimed. Acks can be dropped or delayed arbitrarily on a bad link; with
+ * an entry that never expires, the window would sit full forever and
+ * freeze capture for the rest of the session. Age, not just an ack, retires
+ * a frame -- so a lost ack costs at most this timeout, never the stream.
+ */
+const STALE_ACK_TIMEOUT_MS = 1000;
 
 export function createScreenStream({
   helper,
@@ -58,7 +68,9 @@ export function createScreenStream({
   }
   let lastCaptureStartedAt = 0;
 
-  const outstanding = new Set(); // frame ids sent but not yet acked
+  // frame ids sent but not yet acked -> the ms timestamp they were sent at.
+  // The age lets [pruneStale] reclaim slots whose ack never came back.
+  const outstanding = new Map();
 
   // Instrumentation (optimization phase B): where do the milliseconds go?
   let framesEmitted = 0;
@@ -93,7 +105,7 @@ export function createScreenStream({
       frame.meta.helperMs = Date.now() - lastCaptureStartedAt;
       framesEmitted += 1;
       helperMsTotal += frame.meta.helperMs;
-      outstanding.add(frame.meta.id);
+      outstanding.set(frame.meta.id, Date.now());
       events.emit("frame", frame);
     } catch (err) {
       // One failed capture costs one frame; the timer brings the next one.
@@ -112,11 +124,25 @@ export function createScreenStream({
     timerHandle = setTimeout(tick, wait);
   }
 
+  /**
+   * Reclaims window slots for frames whose ack never arrived. Without this,
+   * a dropped ack pins its id in [outstanding] forever and, once the window
+   * is full, tick() stops capturing for the rest of the session -- the
+   * freeze only a monitor switch could clear.
+   */
+  function pruneStale(now = Date.now()) {
+    const cutoff = now - STALE_ACK_TIMEOUT_MS;
+    for (const [id, sentAt] of outstanding) {
+      if (sentAt <= cutoff) outstanding.delete(id);
+    }
+  }
+
   async function tick() {
     if (stopped) return;
     // Congestion brake: too many frames without a single ack back means the
     // link cannot sustain this rate -- skipping keeps content FRESH (the next
     // successful tick captures the screen as it is THEN).
+    pruneStale();
     if (outstanding.size < UNACKED_WINDOW) {
       await captureOnce();
     }
