@@ -43,6 +43,7 @@ type request struct {
 	Axis         *string  `json:"axis"` // scroll axis: "" | "v" | "h"
 	Delta        *int     `json:"delta"`
 	Code         *int     `json:"code"` // keychar: UTF-16 unit | keyvk: Windows VK
+	Text         string   `json:"text"`
 }
 
 type tileRef struct {
@@ -66,6 +67,14 @@ type frameMeta struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--audio-loopback" {
+		if err := runAudioLoopback(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "[audio-loopback]", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 64*1024), 1024*1024)
 	out := bufio.NewWriter(os.Stdout)
@@ -126,6 +135,23 @@ func dispatch(out *bufio.Writer, req *request) {
 		captureCommand(out, req)
 	case "input":
 		inputCommand(out, req)
+	case "clipboard_get":
+		text, err := getClipboardText()
+		if err != nil {
+			writeError(out, req.ID, err)
+			return
+		}
+		writeControl(out, req.ID, map[string]any{
+			"ok": true, "text": text,
+		})
+	case "clipboard_set":
+		if err := setClipboardText(req.Text); err != nil {
+			writeError(out, req.ID, err)
+			return
+		}
+		writeControl(out, req.ID, map[string]any{
+			"ok": true,
+		})
 	default:
 		writeError(out, req.ID, fmt.Errorf("unknown cmd %q", req.Cmd))
 	}

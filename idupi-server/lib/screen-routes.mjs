@@ -7,10 +7,48 @@
 // false when the path belongs to someone else. Nothing here may run before
 // the bearer token is verified upstream.
 
+import { execFile, spawn } from "node:child_process";
+import { statSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { ScreenHelper, ensureHelperBuilt } from "./screen-helper.mjs";
 import { createScreenStream } from "./screen-stream.mjs";
 import { QUALITY_LADDER } from "./screen-quality.mjs";
 import { encodeControl, encodeFrame } from "./screen-protocol.mjs";
+
+const execFileP = promisify(execFile);
+const helperDir = join(
+    fileURLToPath(new URL("../", import.meta.url)),
+    "screen-helper",
+);
+const auxHelperExe = join(helperDir, "idupi-aux.exe");
+let auxBuildPromise = null;
+let auxHelper = null;
+
+async function ensureAuxHelperBuilt() {
+    if (!auxBuildPromise) {
+        auxBuildPromise = (async () => {
+            try {
+                await execFileP(
+                    "go",
+                    ["build", "-ldflags=-s -w", "-o", auxHelperExe, "."],
+                    { cwd: helperDir },
+                );
+                return auxHelperExe;
+            } catch {
+                return ensureHelperBuilt();
+            }
+        })();
+    }
+    return auxBuildPromise;
+}
+
+async function getAuxHelper() {
+    const exe = await ensureAuxHelperBuilt();
+    if (!auxHelper) auxHelper = new ScreenHelper({ command: exe });
+    return auxHelper;
+}
 
 const screenHelper = new ScreenHelper();
 // Input rides a DEDICATED helper instance: mouse moves must never queue
@@ -40,7 +78,77 @@ export async function handleScreenRoute(req, res, pathname) {
     // accordingly. Behind requireAuth like everything else.
     if (pathname === "/api/v1/screen/config" && req.method === "GET") {
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ remoteInputEnabled: REMOTE_INPUT_ENABLED }));
+        res.end(JSON.stringify({
+            remoteInputEnabled: REMOTE_INPUT_ENABLED,
+            clipboardEnabled: true,
+            audioEnabled: true,
+        }));
+        return true;
+    }
+
+    // Remote clipboard sync (GET reads Windows clipboard, POST sets Windows clipboard)
+    if (pathname === "/api/v1/screen/clipboard" && req.method === "GET") {
+        try {
+            const helper = await getAuxHelper();
+            const response = await helper.request({ cmd: "clipboard_get" });
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true, text: response.text ?? "" }));
+        } catch (err) {
+            res.writeHead(502, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: err.message }));
+        }
+        return true;
+    }
+
+    if (pathname === "/api/v1/screen/clipboard" && req.method === "POST") {
+        let body = "";
+        req.on("data", (chunk) => { body += chunk; });
+        req.on("end", async () => {
+            try {
+                const parsed = JSON.parse(body || "{}");
+                const text = typeof parsed.text === "string" ? parsed.text : "";
+                const helper = await getAuxHelper();
+                await helper.request({ cmd: "clipboard_set", text });
+                res.writeHead(200, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ ok: true }));
+            } catch (err) {
+                res.writeHead(502, { "Content-Type": "application/json" });
+                res.end(JSON.stringify({ error: err.message }));
+            }
+        });
+        return true;
+    }
+
+    // Remote desktop audio loopback stream (WASAPI 16-bit PCM stereo stream)
+    if (pathname === "/api/v1/screen/audio" && req.method === "GET") {
+        try {
+            const exe = await ensureAuxHelperBuilt();
+            res.writeHead(200, {
+                "Content-Type": "application/octet-stream",
+                "Cache-Control": "no-cache, no-transform",
+                Connection: "keep-alive",
+            });
+            const child = spawn(exe, ["--audio-loopback"], {
+                stdio: ["ignore", "pipe", "pipe"],
+                windowsHide: true,
+            });
+            child.stdout.on("data", (chunk) => {
+                if (!res.writableEnded) res.write(chunk);
+            });
+            child.stdout.on("error", () => {});
+            child.stderr.on("error", () => {});
+            child.on("close", () => {
+                if (!res.writableEnded) res.end();
+            });
+            req.on("close", () => {
+                if (child.exitCode === null) child.kill();
+            });
+        } catch (err) {
+            if (!res.headersSent) {
+                res.writeHead(503, { "Content-Type": "application/json" });
+            }
+            res.end(JSON.stringify({ error: "audio loopback unavailable: " + err.message }));
+        }
         return true;
     }
 
