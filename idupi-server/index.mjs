@@ -41,7 +41,7 @@ import {
 // Remote screen module (docs/remote-screen-module.md): routes live in their
 // own module so this monolith stops growing.
 import { handleScreenRoute, shutdownScreen } from "./lib/screen-routes.mjs";
-import { resolveProjectFilePath } from "./lib/project-files.mjs";
+import { resolveProjectFilePath, getProjectFilesTree } from "./lib/project-files.mjs";
 import { isProtectedSystemPath } from "./lib/system-paths.mjs";
 import { claudeArgs, openCodeArgs, normalizeOpenCodeModel } from "./lib/agent-cmdline.mjs";
 // OpenCode serve sidecar (opencode-serve-sidecar, PR 2): persistent
@@ -1951,54 +1951,6 @@ function browseFileSystem(targetPath) {
         shortcuts: getFileSystemShortcuts(),
         directories: directories.sort((a, b) => (b.isProject ? 1 : 0) - (a.isProject ? 1 : 0) || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }))
     };
-}
-
-const filesTreeCache = new Map();
-
-function getProjectFilesTree(dirPath, relativeTo = dirPath) {
-    const EXCLUDED = ["node_modules", ".git", "build", ".gradle", ".idea", "bin", "obj", ".codegraph", ".system_generated"];
-    const results = [];
-
-    try {
-        const stat = statSync(dirPath);
-        const cached = filesTreeCache.get(dirPath);
-        if (cached && cached.mtime >= stat.mtimeMs) {
-            return cached.tree;
-        }
-
-        const items = readdirSync(dirPath);
-        for (const item of items) {
-            if (EXCLUDED.includes(item)) continue;
-            const fullPath = join(dirPath, item);
-            const relPath = relative(relativeTo, fullPath).replace(/\\/g, "/");
-            try {
-                const itemStat = statSync(fullPath);
-                if (itemStat.isDirectory()) {
-                    results.push({
-                        name: item,
-                        path: relPath,
-                        isDirectory: true,
-                        children: getProjectFilesTree(fullPath, relativeTo),
-                        status: "Synced"
-                    });
-                } else {
-                    results.push({
-                        name: item,
-                        path: relPath,
-                        isDirectory: false,
-                        children: [],
-                        status: "Synced"
-                    });
-                }
-            } catch (e) {}
-        }
-
-        filesTreeCache.set(dirPath, { mtime: stat.mtimeMs, tree: results });
-    } catch (e) {
-        console.error(`[Explorer Error] No se pudo leer ${dirPath}:`, e.message);
-    }
-
-    return results;
 }
 
 // Gestor de Proceso Pi CLI RPC Persistente con Cambio de Modelo por Parámetros CLI (--provider y --model)
