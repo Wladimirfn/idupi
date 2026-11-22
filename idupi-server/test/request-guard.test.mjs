@@ -89,3 +89,32 @@ test("a normal request still flows through untouched", async () => {
     // header -- both prove the request was handled rather than crashing.
     assert.ok(res.statusCode === 200 || res.statusCode === 401, `got ${res.statusCode}`);
 });
+
+// --- Body size limits (2026-11-22 audit): every POST route buffered its body
+// with `body += chunk` and no cap, so one oversized upload could exhaust the
+// server's memory. Limits are enforced from the headers, before any route
+// attaches a reader (several routes start reading after an await, so a global
+// 'data' listener would switch the stream to flowing mode and drop bytes). ---
+
+function bodyReq(headers) {
+    return { method: "POST", url: "/api/v1/chat/message", headers, on() {}, resume() {} };
+}
+
+test("a body over 1 MB is refused with 413 before reaching any route", async () => {
+    const res = fakeRes();
+    await guardedRequest(bodyReq({ "content-length": String(2 * 1024 * 1024) }), res);
+    assert.equal(res.statusCode, 413);
+});
+
+test("a chunked body without Content-Length is refused with 411", async () => {
+    const res = fakeRes();
+    await guardedRequest(bodyReq({ "transfer-encoding": "chunked" }), res);
+    assert.equal(res.statusCode, 411);
+});
+
+test("a normal-sized body is not refused by the size limit", async () => {
+    const res = fakeRes();
+    await guardedRequest(bodyReq({ "content-length": "512" }), res);
+    assert.notEqual(res.statusCode, 413);
+    assert.notEqual(res.statusCode, 411);
+});

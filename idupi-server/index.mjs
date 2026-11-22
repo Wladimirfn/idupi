@@ -43,6 +43,7 @@ import {
 import { handleScreenRoute, shutdownScreen } from "./lib/screen-routes.mjs";
 import { resolveProjectFilePath, getProjectFilesTree } from "./lib/project-files.mjs";
 import { guardChildStreams } from "./lib/child-guards.mjs";
+import { checkBodyLimits } from "./lib/request-limits.mjs";
 import { isProtectedSystemPath } from "./lib/system-paths.mjs";
 import { claudeArgs, openCodeArgs, normalizeOpenCodeModel } from "./lib/agent-cmdline.mjs";
 // OpenCode serve sidecar (opencode-serve-sidecar, PR 2): persistent
@@ -5358,6 +5359,13 @@ async function runOpenCodeCli(projPath, sessionId, message, openCodeModel = null
  */
 export async function guardedRequest(req, res) {
     try {
+        const limitError = checkBodyLimits(req);
+        if (limitError) {
+            // Connection: close so Node does not keep reading the rejected body.
+            res.writeHead(limitError.status, { "Content-Type": "application/json", "Connection": "close" });
+            res.end(JSON.stringify({ error: limitError.error }));
+            return;
+        }
         await handleRequest(req, res);
     } catch (err) {
         try {
