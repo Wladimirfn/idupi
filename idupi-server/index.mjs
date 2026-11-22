@@ -6,7 +6,7 @@
 
 import http from "node:http";
 import { spawn, execSync, execFile, execFileSync } from "node:child_process";
-import { readdirSync, statSync, readFileSync, writeFileSync, existsSync, rmSync, openSync, readSync, closeSync } from "node:fs";
+import { readdirSync, statSync, readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, unlinkSync, openSync, readSync, closeSync } from "node:fs";
 import { homedir, networkInterfaces } from "node:os";
 import { join, basename, relative, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
