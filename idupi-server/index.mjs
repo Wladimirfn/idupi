@@ -18,6 +18,7 @@ import { planAssistantMessage } from "./lib/claude-stream.mjs";
 import { MessageBoundary } from "./lib/message-boundary.mjs";
 import { describeRateLimit } from "./lib/rate-limit-notice.mjs";
 import { CHAT_EVENTS, publish as publishChatEvent, subscribe as subscribeChatStream } from "./chat-events.mjs";
+import { profileFilePath as resolveProfileFile, profilesDir as sddProfilesDir } from "./lib/orchestrator/profile-path.mjs";
 import {
     escapeSqlValue,
     validateNumeric,
@@ -4088,11 +4089,19 @@ function getModelsForProvider(providerId) {
             try {
                 const parsed = JSON.parse(body || "{}");
                 const profileName = (parsed.profileName || parsed.name || "").trim();
-                const profileId = (parsed.profileId || parsed.id || profileName.toLowerCase().replace(/[^a-z0-9_-]/g, "-")).trim();
+                const rawProfileId = parsed.profileId || parsed.id || profileName.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+                const profileId = typeof rawProfileId === "string" ? rawProfileId.trim() : rawProfileId;
 
                 if (!profileName) {
                     res.writeHead(400, { "Content-Type": "application/json" });
                     res.end(JSON.stringify({ error: "profileName es obligatorio" }));
+                    return;
+                }
+
+                const profileFilePath = resolveProfileFile(profileId);
+                if (!profileFilePath) {
+                    res.writeHead(400, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify({ error: "profileId inválido" }));
                     return;
                 }
 
@@ -4102,12 +4111,7 @@ function getModelsForProvider(providerId) {
                     stateData = JSON.parse(readFileSync(statePath, "utf8"));
                 }
 
-                const profilesDir = join(homedir(), ".config", "opencode", "profiles");
-                if (!existsSync(profilesDir)) {
-                    mkdirSync(profilesDir, { recursive: true });
-                }
-
-                const profileFilePath = join(profilesDir, `${profileId}.json`);
+                mkdirSync(sddProfilesDir(), { recursive: true });
 
                 const profilePayload = {
                     id: profileId,
@@ -4148,7 +4152,12 @@ function getModelsForProvider(providerId) {
                     return;
                 }
 
-                const profileFilePath = join(homedir(), ".config", "opencode", "profiles", `${profileId}.json`);
+                const profileFilePath = resolveProfileFile(profileId);
+                if (!profileFilePath) {
+                    res.writeHead(400, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify({ error: "profileId inválido" }));
+                    return;
+                }
                 if (existsSync(profileFilePath)) {
                     unlinkSync(profileFilePath);
                     console.log(`[Gentle-AI Profiles] Eliminado perfil SDD: ${profileFilePath}`);

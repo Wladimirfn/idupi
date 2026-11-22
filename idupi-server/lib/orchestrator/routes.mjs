@@ -31,6 +31,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 import { resolveEngine, UnknownEngineError } from "./contract.mjs";
+import { profileFilePath } from "./profile-path.mjs";
+
+const INVALID_PROFILE_ID = { status: 400, body: { error: "profileId inválido" } };
 
 /** Best-effort buffer cap, kept consistent with index.mjs EXEC_MAX_BUFFER. */
 const EXEC_MAX_BUFFER = 64 * 1024 * 1024;
@@ -372,11 +375,13 @@ export async function handleProfileApply(body, log) {
         return { status: 400, body: { error: "profileId es obligatorio" } };
     }
 
+    const customPath = profileFilePath(profileId);
+    if (!customPath) return INVALID_PROFILE_ID;
+
     let targetModels = null;
     let targetClaude = null;
     let targetPi = null;
 
-    const customPath = join(homedir(), ".config", "opencode", "profiles", `${profileId}.json`);
     if (existsSync(customPath)) {
         try {
             const customData = JSON.parse(readFileSync(customPath, "utf8"));
@@ -414,7 +419,8 @@ export async function handleProfileApplyWithPresets(builtInPresets, body, log) {
     if (!profileId) {
         return { status: 400, body: { error: "profileId es obligatorio" } };
     }
-    const customPath = join(homedir(), ".config", "opencode", "profiles", `${profileId}.json`);
+    const customPath = profileFilePath(profileId);
+    if (!customPath) return INVALID_PROFILE_ID;
     if (existsSync(customPath)) {
         try {
             const customData = JSON.parse(readFileSync(customPath, "utf8"));
@@ -429,7 +435,8 @@ export async function handleProfileApplyWithPresets(builtInPresets, body, log) {
             if (log && log.warn) log.warn(`[Gentle-AI Profiles Warn] ${e.message}`);
         }
     }
-    const preset = builtInPresets && builtInPresets[profileId];
+    // Own keys only: "__proto__"/"constructor" pass the id allowlist.
+    const preset = builtInPresets && Object.hasOwn(builtInPresets, profileId) ? builtInPresets[profileId] : null;
     if (preset) {
         return finalizeProfileApply(
             profileId,
