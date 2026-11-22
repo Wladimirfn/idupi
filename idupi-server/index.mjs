@@ -42,6 +42,7 @@ import {
 // own module so this monolith stops growing.
 import { handleScreenRoute, shutdownScreen } from "./lib/screen-routes.mjs";
 import { resolveProjectFilePath, getProjectFilesTree } from "./lib/project-files.mjs";
+import { guardChildStreams } from "./lib/child-guards.mjs";
 import { isProtectedSystemPath } from "./lib/system-paths.mjs";
 import { claudeArgs, openCodeArgs, normalizeOpenCodeModel } from "./lib/agent-cmdline.mjs";
 // OpenCode serve sidecar (opencode-serve-sidecar, PR 2): persistent
@@ -1040,6 +1041,11 @@ class TerminalManager {
                 termObj.status = "closed";
                 termObj.logs.push(`[Proceso cerrado con código ${code}]`);
             });
+            guardChildStreams(child, `Terminal ${id}`);
+            child.on("error", (err) => {
+                termObj.status = "closed";
+                termObj.logs.push(`[Error del proceso: ${err.code || err.message}]`);
+            });
 
             this.terminals.set(id, termObj);
             console.log(`[Terminal Manager] Nueva terminal '${name}' creada con PID ${child.pid}`);
@@ -1078,8 +1084,12 @@ class TerminalManager {
             });
 
             let output = "";
+            guardChildStreams(execProc, "Terminal exec");
             execProc.stdout.on("data", d => { output += d.toString(); });
             execProc.stderr.on("data", d => { output += d.toString(); });
+            execProc.on("error", (err) => {
+                resolve(`Error al ejecutar el comando: ${err.code || err.message}`);
+            });
             execProc.on("close", () => {
                 resolve(output || "Comando ejecutado.");
             });
@@ -2181,6 +2191,23 @@ class PiRpcManager {
             env: process.env,
             shell: false,
             windowsHide: true
+        });
+
+        guardChildStreams(this.child, "IDUPI Pi RPC");
+        // A spawn failure (ENOENT/EACCES) has no other listener: without this
+        // Node throws it and the whole server dies. 'close' may not follow an
+        // 'error', so the pending prompt is settled here too.
+        const spawnedChild = this.child;
+        spawnedChild.on("error", (err) => {
+            console.error(`[IDUPI Pi RPC] Error del proceso: ${err.code || err.message}`);
+            if (this.child === spawnedChild) this.child = null;
+            if (this.pendingReject) {
+                clearTimeout(this.pendingTimeoutTimer);
+                this.pendingTimeoutTimer = null;
+                this.pendingReject(new Error(`Pi RPC no pudo ejecutarse: ${err.message}`));
+                this.pendingResolve = null;
+                this.pendingReject = null;
+            }
         });
 
         this.child.stdout.setEncoding("utf8");
@@ -4479,6 +4506,7 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
                 env: process.env
             });
         }
+        guardChildStreams(child, "Claude CLI");
 
         // Without a shell wrapper `child` IS Claude itself, but MCP servers it
         // spawns are its children -- a tree-kill still reaches everything.
@@ -4851,6 +4879,7 @@ async function runOpenCodeCli(projPath, sessionId, message, openCodeModel = null
             stdio: ["pipe", "pipe", "pipe"],
             env: process.env
         });
+        guardChildStreams(child, "OpenCode CLI");
 
         // CRITICAL hang fix (verified empirically against opencode-ai 1.18.27
         // on Windows): `opencode run` BLOCKS at startup while stdin is an

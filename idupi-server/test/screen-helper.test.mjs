@@ -171,3 +171,33 @@ function failAfter(ms, label) {
     ),
   );
 }
+
+// --- Crash hardening (2026-11-22 audit): a malformed frame from the helper
+// threw inside the stdout 'data' listener, and a missing helper binary emitted
+// an unhandled spawn 'error' -- either one killed the whole server. ---
+
+test("a malformed frame from the helper rejects requests instead of crashing", async () => {
+  // 0xFFFFFFFF as a frame length is out of range for the decoder.
+  const garbage = "process.stdout.write(Buffer.from([0xff,0xff,0xff,0xff,1,2,3])); setTimeout(() => {}, 5000)";
+  const helper = makeHelper({ commandArgs: ["-e", garbage] });
+  try {
+    await assert.rejects(
+      Promise.race([helper.list(), failAfter(SPAWN_WAIT_MS, "garbage frame")]),
+      (err) => !/test budget exceeded/.test(err.message),
+    );
+  } finally {
+    await helper.stop();
+  }
+});
+
+test("a missing helper binary rejects requests instead of crashing", async () => {
+  const helper = makeHelper({ command: "C:/definitely/missing/idupi-screen-helper.exe", commandArgs: [] });
+  try {
+    await assert.rejects(
+      Promise.race([helper.list(), failAfter(SPAWN_WAIT_MS, "missing binary")]),
+      (err) => !/test budget exceeded/.test(err.message),
+    );
+  } finally {
+    await helper.stop();
+  }
+});

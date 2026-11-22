@@ -133,23 +133,39 @@ export class ScreenHelper {
     child.stdout.on("error", () => {});
     child.stderr.on("error", () => {});
 
+    const rejectAll = (reason) => {
+      for (const entry of this.pending.values()) {
+        clearTimeout(entry.timer);
+        entry.reject(new Error(reason));
+      }
+      this.pending.clear();
+    };
+
     child.stdout.on("data", (chunk) => {
-      for (const message of this.decode(chunk)) this.onMessage(message);
+      // decode()/onMessage() throw on a malformed frame; thrown inside a
+      // stream listener that is an uncaught exception that kills the whole
+      // server. The stream is unrecoverable, so drop this child instead.
+      try {
+        for (const message of this.decode(chunk)) this.onMessage(message);
+      } catch (err) {
+        this.lastStderr = `protocol error: ${err.message}`;
+        rejectAll(`helper protocol error: ${err.message}`);
+        if (this.child === child) this.child = null;
+        try { child.kill(); } catch {}
+      }
     });
     child.stderr.on("data", (chunk) => {
       this.lastStderr = chunk.toString().slice(0, 2_000);
     });
+    // Spawn failures (missing/locked helper binary) are emitted here; with no
+    // listener Node throws them and the server dies. 'close' may not follow.
+    child.on("error", (err) => {
+      rejectAll(`helper failed to start: ${err.code || err.message}`);
+      if (this.child === child) this.child = null;
+    });
     child.on("close", (code) => {
       // Reject everything in flight; the next ensureStarted() respawns.
-      for (const entry of this.pending.values()) {
-        clearTimeout(entry.timer);
-        entry.reject(
-          new Error(
-            `helper crashed or exited (code=${code}) ${this.lastStderr ?? ""}`.trim(),
-          ),
-        );
-      }
-      this.pending.clear();
+      rejectAll(`helper crashed or exited (code=${code}) ${this.lastStderr ?? ""}`.trim());
       if (this.child === child) this.child = null;
     });
     return true;
