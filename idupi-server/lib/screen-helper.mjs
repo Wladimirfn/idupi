@@ -141,32 +141,42 @@ export class ScreenHelper {
       this.pending.clear();
     };
 
+    // Pending requests are shared across respawns, so events from a child that
+    // has already been replaced (or detached after a protocol error) must not
+    // touch them: its late 'close' would reject the NEW child's requests.
+    const isCurrent = () => this.child === child;
+
     child.stdout.on("data", (chunk) => {
+      if (!isCurrent()) return;
       // decode()/onMessage() throw on a malformed frame; thrown inside a
       // stream listener that is an uncaught exception that kills the whole
       // server. The stream is unrecoverable, so drop this child instead.
       try {
-        for (const message of this.decode(chunk)) this.onMessage(message);
+        // The decoder captured for THIS child, never this.decode: bytes from
+        // a previous child must not feed the current one.
+        for (const message of decode(chunk)) this.onMessage(message);
       } catch (err) {
         this.lastStderr = `protocol error: ${err.message}`;
         rejectAll(`helper protocol error: ${err.message}`);
-        if (this.child === child) this.child = null;
+        this.child = null;
         try { child.kill(); } catch {}
       }
     });
     child.stderr.on("data", (chunk) => {
-      this.lastStderr = chunk.toString().slice(0, 2_000);
+      if (isCurrent()) this.lastStderr = chunk.toString().slice(0, 2_000);
     });
     // Spawn failures (missing/locked helper binary) are emitted here; with no
     // listener Node throws them and the server dies. 'close' may not follow.
     child.on("error", (err) => {
+      if (!isCurrent()) return;
       rejectAll(`helper failed to start: ${err.code || err.message}`);
-      if (this.child === child) this.child = null;
+      this.child = null;
     });
     child.on("close", (code) => {
+      if (!isCurrent()) return;
       // Reject everything in flight; the next ensureStarted() respawns.
       rejectAll(`helper crashed or exited (code=${code}) ${this.lastStderr ?? ""}`.trim());
-      if (this.child === child) this.child = null;
+      this.child = null;
     });
     return true;
   }

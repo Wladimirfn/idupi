@@ -201,3 +201,28 @@ test("a missing helper binary rejects requests instead of crashing", async () =>
     await helper.stop();
   }
 });
+
+test("an immediate retry after a malformed frame is not rejected by the dead child's close", async () => {
+  // First spawn emits garbage; every later spawn behaves like the real helper.
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const dir = mkdtempSync(join(tmpdir(), "idupi-helper-"));
+  const marker = join(dir, "first-run-done").replace(/\\/g, "/");
+  const helperUrl = new URL("./fixtures/fake-helper.mjs", import.meta.url).href;
+  const script =
+    `import { existsSync, writeFileSync } from "node:fs";` +
+    `if (!existsSync(${JSON.stringify(marker)})) {` +
+    `  writeFileSync(${JSON.stringify(marker)}, "1");` +
+    `  process.stdout.write(Buffer.from([0xff,0xff,0xff,0xff,1,2,3]));` +
+    `  setTimeout(() => {}, 5000);` +
+    `} else { await import(${JSON.stringify(helperUrl)}); }`;
+  const helper = makeHelper({ commandArgs: ["--input-type=module", "-e", script] });
+  try {
+    await assert.rejects(Promise.race([helper.list(), failAfter(SPAWN_WAIT_MS, "garbage")]));
+    const monitors = await Promise.race([helper.list(), failAfter(SPAWN_WAIT_MS, "retry")]);
+    assert.ok(Array.isArray(monitors) || typeof monitors === "object");
+  } finally {
+    await helper.stop();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
