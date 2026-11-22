@@ -15,7 +15,9 @@ const EVIL = 'x" & calc.exe & echo "pwned';
 
 test("claude args keep the hostile message as one inert element", () => {
     const args = claudeArgs({ message: EVIL });
-    assert.deepEqual(args.slice(-2), ["-p", JSON.stringify(EVIL)]);
+    // Raw bytes after an end-of-options marker: no JSON quoting layer (it
+    // broke slash commands and multi-line prompts) and no flag parsing.
+    assert.deepEqual(args.slice(-3), ["-p", "--", EVIL]);
     // The static flags stay exactly where the CLI expects them.
     assert.equal(args.indexOf("--output-format"), 0);
     assert.ok(args.includes("bypassPermissions"));
@@ -24,6 +26,12 @@ test("claude args keep the hostile message as one inert element", () => {
 test("openCode args keep the hostile message as one inert element", () => {
     const args = openCodeArgs({ message: EVIL });
     assert.deepEqual(args, ["run", "--format", "json", "--auto", EVIL]);
+});
+
+test("claude prompts that look like flags, slash commands or multi-line text arrive verbatim", () => {
+    for (const msg of ["-x do something", "--help", "/compact", "línea 1\nlínea \"2\""]) {
+        assert.equal(claudeArgs({ message: msg }).at(-1), msg);
+    }
 });
 
 test("model and session ids ride as their own array elements", () => {
@@ -40,7 +48,7 @@ test("happy path matches the documented CLI shape", () => {
         "--output-format", "stream-json",
         "--verbose",
         "--permission-mode", "bypassPermissions",
-        "-p", '"hola"',
+        "-p", "--", "hola",
     ]);
     assert.deepEqual(openCodeArgs({ sessionId: "s-9", message: "hola" }),
         ["run", "--format", "json", "--auto", "-s", "s-9", "hola"]);

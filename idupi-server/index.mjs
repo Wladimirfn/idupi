@@ -4443,13 +4443,14 @@ function resolveClaudeSpawnTarget() {
     // Universal fallback: use the actual hit found by where (world-wide, no hardcoded path).
     // spawn("claude") without extension fails with ENOENT on some Node/Windows combos
     // because PATHEXT resolution needs the full .cmd path, so we use the hit directly.
+    // Security: an unparseable .cmd shim is NOT run through `cmd.exe /c`.
+    // cmd.exe re-parses the whole command line, and Node's argv quoting (\")
+    // is not cmd.exe quoting, so a chat message with `" & calc.exe` would
+    // execute. Fall through to a direct spawn or a clear install error.
     if (cmdHits.length > 0) {
-        const fallbackShim = cmdHits[0];
-        console.warn(`[Claude Resolve] shim no parseable pero where encontró ${hits.length} hit(s), fallback a shim directo ${fallbackShim} via cmd.exe`);
-        claudeSpawnTargetCache = { cmdShim: fallbackShim };
-        return claudeSpawnTargetCache;
+        console.warn(`[Claude Resolve] shim ${cmdHits[0]} no parseable; se omite el fallback via cmd.exe por seguridad`);
     }
-    if (hits.length > 0) {
+    if (hits.some((h) => !h.toLowerCase().endsWith(".cmd"))) {
         console.warn(`[Claude Resolve] shim no parseable pero where encontró ${hits.length} hit(s), fallback a spawn("claude") directo`);
         claudeSpawnTargetCache = { cmd: "claude" };
         return claudeSpawnTargetCache;
@@ -4481,7 +4482,7 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
         const target = resolveClaudeSpawnTarget();
         const args = claudeArgs({ modelId, sessionId, isNewSession, message });
 
-        const targetLabel = target.exe ? target.exe : target.js ? `node ${target.js}` : target.cmdShim ? `cmd /c ${target.cmdShim}` : `claude (PATH)`;
+        const targetLabel = target.exe ? target.exe : target.js ? `node ${target.js}` : `claude (PATH)`;
         console.log(`[Claude CLI Spawn] Iniciando Claude en ${projPath}: ${targetLabel}`);
 
         let fullOutput = "";
@@ -4513,16 +4514,6 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
             });
         } else if (target.js) {
             child = spawn(process.execPath, [target.js, ...args], {
-                cwd: projPath,
-                windowsHide: true,
-                stdio: ["pipe", "pipe", "pipe"],
-                env: process.env
-            });
-        } else if (target.cmdShim) {
-            // .cmd shim needs cmd.exe to execute, but args stay as ARRAY after /c shim
-            // The shim itself handles the node invocation, so we pass it as the command
-            // and claude args after it. No shell:true on the outer spawn - we spawn cmd.exe directly.
-            child = spawn("cmd.exe", ["/c", target.cmdShim, ...args], {
                 cwd: projPath,
                 windowsHide: true,
                 stdio: ["pipe", "pipe", "pipe"],
