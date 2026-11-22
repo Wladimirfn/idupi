@@ -91,3 +91,16 @@ delivery strategy `ask-on-risk` → chain/PR strategy to be chosen by the user.
 ## Next step
 User decision on delivery (merge/PR of `chore/gitignore-cleanup` + `fix/phase1-security-crashes`),
 then phase 2 (engines: OpenCode v2 rework, Claude catalog, gentle-shell).
+
+## Delivery (stacked PRs to main, chosen by the user 2026-11-22)
+| PR | Branch | Base | Commits | Lines |
+|---|---|---|---|---|
+| #7 | `phase1/01-profile-ids` | `main` | gitignore cleanup, T1, T2, tracking doc | 214 |
+| #8 | `phase1/02-deletion-guard-claude-argv` | #7 | T3, T3 audit follow-up, T4 | 229 |
+| #9 | `phase1/03-project-file-links` | #8 | T5 | 195 |
+| #10 | `phase1/04-crash-guards-body-limit` | #9 | T6, T6 audit follow-up, T7, closing doc | 331 |
+
+Branches were rebuilt by cherry-pick from `fix/phase1-security-crashes`; the final tree is identical
+(`git diff` empty). Each branch tip ran the full suite: only the known env failure (branch 01 showed
+one flaky `screen-stream` timing failure, 3/3 green on rerun; the branch does not touch it).
+After each parent merges, retarget the next PR to `main`.
