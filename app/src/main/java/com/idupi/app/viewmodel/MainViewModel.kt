@@ -92,20 +92,6 @@ class MainViewModel(
         }
     }
 
-    fun selectEngine(engineId: String) {
-        viewModelScope.launch {
-            try {
-                client.selectEngine(engineId)
-                refreshStatus()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to select engine $engineId", e)
-                _errorMessage.value = "No se pudo seleccionar el motor: ${e.localizedMessage}"
-            }
-        }
-    }
-
     fun refreshStatus() {
         viewModelScope.launch {
             try {

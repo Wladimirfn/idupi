@@ -52,19 +52,6 @@ class MainViewModelTest {
     }
 
     @Test
-    fun `selectEngine sets errorMessage when client throws`() = runTest {
-        val viewModel = MainViewModel(FakeClientSource(fake))
-        advanceUntilIdle()
-        fake.failWith = RuntimeException("engine failure")
-
-        viewModel.selectEngine("engine-2")
-        advanceUntilIdle()
-
-        assertNotNull(viewModel.errorMessage.value)
-        assertTrue(viewModel.errorMessage.value!!.contains("engine failure"))
-    }
-
-    @Test
     fun `clearError resets errorMessage to null`() = runTest {
         fake.failWith = RuntimeException("boom")
         val viewModel = MainViewModel(FakeClientSource(fake))

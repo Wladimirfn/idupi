@@ -40,7 +40,7 @@ class MainActivity : ComponentActivity() {
      * A delivery notification ("APK lista") carries
      * [DeliveryNotifications.EXTRA_OPEN_DELIVERIES]; honoring it here (cold
      * start and warm taps alike) is what lands the owner on the list instead
-     * of the chat.
+     * of the terminals.
      */
     private fun openRequestedScreen(intent: Intent?) {
         val openDeliveries =
