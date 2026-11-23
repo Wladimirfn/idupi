@@ -50,7 +50,16 @@ dead surfaces, give terminals and deliveries their own entries, rename the CLI c
       LHMDataProvider uses), writes CPU temp/power (+ DIMM temp if any) JSON every 2 s to
       `%ProgramData%\IDUPI\sensors.json`; installed as logon scheduled task with highest
       privileges from an admin-only copy in ProgramData; server metrics prefer it.
-- [ ] T5 Bump version, build, deliver with `idupi-push`, owner check.
+- [x] T5 Bump version, build, deliver with `idupi-push`, owner check.
+- [ ] T7 Dashboard spacing: no overlapping/cramped text in the metric cards (owner feedback on 1.34).
+- [ ] T8 Storage card (4th card): every fixed disk (C:, D:, ...) with used/free/total, swipeable
+      pager between disks; server adds `disks` to `/api/v1/system/metrics`.
+- [ ] T9 Settings: rename "Fondo chat"; app theme system (3 color presets, dark, light, custom accent
+      + text colors) applied app-wide; remove auto-approval and other dead chat/orchestrator settings;
+      reorganize sections.
+- [ ] T10 Processes: list ALL PC processes (not only server-managed ones) with working category
+      filters (Apps / Segundo plano / Windows / Agentes / IDUPI), memory and CPU %, search, and end
+      process with confirmation (critical system processes protected); server endpoint.
 
 ## Acceptance criteria
 
@@ -80,8 +89,8 @@ dead surfaces, give terminals and deliveries their own entries, rename the CLI c
 | T3 | 59f7695 | Writer idu-pi work-1. system-metrics 16/16, delivery-routes 10/10, node --check OK; wired after requireAuth (parent verified index.mjs:3168/3179). Real smoke: Ryzen 5600X 5.9 %, RAM 75 %, RTX 3060 39.7 C 13 W; CPU temp/W null + LibreHardwareMonitor hint. Live server not restarted (owner PTY alive). |
 | T4 | 92ac9ec | Writer idu-pi work-1. DashboardViewModel 2 s visible polling, 2-col cards, thresholds, hints card. testDebugUnitTest 268/0 (11 new). Note: openspec app block says strict_tdd true; tests written alongside, no RED evidence (disclosed). |
 | T6 | afb3677, b8465b5, 654997e, 2c26d41 | Writer idu-pi work-1 (helper, installer, server source, packaging). Parent: elevated path ignores user env (DLL hijack); zero readings -> null + driver hint. Root cause of 0 readings: RTSS's LHM copy (0.9.5-pre392) predates PawnIO. Packaged (owner: "others must use it without problems"): `scripts/sensors-deps.json` pins LHM v0.9.6 zip (sha256 086d9f1b...) and PawnIO 2.2.0 setup (sha256 1f519a22..., Authenticode namazso verified); installer installs PawnIO if missing, extracts 9 DLLs to admin-locked `%ProgramData%\IDUPI\lhm`; nothing binary in the repo; docs `idupi-server/docs/sensors.md`. Live (owner accepted UAC): PawnIO service RUNNING, helper elevated libVersion 0.9.6.0, CPU 60.1 C / 39.2 W; server /system/metrics 200 -> cpu 58.1 C 45 W, gpu 43 C 14.7 W, sources.sensors "sensors-helper", hints 0. system-metrics 22/22. RAM temp null (no DIMM sensor). |
-| T5 (in progress) | 0ad6b92 | Parent: testDebugUnitTest + assembleRelease EXIT 0, APK 1.34 versionCode 35 same cert, pushed via idupi-push. Pending: server restart (owner OK) + owner check. |
+| T5 | 0ad6b92 | Parent: testDebugUnitTest + assembleRelease EXIT 0, APK 1.34 versionCode 35 same cert, pushed via idupi-push (dlv-55b95ef97aed); owner installed and used the live dashboard (reported 404 before restart, then live RAM values). |
 
 ## Next step
 
-T5: owner checks the 1.34 dashboard with live CPU temp/W; then stacked PR delivery decision.
+T7-T10 (owner feedback 2026-11-23): server first (disks + processes endpoint), then app.
