@@ -51,13 +51,13 @@ dead surfaces, give terminals and deliveries their own entries, rename the CLI c
       `%ProgramData%\IDUPI\sensors.json`; installed as logon scheduled task with highest
       privileges from an admin-only copy in ProgramData; server metrics prefer it.
 - [x] T5 Bump version, build, deliver with `idupi-push`, owner check.
-- [ ] T7 Dashboard spacing: no overlapping/cramped text in the metric cards (owner feedback on 1.34).
-- [ ] T8 Storage card (4th card): every fixed disk (C:, D:, ...) with used/free/total, swipeable
+- [x] T7 Dashboard spacing: no overlapping/cramped text in the metric cards (owner feedback on 1.34).
+- [x] T8 Storage card (4th card): every fixed disk (C:, D:, ...) with used/free/total, swipeable
       pager between disks; server adds `disks` to `/api/v1/system/metrics`.
-- [ ] T9 Settings: rename "Fondo chat"; app theme system (3 color presets, dark, light, custom accent
+- [x] T9 Settings: rename "Fondo chat"; app theme system (3 color presets, dark, light, custom accent
       + text colors) applied app-wide; remove auto-approval and other dead chat/orchestrator settings;
       reorganize sections.
-- [ ] T10 Processes: list ALL PC processes (not only server-managed ones) with working category
+- [x] T10 Processes: list ALL PC processes (not only server-managed ones) with working category
       filters (Apps / Segundo plano / Windows / Agentes / IDUPI), memory and CPU %, search, and end
       process with confirmation (critical system processes protected); server endpoint.
 
@@ -90,7 +90,13 @@ dead surfaces, give terminals and deliveries their own entries, rename the CLI c
 | T4 | 92ac9ec | Writer idu-pi work-1. DashboardViewModel 2 s visible polling, 2-col cards, thresholds, hints card. testDebugUnitTest 268/0 (11 new). Note: openspec app block says strict_tdd true; tests written alongside, no RED evidence (disclosed). |
 | T6 | afb3677, b8465b5, 654997e, 2c26d41 | Writer idu-pi work-1 (helper, installer, server source, packaging). Parent: elevated path ignores user env (DLL hijack); zero readings -> null + driver hint. Root cause of 0 readings: RTSS's LHM copy (0.9.5-pre392) predates PawnIO. Packaged (owner: "others must use it without problems"): `scripts/sensors-deps.json` pins LHM v0.9.6 zip (sha256 086d9f1b...) and PawnIO 2.2.0 setup (sha256 1f519a22..., Authenticode namazso verified); installer installs PawnIO if missing, extracts 9 DLLs to admin-locked `%ProgramData%\IDUPI\lhm`; nothing binary in the repo; docs `idupi-server/docs/sensors.md`. Live (owner accepted UAC): PawnIO service RUNNING, helper elevated libVersion 0.9.6.0, CPU 60.1 C / 39.2 W; server /system/metrics 200 -> cpu 58.1 C 45 W, gpu 43 C 14.7 W, sources.sensors "sensors-helper", hints 0. system-metrics 22/22. RAM temp null (no DIMM sensor). |
 | T5 | 0ad6b92 | Parent: testDebugUnitTest + assembleRelease EXIT 0, APK 1.34 versionCode 35 same cert, pushed via idupi-push (dlv-55b95ef97aed); owner installed and used the live dashboard (reported 404 before restart, then live RAM values). |
+| T7 | c13fdaa | Writer idu-pi work-1: MetricRow weight+ellipsis, 8/12/16dp spacing, 24sp headline, 1 column below 360dp. Explorer explore-2 mapped causes (explore-1 run returned empty). |
+| T8 | 23423bc, 241a0f5, (SWR) | Server: disks via statfs + cached CIM labels; parent added stale-while-revalidate so the ~3 s CIM query never stalls a poll (28/28). App: Almacenamiento HorizontalPager keyed by mount. Live: C: 87.6 %, D: 51.4 %, E: 55.3 %, F: 54.2 %, G: 20.1 %. |
+| T9 | 0a0ec16 | DataStore theme_mode/preset/custom colors; presets Índigo/Esmeralda/Ámbar; custom swatches + contrast warning; removed auto-approve (+ header plumbing/tests), wallpaper, dead mute toggle. |
+| T10 | 6ab53cd, a93a5d9 | Server GET /api/v1/os/processes (one PowerShell sample, cpu deltas, categories idupi>agents>windows>apps>background, protected list) + POST kill (409 protected / 404 / taskkill). App list with chips/search/sort/details/confirm. Live: 328 processes in 573 ms, kill pid 4 -> 409, no token -> 401. Old /api/v1/terminals client surface removed. |
+| Release 1.35 | 2d4865b | Parent: testDebugUnitTest (285) + assembleRelease EXIT 0, versionCode 36 same cert, server restarted (PID 35340), pushed dlv-83f23c4229e2. Pending: owner on-device check (no device run by workers). |
+
 
 ## Next step
 
-T7-T10 (owner feedback 2026-11-23): server first (disks + processes endpoint), then app.
+Owner checks 1.35 on the phone (dashboard spacing, storage pager, themes, processes); then stacked PR delivery decision.
