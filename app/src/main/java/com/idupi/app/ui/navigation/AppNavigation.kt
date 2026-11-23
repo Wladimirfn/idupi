@@ -143,6 +143,11 @@ fun AppNavigation() {
                 else -> {
                     ModalNavigationDrawer(
                         drawerState = drawerState,
+                        // Swipe-to-open hijacked ordinary horizontal drags
+                        // (terminal pan, chip rows, lists). Every screen has a
+                        // menu button, so the drawer opens only from it; once
+                        // open, swiping still closes it.
+                        gesturesEnabled = drawerState.isOpen,
                         drawerContent = {
                             ModalDrawerSheet(
                                 drawerContainerColor = SlateCard,
