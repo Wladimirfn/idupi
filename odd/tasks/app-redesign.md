@@ -34,9 +34,9 @@ dead surfaces, give terminals and deliveries their own entries, rename the CLI c
 
 ## Tasks
 
-- [ ] T1 Remove Chat, Orchestrator and Sessions (screens, VMs, chat-only components, tests);
+- [x] T1 Remove Chat, Orchestrator and Sessions (screens, VMs, chat-only components, tests);
       new start/Back target; Welcome/Connection continue to Terminales.
-- [ ] T2 Drawer entries Terminales (new PTY list screen) and Entregas; Console renamed
+- [x] T2 Drawer entries Terminales (new PTY list screen) and Entregas; Console renamed
       Procesos, opening directly on the process list (PTY launcher and Entregas card removed).
 - [ ] T3 Server `GET /api/v1/system/metrics` (behind auth): CPU %, RAM used/total, GPU via
       nvidia-smi, optional LibreHardwareMonitor source for CPU temp/W; nulls when unknown.
@@ -66,7 +66,9 @@ dead surfaces, give terminals and deliveries their own entries, rename the CLI c
 
 | Task | Commit | Checks |
 |------|--------|--------|
+| T1 | 4bbaed1, 4aaaf68 | Writer idu-pi work-1. 33 files, -8812/+50 (16 main + 13 test files deleted). Worker: testDebugUnitTest 250/0 + assembleDebug. Parent: leftover "Orquestador" labels reworded (4aaaf68). IduPiClient chat/orchestrator methods kept on purpose (wire tests; Console still uses connectChat/cancelCurrentTask). |
+| T2 | dd44267 | Writer idu-pi work-1. TerminalsScreen/VM (3 s visible polling, create, open, Back -> Terminales), drawer order Terminales/Entregas/Procesos/Dashboard/Proyectos/Alertas/Remoto/Ajustes, Console -> "Procesos" list-first (log stream behind app-bar toggle). Worker 257/0 (7 new); parent rerun testDebugUnitTest EXIT 0. |
 
 ## Next step
 
-T1 via idu-pi work-1.
+T3+T4 running on idu-pi work-1 (run IDU-20261123193031-work-1-w4vo).
