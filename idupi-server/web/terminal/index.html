@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>IDUPI Terminal</title>
+  <!-- Vendored xterm.js 5.5.0, shared with the Android app (offline, no CDN).
+       UMD globals: Terminal, FitAddon.FitAddon -->
+  <link rel="stylesheet" href="vendor/xterm.css">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <section id="token-view" class="token-view" hidden>
+    <form id="token-form" class="token-card" autocomplete="off">
+      <h1>IDUPI Terminal</h1>
+      <p>Pega el token de acceso de la PC.</p>
+      <input id="token-input" type="password" placeholder="Token"
+             autocomplete="off" autocapitalize="off" spellcheck="false"
+             aria-label="Token de acceso">
+      <button type="submit">Usar token</button>
+      <p id="token-error" class="token-error" role="alert" hidden></p>
+    </form>
+  </section>
+
+  <main id="app-view" class="app" hidden>
+    <header class="bar">
+      <nav id="tabs" class="tabs" aria-label="Terminales"></nav>
+      <span id="status" class="status"></span>
+      <span id="notice" class="notice" role="status" hidden></span>
+      <button id="new-terminal" class="action" type="button">Nueva terminal</button>
+      <button id="close-terminal" class="action danger" type="button" disabled>Cerrar</button>
+    </header>
+    <div id="terminal" class="terminal"></div>
+  </main>
+
+  <script src="vendor/xterm.js"></script>
+  <script src="vendor/addon-fit.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,253 @@
+/*
+ * Browser terminal view layout. Same slate palette as the Android app so the
+ * phone and the PC read as one product.
+ *
+ * FitAddon measures #terminal's computed (border-box) size and only subtracts
+ * the .xterm element's own padding, so #terminal carries no padding: with it,
+ * the last column would be counted as usable space and clipped. #terminal gets
+ * its size from the flex row above it and from the explicit height:100% rule
+ * xterm needs on .xterm.
+ */
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #020617;
+  color: #e2e8f0;
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* --- token gate --------------------------------------------------------- */
+
+.token-view {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 24px;
+}
+
+.token-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(360px, 100%);
+  padding: 24px;
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  border-radius: 12px;
+}
+
+.token-card h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.token-card p {
+  margin: 0;
+  font-size: 13px;
+  color: #94a3b8;
+}
+
+.token-card input {
+  padding: 9px 10px;
+  font: inherit;
+  font-size: 14px;
+  color: #e2e8f0;
+  background: #020617;
+  border: 1px solid #334155;
+  border-radius: 8px;
+}
+
+.token-card input:focus {
+  outline: none;
+  border-color: #38bdf8;
+}
+
+.token-card button {
+  padding: 9px 12px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: #020617;
+  background: #38bdf8;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.token-card button:hover {
+  background: #7dd3fc;
+}
+
+.token-error {
+  color: #fca5a5 !important;
+}
+
+/* --- app shell ---------------------------------------------------------- */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 10px;
+  background: #0f172a;
+  border-bottom: 1px solid #1e293b;
+}
+
+.tabs {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 4px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.tab {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 12px;
+  color: #cbd5e1;
+  background: #1e293b;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tab:hover {
+  background: #273449;
+}
+
+.tab.active {
+  color: #e2e8f0;
+  background: #020617;
+  border-color: #38bdf8;
+}
+
+.tab.exited {
+  color: #64748b;
+}
+
+.tab-state {
+  font-size: 10px;
+  color: #64748b;
+}
+
+.tab[data-alive="true"] .tab-state {
+  color: #4ade80;
+}
+
+.tab.active[data-alive="true"] .tab-state {
+  color: #4ade80;
+}
+
+.status {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: #94a3b8;
+  border: 1px solid #1e293b;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.status:empty {
+  display: none;
+}
+
+.status[data-state="connecting"] {
+  color: #fbbf24;
+  border-color: #78350f;
+}
+
+.status[data-state="live"] {
+  color: #4ade80;
+  border-color: #14532d;
+}
+
+.status[data-state="ended"] {
+  color: #94a3b8;
+  border-color: #334155;
+}
+
+.notice {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: #fca5a5;
+}
+
+.action {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: #e2e8f0;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.action:hover:not(:disabled) {
+  border-color: #38bdf8;
+}
+
+.action:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.action.danger {
+  color: #fca5a5;
+}
+
+.action.danger:hover:not(:disabled) {
+  border-color: #f87171;
+}
+
+/* --- terminal surface --------------------------------------------------- */
+
+.terminal {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #020617;
+}
+
+.xterm {
+  height: 100%;
+}
+
+.xterm .xterm-viewport {
+  background-color: transparent !important;
+}

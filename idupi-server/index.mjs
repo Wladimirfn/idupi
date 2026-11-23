@@ -10,6 +10,7 @@ import { readdirSync, statSync, readFileSync, writeFileSync, existsSync, rmSync,
 import { homedir, networkInterfaces } from "node:os";
 import { join, basename, relative, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { createAuthGuard, loadToken } from "../server-auth.mjs";
 import { TaskRegistry } from "./lib/task-registry.mjs";
 import { parseSubagentNotify, resolveNoticeCard, describeNoticeResult } from "./lib/subagent-notify.mjs";
@@ -45,6 +46,9 @@ import { handleScreenRoute, shutdownScreen } from "./lib/screen-routes.mjs";
 // authenticated choke point as every other route.
 import { PtyManager } from "./lib/pty-manager.mjs";
 import { createPtyRoutes } from "./lib/pty-routes.mjs";
+// Browser view of those same PTYs (live-shared-terminals T2): loopback-only
+// static files, served before auth because they hold no secrets.
+import { createTerminalWebRoutes } from "./lib/terminal-web-routes.mjs";
 import { resolveProjectFilePath, getProjectFilesTree } from "./lib/project-files.mjs";
 import { guardChildStreams } from "./lib/child-guards.mjs";
 import { checkBodyLimits } from "./lib/request-limits.mjs";
@@ -1196,6 +1200,16 @@ const terminalMgr = new TerminalManager();
 // handler is created once so each request does not rebuild the closure.
 const ptyManager = new PtyManager();
 const handlePtyRoute = createPtyRoutes(ptyManager);
+
+// Browser view of the shared terminals: page files live in web/terminal, and
+// the xterm assets are the SAME vendored 5.5.0 copy the Android app loads, so
+// there is only one version to keep current.
+const handleTerminalWebRoute = createTerminalWebRoutes({
+    webRoot: fileURLToPath(new URL("./web/terminal", import.meta.url)),
+    vendorRoot: fileURLToPath(
+        new URL("../app/src/main/assets/terminal/vendor", import.meta.url),
+    ),
+});
 
 // Mapa global en memoria para resolver sessionId -> filePath en <1ms
 const sessionFilePathMap = new Map();
@@ -3119,13 +3133,18 @@ function detectMcp(engineLabel, ev) {
 }
 
 const handleRequest = async (req, res) => {
-    // Every endpoint below can read files or spawn shells, so nothing is
-    // reachable before the bearer token is verified.
-    if (!requireAuth(req, res)) return;
-
     const rawUrl = req.url || "";
     const parsedUrl = new URL(rawUrl, `http://localhost:${PORT}`);
     const pathname = parsedUrl.pathname;
+
+    // The browser terminal page and its vendored assets hold no secrets and
+    // are loopback-only, so they answer before the token check; every API
+    // route below still requires the bearer token.
+    if (await handleTerminalWebRoute(req, res, pathname)) return;
+
+    // Every endpoint below can read files or spawn shells, so nothing is
+    // reachable before the bearer token is verified.
+    if (!requireAuth(req, res)) return;
 
     // Remote screen routes live in lib/screen-routes.mjs; it answers true when
     // the path is theirs. Still behind requireAuth like everything below.
