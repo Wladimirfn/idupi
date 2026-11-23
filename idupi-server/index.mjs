@@ -46,6 +46,10 @@ import { handleScreenRoute, shutdownScreen } from "./lib/screen-routes.mjs";
 // authenticated choke point as every other route.
 import { PtyManager } from "./lib/pty-manager.mjs";
 import { createPtyRoutes } from "./lib/pty-routes.mjs";
+// PC -> phone APK deliveries (T1): register() snapshots each APK into
+// idupi-server/deliveries/, so a rebuild cannot change bytes mid-download.
+import { createDeliveryRegistry } from "./lib/delivery-registry.mjs";
+import { createDeliveryRoutes } from "./lib/delivery-routes.mjs";
 // Browser view of those same PTYs (live-shared-terminals T2): loopback-only
 // static files, served before auth because they hold no secrets.
 import { createTerminalWebRoutes } from "./lib/terminal-web-routes.mjs";
@@ -1200,6 +1204,14 @@ const terminalMgr = new TerminalManager();
 // handler is created once so each request does not rebuild the closure.
 const ptyManager = new PtyManager();
 const handlePtyRoute = createPtyRoutes(ptyManager);
+
+// PC -> phone APK deliveries: the snapshot store lives next to this file and
+// travels with the server checkout. The registry loads its index synchronously
+// (at most maxEntries rows), so construction stays cheap at module scope.
+const deliveryRegistry = createDeliveryRegistry({
+    storeDir: fileURLToPath(new URL("./deliveries", import.meta.url)),
+});
+const handleDeliveryRoute = createDeliveryRoutes(deliveryRegistry);
 
 // Browser view of the shared terminals: page files live in web/terminal, and
 // the xterm assets are the SAME vendored 5.5.0 copy the Android app loads, so
@@ -3152,6 +3164,8 @@ const handleRequest = async (req, res) => {
     // Interactive PTY terminals live in lib/pty-routes.mjs; it answers true
     // when the path is theirs. Still behind requireAuth like everything below.
     if (await handlePtyRoute(req, res, pathname)) return;
+    // APK deliveries live in lib/delivery-routes.mjs; behind the same token.
+    if (await handleDeliveryRoute(req, res, pathname)) return;
 
     // 0. Stream de eventos del chat (SSE). Long-lived: no responde y sigue abierto.
     if (pathname === "/api/v1/chat/stream" && req.method === "GET") {
