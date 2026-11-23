@@ -1,23 +1,31 @@
-// Live PC metrics for the dashboard (app-redesign, T3).
+// Live PC metrics for the dashboard (app-redesign, T3/T6).
 //
-// Three sources, each optional and each able to answer "I do not know":
+// Four sources, each optional and each able to answer "I do not know":
 //   - node:os for CPU usage (delta between two samples) and RAM;
 //   - nvidia-smi for GPU usage, temperature, power and VRAM;
-//   - LibreHardwareMonitor's built-in web server (data.json) for the CPU
-//     temperature/power and DIMM temperature that Windows WMI does not expose.
+//   - the elevated IDUPI sensors helper (scripts/sensors-helper.ps1), which
+//     writes CPU temperature/power and DIMM temperature to a JSON file;
+//   - LibreHardwareMonitor's built-in web server (data.json), the manual
+//     alternative for the same values.
 //
 // The owner's Ryzen 5600X reports no temperature or power through WMI
-// (MSAcpi_ThermalZoneTemperature has 0 instances), so those fields stay null
-// until LibreHardwareMonitor is running with its Remote Web Server on.
+// (MSAcpi_ThermalZoneTemperature has 0 instances). Windows only exposes those
+// sensors to an elevated process, hence the helper: it loads the same
+// LibreHardwareMonitorLib 0.9.5 RivaTuner ships and refreshes a small JSON
+// snapshot. A fresh helper file wins over the web server; a file older than
+// 10 s is treated as absent (the helper stopped), and the web server is tried.
 // A null here is the contract: the app renders "no disponible" instead of a
 // made-up number.
 //
-// Everything is injected (execFile, fetch, now, os, sleep, env) so the test
-// suite exercises the parsing and the delta maths without real hardware, and
-// the server never needs a dependency for it (node built-ins only).
+// Everything is injected (execFile, fetch, readFile, now, os, sleep, env) so
+// the test suite exercises the parsing and the delta maths without real
+// hardware, and the server never needs a dependency for it (node built-ins
+// only).
 
 import * as nodeOs from "node:os";
 import { execFile as nodeExecFile } from "node:child_process";
+import { readFile as nodeReadFile } from "node:fs/promises";
+import path from "node:path";
 import { promisify } from "node:util";
 
 const nodeExecFileAsync = promisify(nodeExecFile);
@@ -33,6 +41,11 @@ const NVIDIA_MAX_BUFFER = 256 * 1024;
 const DEFAULT_LHM_URL = "http://127.0.0.1:8085/data.json";
 const LHM_TIMEOUT_MS = 800;
 
+// The helper rewrites its snapshot every 2 s; anything older than this means
+// the task stopped (or the file is a leftover from a previous boot).
+const HELPER_MAX_AGE_MS = 10_000;
+const HELPER_CLOCK_SKEW_MS = 1000;
+
 const DEFAULT_CACHE_MS = 1500;
 // First call has no previous CPU sample, so it measures over a short window
 // instead of inventing a number: the request costs ~250 ms once, then every
@@ -41,8 +54,10 @@ const FIRST_CPU_SAMPLE_MS = 250;
 
 const BYTES_PER_MIB = 1024 * 1024;
 
-const LHM_HINT =
-    "Para temperatura y consumo del CPU, abrí LibreHardwareMonitor como administrador con 'Remote Web Server' activado (puerto 8085)";
+const SENSORS_INSTALL_HINT =
+    "Para temperatura y consumo del CPU, instalá el servicio de sensores con permisos de administrador: idupi-server\\scripts\\install-sensors-helper.ps1 (alternativa: LibreHardwareMonitor con 'Remote Web Server' activado en el puerto 8085)";
+const SENSORS_STALE_HINT =
+    "El servicio de sensores no está corriendo: sensors.json tiene más de 10 segundos sin actualizarse. Revisá la tarea programada 'IDUPI Sensors' (se instala con idupi-server\\scripts\\install-sensors-helper.ps1; alternativa: LibreHardwareMonitor con 'Remote Web Server' en el puerto 8085)";
 const GPU_HINT =
     "No se detectó nvidia-smi: no hay métricas de GPU disponibles en esta PC";
 
@@ -260,6 +275,13 @@ function defaultSleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** %ProgramData%\IDUPI\sensors.json unless IDUPI_SENSORS_FILE overrides it. */
+function resolveSensorsFile(env) {
+    if (env.IDUPI_SENSORS_FILE) return env.IDUPI_SENSORS_FILE;
+    const programData = env.ProgramData || env.PROGRAMDATA || "C:\\ProgramData";
+    return path.join(programData, "IDUPI", "sensors.json");
+}
+
 /**
  * Builds the metrics sampler. Every collaborator is injectable so tests never
  * touch real hardware, the network, or the wall clock.
@@ -267,6 +289,7 @@ function defaultSleep(ms) {
  * @param {object} [options]
  * @param {(file: string, args: string[], options: object) => Promise<{ stdout: string }>} [options.execFile]
  * @param {typeof fetch} [options.fetch]
+ * @param {(file: string, encoding: string) => Promise<string | Buffer>} [options.readFile]
  * @param {() => number} [options.now]
  * @param {typeof import("node:os")} [options.os]
  * @param {(ms: number) => Promise<void>} [options.sleep]
@@ -276,6 +299,7 @@ function defaultSleep(ms) {
 export function createSystemMetrics({
     execFile = nodeExecFileAsync,
     fetch: fetchImpl = globalThis.fetch,
+    readFile = nodeReadFile,
     now = () => Date.now(),
     os: osImpl = nodeOs,
     sleep = defaultSleep,
@@ -319,7 +343,43 @@ export function createSystemMetrics({
         }
     }
 
-    async function readSensors() {
+    /**
+     * Reads the elevated helper's snapshot. Only a parseable file sampled less
+     * than 10 s ago counts. The status also drives the hint when no source is
+     * fresh, because "not installed" and "stopped" need different fixes.
+     */
+    async function readHelperSensors() {
+        let raw;
+        try {
+            raw = await readFile(resolveSensorsFile(env), "utf8");
+        } catch {
+            return { status: "missing" };
+        }
+
+        let data;
+        try {
+            data = JSON.parse(String(raw));
+        } catch {
+            return { status: "invalid" };
+        }
+
+        const sampledAt = Date.parse(data?.sampledAt);
+        if (!Number.isFinite(sampledAt)) return { status: "invalid" };
+
+        const age = now() - sampledAt;
+        if (!(age < HELPER_MAX_AGE_MS && age > -HELPER_CLOCK_SKEW_MS)) {
+            return { status: "stale" };
+        }
+
+        return {
+            status: "fresh",
+            cpuTemperatureC: parseSensorNumber(data?.cpu?.temperatureC),
+            cpuPowerW: parseSensorNumber(data?.cpu?.powerW),
+            memoryTemperatureC: parseSensorNumber(data?.memory?.temperatureC),
+        };
+    }
+
+    async function readLhmSensors() {
         const url = env.IDUPI_LHM_URL || DEFAULT_LHM_URL;
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), LHM_TIMEOUT_MS);
@@ -338,11 +398,37 @@ export function createSystemMetrics({
         }
     }
 
+    /**
+     * Helper file first (elevated and precise) and the LHM web server second
+     * (the manual alternative). Both unavailable leaves the fields null.
+     */
+    async function resolveSensors() {
+        const helper = await readHelperSensors();
+        if (helper.status === "fresh") {
+            return {
+                source: "sensors-helper",
+                cpuTemperatureC: helper.cpuTemperatureC,
+                cpuPowerW: helper.cpuPowerW,
+                memoryTemperatureC: helper.memoryTemperatureC,
+                helperStatus: helper.status,
+            };
+        }
+
+        const lhm = await readLhmSensors();
+        return {
+            source: lhm.available ? "librehardwaremonitor" : null,
+            cpuTemperatureC: lhm.cpuTemperatureC,
+            cpuPowerW: lhm.cpuPowerW,
+            memoryTemperatureC: lhm.memoryTemperatureC,
+            helperStatus: helper.status,
+        };
+    }
+
     async function buildSample() {
         const [cpu, gpuResult, sensors] = await Promise.all([
             readCpu(),
             readGpus(),
-            readSensors(),
+            resolveSensors(),
         ]);
 
         const totalBytes = Number(osImpl.totalmem());
@@ -350,7 +436,9 @@ export function createSystemMetrics({
         const usedBytes = Math.max(0, totalBytes - freeBytes);
         const hints = [];
         if (!gpuResult.available) hints.push(GPU_HINT);
-        if (!sensors.available) hints.push(LHM_HINT);
+        if (!sensors.source) {
+            hints.push(sensors.helperStatus === "stale" ? SENSORS_STALE_HINT : SENSORS_INSTALL_HINT);
+        }
 
         return {
             sampledAt: new Date(now()).toISOString(),
@@ -370,7 +458,7 @@ export function createSystemMetrics({
             gpus: gpuResult.gpus,
             sources: {
                 gpu: gpuResult.available ? "nvidia-smi" : null,
-                sensors: sensors.available ? "librehardwaremonitor" : null,
+                sensors: sensors.source,
             },
             hints,
         };

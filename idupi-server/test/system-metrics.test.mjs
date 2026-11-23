@@ -56,7 +56,53 @@ function unusableSources() {
         fetch: async () => {
             throw new Error("ECONNREFUSED 127.0.0.1:8085");
         },
+        readFile: async () => {
+            const error = new Error("ENOENT: sensors.json");
+            error.code = "ENOENT";
+            throw error;
+        },
     };
+}
+
+const HELPER_NOW = Date.parse("2026-11-23T12:00:00.000Z");
+
+function helperSnapshot({
+    sampledAt = new Date(HELPER_NOW - 2000).toISOString(),
+    cpuTemperatureC = 51.2,
+    cpuPowerW = 63.4,
+    memoryTemperatureC = 34.5,
+} = {}) {
+    return JSON.stringify({
+        sampledAt,
+        elevated: true,
+        source: "librehardwaremonitor",
+        libVersion: "0.9.5.0",
+        cpu: { name: "AMD Ryzen 5 5600X", temperatureC: cpuTemperatureC, powerW: cpuPowerW },
+        memory: { temperatureC: memoryTemperatureC },
+        sensors: [],
+    });
+}
+
+/** Sampler wired for the helper-file tests: fixed clock, no real I/O. */
+function helperMetrics({ readFile, fetch: fetchImpl, now = () => HELPER_NOW }) {
+    return createSystemMetrics({
+        os: fakeOs({
+            snapshots: [
+                [cpuTimes({ user: 10, sys: 10, idle: 80 })],
+                [cpuTimes({ user: 20, sys: 20, idle: 160 })],
+            ],
+        }),
+        execFile: async () => ({ stdout: `${nvidiaLine}\n` }),
+        fetch:
+            fetchImpl ??
+            (async () => {
+                throw new Error("ECONNREFUSED");
+            }),
+        readFile,
+        sleep: async () => {},
+        now,
+        env: { IDUPI_SENSORS_FILE: "C:\\ProgramData\\IDUPI\\sensors.json" },
+    });
 }
 
 const lhmAmdTree = {
@@ -214,6 +260,11 @@ test("sample composes cpu, memory and GPU values from the injected sources", asy
         fetch: async () => {
             throw new Error("ECONNREFUSED");
         },
+        readFile: async () => {
+            const error = new Error("ENOENT: sensors.json");
+            error.code = "ENOENT";
+            throw error;
+        },
         sleep: async () => {},
         now: () => Date.parse("2026-11-23T12:00:00.000Z"),
     });
@@ -283,6 +334,11 @@ test("LHM sensors reach the sample; unreachable LHM keeps them null", async () =
             ],
         }),
         execFile: async () => ({ stdout: `${nvidiaLine}\n` }),
+        readFile: async () => {
+            const error = new Error("ENOENT: sensors.json");
+            error.code = "ENOENT";
+            throw error;
+        },
         sleep: async () => {},
     };
 
@@ -304,6 +360,81 @@ test("LHM sensors reach the sample; unreachable LHM keeps them null", async () =
     assert.match(withoutSensors.hints[0], /LibreHardwareMonitor/);
 });
 
+test("a fresh sensors-helper file wins over the LHM web server", async () => {
+    let lhmCalls = 0;
+    const sample = await helperMetrics({
+        readFile: async () => helperSnapshot(),
+        fetch: async () => {
+            lhmCalls++;
+            return { ok: true, json: async () => lhmAmdTree };
+        },
+    }).sample();
+
+    assert.equal(sample.cpu.temperatureC, 51.2);
+    assert.equal(sample.cpu.powerW, 63.4);
+    assert.equal(sample.memory.temperatureC, 34.5);
+    assert.equal(sample.sources.sensors, "sensors-helper");
+    assert.equal(lhmCalls, 0, "the helper file must short-circuit the web server probe");
+    assert.deepEqual(sample.hints, []);
+});
+
+test("a stale helper file is ignored: LHM wins, or the hint says the helper stopped", async () => {
+    const staleRead = async () =>
+        helperSnapshot({ sampledAt: new Date(HELPER_NOW - 60_000).toISOString() });
+
+    const withLhm = await helperMetrics({
+        readFile: staleRead,
+        fetch: async () => ({ ok: true, json: async () => lhmAmdTree }),
+    }).sample();
+    assert.equal(withLhm.cpu.temperatureC, 45.3);
+    assert.equal(withLhm.cpu.powerW, 65.2);
+    assert.equal(withLhm.sources.sensors, "librehardwaremonitor");
+    assert.deepEqual(withLhm.hints, []);
+
+    const withoutAny = await helperMetrics({ readFile: staleRead }).sample();
+    assert.equal(withoutAny.cpu.temperatureC, null);
+    assert.equal(withoutAny.sources.sensors, null);
+    assert.match(withoutAny.hints[0], /no está corriendo/);
+    assert.match(withoutAny.hints[0], /install-sensors-helper\.ps1/);
+    assert.match(withoutAny.hints[0], /LibreHardwareMonitor/);
+});
+
+test("a malformed helper file is ignored like a missing one", async () => {
+    const sample = await helperMetrics({
+        readFile: async () => "{ this is not json",
+    }).sample();
+
+    assert.equal(sample.cpu.temperatureC, null);
+    assert.equal(sample.cpu.powerW, null);
+    assert.equal(sample.memory.temperatureC, null);
+    assert.equal(sample.sources.sensors, null);
+    assert.match(sample.hints[0], /install-sensors-helper\.ps1/);
+});
+
+test("helper nulls stay null instead of becoming zero", async () => {
+    const sample = await helperMetrics({
+        readFile: async () =>
+            helperSnapshot({ cpuTemperatureC: null, cpuPowerW: null, memoryTemperatureC: null }),
+    }).sample();
+
+    assert.equal(sample.cpu.temperatureC, null);
+    assert.equal(sample.cpu.powerW, null);
+    assert.equal(sample.memory.temperatureC, null);
+    // A fresh helper file still owns the source even when it cannot read the
+    // sensors (installed but not elevated, for example).
+    assert.equal(sample.sources.sensors, "sensors-helper");
+    assert.deepEqual(sample.hints, []);
+});
+
+test("the no-source hint names the installer and the LHM alternative", async () => {
+    const sample = await helperMetrics({ readFile: unusableSources().readFile }).sample();
+
+    assert.equal(sample.sources.sensors, null);
+    assert.equal(sample.hints.length, 1);
+    assert.match(sample.hints[0], /idupi-server\\scripts\\install-sensors-helper\.ps1/);
+    assert.match(sample.hints[0], /LibreHardwareMonitor/);
+});
+
 test("concurrent pollers share one sample inside the cache window", async () => {
     let clock = 1_000_000;
     let nvidiaCalls = 0;
@@ -320,6 +451,11 @@ test("concurrent pollers share one sample inside the cache window", async () => 
         },
         fetch: async () => {
             throw new Error("ECONNREFUSED");
+        },
+        readFile: async () => {
+            const error = new Error("ENOENT: sensors.json");
+            error.code = "ENOENT";
+            throw error;
         },
         sleep: async () => {},
         now: () => clock,
