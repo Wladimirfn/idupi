@@ -402,6 +402,7 @@ export function createSystemMetrics({
     let cached = null;
     let inFlight = null;
     let cimCache = null;
+    let cimRefresh = null;
 
     async function readCpu() {
         const cpus = osImpl.cpus();
@@ -527,6 +528,20 @@ export function createSystemMetrics({
     async function readCimDisks() {
         const at = now();
         if (cimCache && at - cimCache.at < DISK_CIM_CACHE_MS) return cimCache.entries;
+        // Stale-while-revalidate: the CIM query takes ~3 s, which would stall
+        // one dashboard poll every minute. Once there is a cached answer, serve
+        // it and refresh in the background (one refresh in flight at a time).
+        if (cimCache) {
+            if (!cimRefresh) {
+                cimRefresh = queryCimDisks().finally(() => { cimRefresh = null; });
+            }
+            return cimCache.entries;
+        }
+        return queryCimDisks();
+    }
+
+    async function queryCimDisks() {
+        const at = now();
         let entries = null;
         try {
             const { stdout } = await execFile(

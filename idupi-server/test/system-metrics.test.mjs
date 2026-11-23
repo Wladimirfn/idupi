@@ -490,6 +490,57 @@ test("the CIM disk metadata query is cached for a minute", async () => {
     assert.equal(cimCalls, 2);
 });
 
+test("an expired CIM cache is served stale while it refreshes in the background", async () => {
+    let clock = 1_000_000;
+    let cimCalls = 0;
+    let releaseRefresh;
+    const metrics = createSystemMetrics({
+        os: fakeOs({
+            snapshots: [
+                [cpuTimes({ user: 10, sys: 10, idle: 80 })],
+                [cpuTimes({ user: 20, sys: 20, idle: 160 })],
+                [cpuTimes({ user: 30, sys: 30, idle: 240 })],
+                [cpuTimes({ user: 40, sys: 40, idle: 320 })],
+            ],
+        }),
+        execFile: async (file) => {
+            if (file === "nvidia-smi") {
+                const error = new Error("spawn nvidia-smi ENOENT");
+                error.code = "ENOENT";
+                throw error;
+            }
+            cimCalls++;
+            // The second (background) query never settles until released: a
+            // sample that awaited it would hang this test.
+            if (cimCalls === 2) await new Promise((resolve) => { releaseRefresh = resolve; });
+            return { stdout: CIM_ONE_DISK };
+        },
+        fetch: async () => {
+            throw new Error("ECONNREFUSED");
+        },
+        readFile: async () => {
+            const error = new Error("ENOENT: sensors.json");
+            error.code = "ENOENT";
+            throw error;
+        },
+        statfs: async () => statfsFor(500 * GIB, 100 * GIB),
+        sleep: async () => {},
+        now: () => clock,
+        cacheMs: 1500,
+    });
+
+    await metrics.sample();
+    clock += 61_000;
+    const stale = await metrics.sample();
+    assert.equal(cimCalls, 2, "the expired cache started one background refresh");
+    assert.equal(stale.disks.length, 1, "the stale disk list is served meanwhile");
+
+    clock += 2000;
+    await metrics.sample();
+    assert.equal(cimCalls, 2, "no second refresh while one is in flight");
+    releaseRefresh();
+});
+
 // --- sampler ---------------------------------------------------------------
 
 test("sample composes cpu, memory and GPU values from the injected sources", async () => {
