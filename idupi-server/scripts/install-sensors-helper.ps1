@@ -119,6 +119,10 @@ function Set-RestrictedAcl {
     foreach ($rule in @($acl.Access)) {
         [void]$acl.RemoveAccessRuleSpecific($rule)
     }
+    # The owner can always re-ACL the object, so a file pre-created by a normal
+    # user would keep control even after the DACL is replaced. Administrators
+    # must own it before the install writes anything under ProgramData.
+    $acl.SetOwner((Resolve-Account "S-1-5-32-544"))
 
     $inheritance = "None"
     if ($IsDirectory) { $inheritance = "ContainerInherit, ObjectInherit" }
@@ -154,6 +158,30 @@ function New-ScratchDir {
     return $dir
 }
 
+function Assert-NotReparsePoint {
+    param([string]$Path, [string]$Label)
+
+    # A junction or symlink pre-created at one of the install paths would make
+    # Set-Acl and every elevated write land wherever the attacker points, so
+    # the install refuses to touch it instead of following it.
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction SilentlyContinue
+    if ($null -eq $item) { return }
+    if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw ("{0} es un punto de reanálisis (junction o symlink): {1}. No se instala nada para no escribir fuera de %ProgramData%\IDUPI." -f $Label, $Path)
+    }
+}
+
+function Reset-InstallerStageDir {
+    # Recreated fresh on every run: a leftover folder can be pre-created (and
+    # owned) by a normal user, so the DACL and owner are applied to a directory
+    # this elevated run created itself.
+    if (Test-Path -LiteralPath $InstallerStageDir) {
+        Remove-Item -LiteralPath $InstallerStageDir -Recurse -Force
+    }
+    [void][System.IO.Directory]::CreateDirectory($InstallerStageDir)
+    Set-RestrictedAcl -Path $InstallerStageDir -IsDirectory $true
+}
+
 function Assert-FileHash {
     param([string]$Path, [string]$ExpectedSha256, [string]$Label)
 
@@ -179,10 +207,14 @@ function Get-TrustedStagedFile {
     # again before an elevated process runs or extracts it: no time-of-check /
     # time-of-use window between verification and execution.
     if (-not (Test-Path -LiteralPath $InstallerStageDir)) {
-        [void][System.IO.Directory]::CreateDirectory($InstallerStageDir)
+        throw ("No existe la carpeta de staging {0}; se recrea al iniciar la instalación." -f $InstallerStageDir)
     }
     $staged = Join-Path $InstallerStageDir $FileName
     Copy-Item -LiteralPath $Source -Destination $staged -Force
+    # Lock the staged copy BEFORE the hash/signature verification and the
+    # elevated execution: from here on only Administrators and SYSTEM can
+    # replace the bytes that get verified.
+    Set-RestrictedAcl -Path $staged -IsDirectory $false
     return $staged
 }
 
@@ -407,6 +439,13 @@ if (-not $IsAdmin) {
 }
 
 if ($Uninstall) {
+    # Uninstall deletes these paths recursively; a pre-created junction would
+    # send the deletion into its target. Refuse instead of following it.
+    Assert-NotReparsePoint -Path $ProgramDataDir -Label "%ProgramData%\IDUPI"
+    Assert-NotReparsePoint -Path $LhmDir -Label "%ProgramData%\IDUPI\lhm"
+    Assert-NotReparsePoint -Path $InstallerStageDir -Label "%ProgramData%\IDUPI\installers"
+    Assert-NotReparsePoint -Path $InstalledScript -Label "el script instalado (sensors-helper.ps1)"
+
     $removed = $false
     if ($hasScheduledTasksModule) {
         try {
@@ -470,6 +509,13 @@ if (-not $Manifest.lhm -or -not $Manifest.pawnio -or -not $Manifest.lhm.files) {
     exit 1
 }
 
+# Refuse to touch anything a normal user might have pre-created as a junction or
+# symlink: Set-Acl follows reparse points, and so does every elevated write.
+Assert-NotReparsePoint -Path $ProgramDataDir -Label "%ProgramData%\IDUPI"
+Assert-NotReparsePoint -Path $LhmDir -Label "%ProgramData%\IDUPI\lhm"
+Assert-NotReparsePoint -Path $InstallerStageDir -Label "%ProgramData%\IDUPI\installers"
+Assert-NotReparsePoint -Path $InstalledScript -Label "el script instalado (sensors-helper.ps1)"
+
 # Stop the running task first: its process holds LibreHardwareMonitorLib.dll open
 # and the pinned library may need replacement.
 Stop-SensorsTask
@@ -481,6 +527,7 @@ if (-not (Test-Path -LiteralPath $ProgramDataDir)) {
     [void][System.IO.Directory]::CreateDirectory($ProgramDataDir)
 }
 Set-RestrictedAcl -Path $ProgramDataDir -IsDirectory $true
+Reset-InstallerStageDir
 
 try {
     Install-PawnIo
