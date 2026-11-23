@@ -61,6 +61,7 @@ fun AppNavigation() {
     val ptyTerminalViewModel: PtyTerminalViewModel = viewModel()
     val remoteViewModel: RemoteScreenViewModel = viewModel()
     val deliveriesViewModel: DeliveriesViewModel = viewModel()
+    val dashboardViewModel: DashboardViewModel = viewModel()
 
     // Interactive terminal target chosen from the Terminals screen. The
     // Terminals screen creates the PTY first and passes its id; null would
@@ -250,7 +251,8 @@ fun AppNavigation() {
                     ) {
                         when (targetScreen) {
                             Screen.DASHBOARD -> DashboardScreen(
-                                viewModel = mainViewModel,
+                                mainViewModel = mainViewModel,
+                                viewModel = dashboardViewModel,
                                 onMenuClick = { scope.launch { drawerState.open() } }
                             )
                             Screen.TERMINALS -> TerminalsScreen(

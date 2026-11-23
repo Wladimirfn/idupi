@@ -428,6 +428,9 @@ class RealIduPiClient : IduPiClient {
     override suspend fun listDeliveries(): List<DeliveryInfo> =
         send(HttpMethod.Get, "/api/v1/deliveries").body<DeliveryListResponse>().deliveries
 
+    override suspend fun getSystemMetrics(): SystemMetrics =
+        send(HttpMethod.Get, "/api/v1/system/metrics").body()
+
     /**
      * Raw APK bytes over the chunked-response pattern: the caller writes each
      * chunk straight into the PackageInstaller session, so neither side ever

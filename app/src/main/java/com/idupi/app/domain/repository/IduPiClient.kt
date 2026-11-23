@@ -69,6 +69,13 @@ interface IduPiClient {
     suspend fun listDeliveries(): List<DeliveryInfo>
 
     /**
+     * Live PC metrics for the Dashboard: CPU/RAM usage, GPU via nvidia-smi and
+     * optional CPU temperature/power from LibreHardwareMonitor. Every sensor
+     * may be null; the server never fabricates a reading.
+     */
+    suspend fun getSystemMetrics(): SystemMetrics
+
+    /**
      * Streams one delivery's APK bytes. Chunked like [ptyStream] so the
      * installer can write straight into a PackageInstaller session instead of
      * buffering the whole APK in memory.

@@ -355,6 +355,24 @@ class FakeIduPiClient : IduPiClient {
         return deleteDeliveryResult
     }
 
+    // --- Dashboard metrics ---
+
+    var metricsToReturn: com.idupi.app.domain.model.SystemMetrics =
+        com.idupi.app.domain.model.SystemMetrics()
+
+    /** When non-null, [getSystemMetrics] throws this while still counting the call. */
+    var failMetricsWith: Exception? = null
+
+    /** Counts attempts, including failed ones, so polling tests can assert cadence. */
+    var getSystemMetricsCalls: Int = 0
+
+    override suspend fun getSystemMetrics(): com.idupi.app.domain.model.SystemMetrics {
+        maybeFail()
+        getSystemMetricsCalls++
+        failMetricsWith?.let { throw it }
+        return metricsToReturn
+    }
+
     override fun connectChat(): Flow<ChatEvent> = chatEvents.asSharedFlow()
 
     override suspend fun sendMessage(message: String) {
