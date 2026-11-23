@@ -67,6 +67,10 @@ fun PtyExtraKeysBar(
         ) {
             KeyChip(label = "Esc") { onKey(VT_ESC) }
             KeyChip(label = "Tab") { onKey(VT_TAB) }
+            // Back-tab: Claude Code cycles its modes with it, TUIs move focus back.
+            KeyChip(label = "⇧Tab") { onKey(VT_BACKTAB) }
+            // Direct interrupt, so stopping a run does not need a Ctrl chord.
+            KeyChip(label = "^C") { onKey(VT_INTERRUPT) }
             KeyChip(label = "Ctrl", armed = ctrlArmed, onClick = onCtrlToggle)
             KeyChip(label = "Alt", armed = altArmed, onClick = onAltToggle)
             KeyChip(label = "←") { onKey(VT_LEFT) }
@@ -128,6 +132,8 @@ private fun KeyChip(
 // VT100/xterm sequences. Fixed strings, not locale- or keyboard-dependent.
 const val VT_ESC: String = "\u001b"
 const val VT_TAB: String = "\t"
+const val VT_BACKTAB: String = "\u001b[Z"
+const val VT_INTERRUPT: String = "\u0003"
 const val VT_UP: String = "\u001b[A"
 const val VT_DOWN: String = "\u001b[B"
 const val VT_RIGHT: String = "\u001b[C"

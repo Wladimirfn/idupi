@@ -1,7 +1,11 @@
 package com.idupi.app.ui.components
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.os.Handler
+import android.text.InputType
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputConnection
 import android.os.Looper
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
@@ -97,7 +101,7 @@ fun PtyTerminalView(
                 resizeHandler = { cols, rows -> mainHandler.post { onResize(cols, rows) } },
                 modifiersConsumedHandler = { mainHandler.post { onModifiersConsumed() } }
             )
-            WebView(context).apply {
+            TerminalWebView(context).apply {
                 // WRAP_CONTENT (the default) lets the page viewport collapse to
                 // its content height, so xterm would fit a single row.
                 layoutParams = ViewGroup.LayoutParams(
@@ -134,3 +138,27 @@ fun PtyTerminalView(
 }
 
 private const val BRIDGE_NAME = "AndroidBridge"
+
+/**
+ * WebView whose soft keyboard behaves like a terminal's.
+ *
+ * By default Gboard and friends treat xterm's hidden textarea as prose: they
+ * compose whole words, autocorrect and capitalize, then replace the composed
+ * text on space -- which reaches the PTY as late, duplicated or rewritten
+ * input. Declaring a no-suggestions "visible password" field makes the IME
+ * commit every key immediately (the approach Termux uses), and opting out of
+ * personalized learning keeps typed commands and secrets out of the
+ * keyboard's dictionary.
+ */
+private class TerminalWebView(context: Context) : WebView(context) {
+    override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
+        val connection = super.onCreateInputConnection(outAttrs)
+        outAttrs.inputType = InputType.TYPE_CLASS_TEXT or
+            InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or
+            InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        outAttrs.imeOptions = outAttrs.imeOptions or
+            EditorInfo.IME_FLAG_NO_FULLSCREEN or
+            EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
+        return connection
+    }
+}

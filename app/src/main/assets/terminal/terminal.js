@@ -109,9 +109,34 @@
     if (!fitAddon) return;
     try {
       fitAddon.fit();
+      centerHorizontally();
     } catch (e) {
       /* The view can be detached for a frame while the WebView is recreated. */
     }
+  }
+
+  // The grid is a whole number of cells, so up to one cell of width is left
+  // over; split it evenly instead of leaving it all on the right edge.
+  // Reads xterm 5.5.0 internals (vendored, pinned); a missing field is a no-op.
+  function centerHorizontally() {
+    var core = term && term._core;
+    var dims = core && core._renderService && core._renderService.dimensions;
+    var cell = dims && dims.css && dims.css.cell && dims.css.cell.width;
+    var parent = term && term.element && term.element.parentElement;
+    if (!cell || !parent) return;
+    var spare = parent.clientWidth - term.cols * cell;
+    term.element.style.marginLeft = Math.max(0, Math.floor(spare / 2)) + "px";
+  }
+
+  // Soft keyboards must not autocorrect, capitalize or suggest: a terminal
+  // needs every key as typed, not a composed word replaced on space.
+  function hardenTextarea() {
+    var textarea = term && term.textarea;
+    if (!textarea) return;
+    textarea.setAttribute("autocomplete", "off");
+    textarea.setAttribute("autocorrect", "off");
+    textarea.setAttribute("autocapitalize", "off");
+    textarea.setAttribute("spellcheck", "false");
   }
 
   function createTerminal() {
@@ -127,6 +152,7 @@
     fitAddon = new FitAddon.FitAddon();
     term.loadAddon(fitAddon);
     term.open(document.getElementById("terminal"));
+    hardenTextarea();
     fit();
 
     term.onData(function (data) {
