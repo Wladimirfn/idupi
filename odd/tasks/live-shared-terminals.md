@@ -37,9 +37,9 @@ chat, SDD orchestrator and labs use cases; this feature makes it the primary sur
 
 ## Tasks
 
-- [ ] T1 Server independence: start script, autostart at logon, gitignore logs.
-- [ ] T2 Browser view at `/terminal` (loopback-only static route + page + tests).
-- [ ] T3 `idupi-term` CLI for Windows Terminal (ls/new/attach/web + tests for pure parts).
+- [x] T1 Server independence: start script, autostart at logon, gitignore logs.
+- [x] T2 Browser view at `/terminal` (loopback-only static route + page + tests).
+- [x] T3 `idupi-term` CLI for Windows Terminal (ls/new/attach/web + tests for pure parts).
 - [ ] T4 Live test with the owner (phone + PC on the same PTY, both directions); decide A vs B.
 
 ## Acceptance criteria
@@ -64,7 +64,10 @@ chat, SDD orchestrator and labs use cases; this feature makes it the primary sur
 
 | Task | Commit | Checks |
 |------|--------|--------|
+| T1 | 8de0db4 (gitignore), b670923 | start-server.ps1 no-op when listening (observed), -Restart tree-killed node and relaunched (PID 10040, listening); both scripts parse with 0 errors; UTF-8 BOM fixes PS 5.1 accents; Startup shortcut installed and read back. |
+| T2 | 83bff8f | Writer idu-pi work-1 (opencode/deepseek-v4.1-flash). Worker: 45/45 + 16/16 pipeline tests, headless smoke on ephemeral port. Parent: 24/24 rerun; live on :8788: /terminal/ 200, app.js 200, vendor 200, `/terminal/../index.mjs` 401 (normalized, falls to auth), /api/v1/pty 401, LAN 192.168.1.6 /terminal/ 403. ~1300 lines (page UI) -> size:exception note for PR-D. |
+| T3 | db7a73e | Writer idu-pi work-1. Worker: 35/35 (term-cli 17 incl. 4 integration vs fake PTY API). Parent: 17/17 rerun; `idupi-term ls` against real server OK. `idupi-server/bin` added to user PATH. Note: CLI reads IDUPI_PORT, server reads PORT (default 8788 matches). |
 
 ## Next step
 
-T1 inline (scripts), then T2 delegated to idu-pi work-1.
+T4: owner live test (phone + browser + idupi-term on one PTY), then keep the best PC view.
