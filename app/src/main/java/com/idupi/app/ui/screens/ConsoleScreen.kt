@@ -1,29 +1,71 @@
 package com.idupi.app.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.SearchOff
+import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.SmartToy
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Subject
+import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.ViewList
+import androidx.compose.material.icons.filled.Widgets
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -32,9 +74,22 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.idupi.app.domain.model.PtyInfo
 import com.idupi.app.domain.repository.TerminalSessionItem
-import com.idupi.app.ui.theme.*
+import com.idupi.app.ui.theme.AppShapes
+import com.idupi.app.ui.theme.AppSpacing
+import com.idupi.app.ui.theme.AppTypography
+import com.idupi.app.ui.theme.AccentPurple
+import com.idupi.app.ui.theme.IDUPITheme
+import com.idupi.app.ui.theme.PrimaryIndigo
+import com.idupi.app.ui.theme.SlateBg
+import com.idupi.app.ui.theme.SlateBorder
+import com.idupi.app.ui.theme.SlateCard
+import com.idupi.app.ui.theme.StatusConnected
+import com.idupi.app.ui.theme.StatusError
+import com.idupi.app.ui.theme.StatusTerminal
+import com.idupi.app.ui.theme.StatusWorking
+import com.idupi.app.ui.theme.TextPrimary
+import com.idupi.app.ui.theme.TextSecondary
 import com.idupi.app.viewmodel.ConsoleViewModel
 
 // Type filter tabs
@@ -45,26 +100,24 @@ private enum class TerminalFilter(val label: String, val icon: ImageVector) {
     SHELL("Shells", Icons.Default.Terminal)
 }
 
+/**
+ * "Procesos": the log-stream processes (agents, servers, shells) the PC server
+ * exposes. The process list is the main content; the live log and command
+ * input live behind the log toggle in the app bar.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ConsoleScreen(
     viewModel: ConsoleViewModel,
-    onMenuClick: () -> Unit,
-    onOpenPtyTerminal: (String?) -> Unit,
-    onOpenDeliveries: () -> Unit
+    onMenuClick: () -> Unit
 ) {
     val logs by viewModel.logs.collectAsState()
     val terminals by viewModel.terminals.collectAsState()
     val selectedTerminalId by viewModel.selectedTerminalId.collectAsState()
     val isExecuting by viewModel.isExecuting.collectAsState()
-    val activeTask by viewModel.activeTask.collectAsState()
-    val interactivePtys by viewModel.interactivePtys.collectAsState()
 
     var commandInput by remember { mutableStateOf("") }
-    val listState = rememberLazyListState()
-
-    // Right-side drawer visibility
-    var showTerminalDrawer by remember { mutableStateOf(false) }
+    var showLogs by remember { mutableStateOf(false) }
 
     // Type filter
     var activeFilter by remember { mutableStateOf(TerminalFilter.ALL) }
@@ -72,13 +125,13 @@ fun ConsoleScreen(
     // Auto-refresh and live polling
     DisposableEffect(Unit) {
         viewModel.refreshTerminals()
-        viewModel.refreshInteractivePtys()
         viewModel.startPolling()
         onDispose {
             viewModel.stopPolling()
         }
     }
 
+    val listState = rememberLazyListState()
     LaunchedEffect(logs.size) {
         if (logs.isNotEmpty()) {
             listState.animateScrollToItem(logs.size - 1)
@@ -98,179 +151,96 @@ fun ConsoleScreen(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        // Main content
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = {
-                        Column(modifier = Modifier.padding(end = 8.dp)) {
-                            Text(
-                                "Terminal CLI",
-                                style = AppTypography.appBarTitle,
-                                color = TextPrimary
-                            )
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(6.dp)
-                                        .clip(CircleShape)
-                                        .background(
-                                            if (selectedTerminal?.status == "running")
-                                                StatusConnected else StatusError
-                                        )
-                                )
-                                Text(
-                                    text = selectedTerminal?.name ?: "Sin selección",
-                                    style = AppTypography.labelSmall,
-                                    color = TextSecondary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-                            }
-                        }
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = onMenuClick) {
-                            Icon(
-                                imageVector = Icons.Default.Menu,
-                                contentDescription = "Menú",
-                                tint = TextPrimary
-                            )
-                        }
-                    },
-                    actions = {
-                        // Terminal count badge
-                        BadgedBox(
-                            badge = {
-                                if (terminals.isNotEmpty()) {
-                                    Badge(
-                                        containerColor = PrimaryIndigo,
-                                        contentColor = Color.White
-                                    ) {
-                                        Text(
-                                            terminals.size.toString(),
-                                            fontSize = 10.sp
-                                        )
-                                    }
-                                }
-                            }
-                        ) {
-                            IconButton(onClick = { showTerminalDrawer = !showTerminalDrawer }) {
-                                Icon(
-                                    imageVector = Icons.Default.ViewList,
-                                    contentDescription = "Ver Procesos",
-                                    tint = if (showTerminalDrawer) PrimaryIndigo else TextPrimary
-                                )
-                            }
-                        }
-                        IconButton(onClick = {
-                            viewModel.refreshTerminals()
-                            viewModel.refreshInteractivePtys()
-                        }) {
-                            Icon(
-                                imageVector = Icons.Default.Refresh,
-                                contentDescription = "Refrescar",
-                                tint = TextPrimary
-                            )
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = SlateCard)
-                )
-            },
-            containerColor = SlateBg
-        ) { paddingValues ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(paddingValues)
-                    .padding(horizontal = AppSpacing.md, vertical = AppSpacing.sm),
-                verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
-            ) {
-                // Interactive PTY terminals (xterm.js over ConPTY): a real TUI
-                // on the phone, unlike the ANSI-stripped log stream below.
-                InteractiveTerminalSection(
-                    ptys = interactivePtys,
-                    onOpenNew = { onOpenPtyTerminal(null) },
-                    onAttach = { id -> onOpenPtyTerminal(id) }
-                )
-
-                // Shortcut to the APK deliveries pushed from the PC: the
-                // notification lands here too, this card is for when the
-                // owner is already in the console.
-                DeliveriesShortcutCard(onOpen = onOpenDeliveries)
-
-                // Selected terminal info card (compact)
-                selectedTerminal?.let { term ->
-                    Surface(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = AppShapes.card,
-                        color = SlateCard,
-                        border = androidx.compose.foundation.BorderStroke(1.dp, SlateBorder)
-                    ) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column(modifier = Modifier.padding(end = 8.dp)) {
+                        Text(
+                            "Procesos",
+                            style = AppTypography.appBarTitle,
+                            color = TextPrimary
+                        )
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = AppSpacing.md, vertical = AppSpacing.sm),
                             verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(
-                                    imageVector = terminalIcon(term.type),
-                                    contentDescription = null,
-                                    tint = PrimaryIndigo,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Column {
-                                    Text(
-                                        text = term.name,
-                                        style = AppTypography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-                                        color = TextPrimary,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (selectedTerminal?.status == "running")
+                                            StatusConnected else StatusError
                                     )
-                                    Text(
-                                        text = "PID: ${term.pid} · ${term.type}",
-                                        style = AppTypography.labelSmall,
-                                        color = TextSecondary
-                                    )
-                                }
-                            }
-                            // Quick actions for selected terminal
-                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                IconButton(
-                                    onClick = { viewModel.restartServer() },
-                                    modifier = Modifier.size(32.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Default.RestartAlt,
-                                        contentDescription = "Reiniciar",
-                                        tint = StatusWorking,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                                IconButton(
-                                    onClick = { viewModel.cancelTask() },
-                                    modifier = Modifier.size(32.dp)
-                                ) {
-                                    Icon(
-                                        Icons.Default.Stop,
-                                        contentDescription = "Detener",
-                                        tint = StatusError,
-                                        modifier = Modifier.size(18.dp)
-                                    )
-                                }
-                            }
+                            )
+                            Text(
+                                text = if (showLogs) {
+                                    selectedTerminal?.name ?: "Sin selección"
+                                } else {
+                                    "${terminals.size} en tu PC"
+                                },
+                                style = AppTypography.labelSmall,
+                                color = TextSecondary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
                         }
                     }
+                },
+                navigationIcon = {
+                    IconButton(onClick = onMenuClick) {
+                        Icon(
+                            imageVector = Icons.Default.Menu,
+                            contentDescription = "Menú",
+                            tint = TextPrimary
+                        )
+                    }
+                },
+                actions = {
+                    // Spawns a log-stream shell (not an interactive PTY: those
+                    // live in their own screen).
+                    IconButton(onClick = { viewModel.spawnNewTerminal() }) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = "Nueva shell",
+                            tint = TextPrimary
+                        )
+                    }
+                    IconButton(onClick = { viewModel.refreshTerminals() }) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Refrescar",
+                            tint = TextPrimary
+                        )
+                    }
+                    IconButton(onClick = { showLogs = !showLogs }) {
+                        Icon(
+                            imageVector = if (showLogs) Icons.Default.ViewList else Icons.Default.Subject,
+                            contentDescription = if (showLogs) "Ver procesos" else "Ver logs",
+                            tint = if (showLogs) PrimaryIndigo else TextPrimary
+                        )
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = SlateCard)
+            )
+        },
+        containerColor = SlateBg
+    ) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .padding(horizontal = AppSpacing.md, vertical = AppSpacing.sm),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+        ) {
+            if (showLogs) {
+                if (selectedTerminal != null) {
+                    SelectedProcessCard(
+                        terminal = selectedTerminal,
+                        onRestart = { viewModel.restartTerminal(selectedTerminal.id) },
+                        onStop = { viewModel.cancelTask() }
+                    )
                 }
 
                 // Console output area
@@ -434,23 +404,8 @@ fun ConsoleScreen(
                         Text("Limpiar", style = AppTypography.labelSmall.copy(fontWeight = FontWeight.SemiBold))
                     }
 
-                    Button(
-                        onClick = { viewModel.spawnNewTerminal() },
-                        modifier = Modifier.weight(1f),
-                        shape = AppShapes.button,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = PrimaryIndigo,
-                            contentColor = Color.White
-                        ),
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(14.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Nueva Shell", style = AppTypography.labelSmall.copy(fontWeight = FontWeight.SemiBold))
-                    }
-
                     OutlinedButton(
-                        onClick = { showTerminalDrawer = true },
+                        onClick = { showLogs = false },
                         modifier = Modifier.weight(1f),
                         shape = AppShapes.button,
                         border = androidx.compose.foundation.BorderStroke(1.dp, PrimaryIndigo.copy(alpha = 0.5f)),
@@ -462,405 +417,98 @@ fun ConsoleScreen(
                         Text("Procesos", style = AppTypography.labelSmall.copy(fontWeight = FontWeight.SemiBold))
                     }
                 }
-            }
-        }
-
-        // Right-side terminal/process drawer overlay
-        AnimatedVisibility(
-            visible = showTerminalDrawer,
-            enter = slideInHorizontally(initialOffsetX = { it }),
-            exit = slideOutHorizontally(targetOffsetX = { it })
-        ) {
-            Row(modifier = Modifier.fillMaxSize()) {
-                // Scrim — tap to close
-                Box(
-                    modifier = Modifier
-                        .weight(0.15f)
-                        .fillMaxHeight()
-                        .background(Color.Black.copy(alpha = 0.5f))
-                        .clickable { showTerminalDrawer = false }
-                )
-
-                // Drawer content
-                Surface(
-                    modifier = Modifier
-                        .weight(0.85f)
-                        .fillMaxHeight(),
-                    color = SlateCard,
-                    shape = RoundedCornerShape(topStart = 20.dp, bottomStart = 20.dp),
-                    shadowElevation = 16.dp,
-                    border = androidx.compose.foundation.BorderStroke(1.dp, SlateBorder)
+            } else {
+                // Filter tabs
+                ScrollableTabRow(
+                    selectedTabIndex = TerminalFilter.values().indexOf(activeFilter),
+                    modifier = Modifier.fillMaxWidth(),
+                    containerColor = Color.Transparent,
+                    contentColor = PrimaryIndigo,
+                    edgePadding = AppSpacing.sm,
+                    divider = {
+                        HorizontalDivider(color = SlateBorder, thickness = 0.5.dp)
+                    }
                 ) {
-                    Column(modifier = Modifier.fillMaxSize()) {
-                        // Drawer header
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(
-                                    Brush.horizontalGradient(
-                                        listOf(
-                                            IDUPITheme.colors.gradientIndigo.copy(alpha = 0.3f),
-                                            IDUPITheme.colors.gradientPurple.copy(alpha = 0.15f)
-                                        )
-                                    )
-                                )
-                                .padding(horizontal = AppSpacing.lg, vertical = AppSpacing.md)
+                    TerminalFilter.values().forEach { filter ->
+                        val count = when (filter) {
+                            TerminalFilter.ALL -> terminals.size
+                            TerminalFilter.AGENT -> terminals.count { it.type == "agent" }
+                            TerminalFilter.SERVER -> terminals.count { it.type == "server" }
+                            TerminalFilter.SHELL -> terminals.count { it.type == "shell" }
+                        }
+                        Tab(
+                            selected = activeFilter == filter,
+                            onClick = { activeFilter = filter },
+                            modifier = Modifier.height(44.dp)
                         ) {
                             Row(
-                                modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                horizontalArrangement = Arrangement.spacedBy(4.dp)
                             ) {
-                                Column {
-                                    Text(
-                                        "Procesos de tu PC",
-                                        style = AppTypography.bodySmall.copy(
-                                            fontWeight = FontWeight.Bold,
-                                            fontSize = 15.sp
-                                        ),
-                                        color = TextPrimary
-                                    )
-                                    Text(
-                                        "${terminals.size} detectados",
-                                        style = AppTypography.labelSmall,
-                                        color = TextSecondary
-                                    )
-                                }
-                                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                    IconButton(
-                                        onClick = { viewModel.refreshTerminals() },
-                                        modifier = Modifier.size(36.dp)
-                                    ) {
-                                        Icon(
-                                            Icons.Default.Refresh,
-                                            contentDescription = "Refrescar",
-                                            tint = TextSecondary,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
-                                    IconButton(
-                                        onClick = { showTerminalDrawer = false },
-                                        modifier = Modifier.size(36.dp)
-                                    ) {
-                                        Icon(
-                                            Icons.Default.Close,
-                                            contentDescription = "Cerrar",
-                                            tint = TextSecondary,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        // Filter tabs
-                        ScrollableTabRow(
-                            selectedTabIndex = TerminalFilter.values().indexOf(activeFilter),
-                            modifier = Modifier.fillMaxWidth(),
-                            containerColor = Color.Transparent,
-                            contentColor = PrimaryIndigo,
-                            edgePadding = AppSpacing.sm,
-                            divider = {
-                                HorizontalDivider(color = SlateBorder, thickness = 0.5.dp)
-                            }
-                        ) {
-                            TerminalFilter.values().forEach { filter ->
-                                val count = when (filter) {
-                                    TerminalFilter.ALL -> terminals.size
-                                    TerminalFilter.AGENT -> terminals.count { it.type == "agent" }
-                                    TerminalFilter.SERVER -> terminals.count { it.type == "server" }
-                                    TerminalFilter.SHELL -> terminals.count { it.type == "shell" }
-                                }
-                                Tab(
-                                    selected = activeFilter == filter,
-                                    onClick = { activeFilter = filter },
-                                    modifier = Modifier.height(44.dp)
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                                    ) {
-                                        Icon(
-                                            filter.icon,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(14.dp),
-                                            tint = if (activeFilter == filter) PrimaryIndigo else TextSecondary
-                                        )
-                                        Text(
-                                            "${filter.label} ($count)",
-                                            style = AppTypography.labelSmall.copy(
-                                                fontWeight = if (activeFilter == filter) FontWeight.Bold else FontWeight.Normal,
-                                                fontSize = 11.sp
-                                            ),
-                                            color = if (activeFilter == filter) PrimaryIndigo else TextSecondary
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        // Vertical terminal list
-                        if (filteredTerminals.isEmpty()) {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
-                                ) {
-                                    Icon(
-                                        Icons.Default.SearchOff,
-                                        contentDescription = null,
-                                        tint = TextSecondary.copy(alpha = 0.4f),
-                                        modifier = Modifier.size(36.dp)
-                                    )
-                                    Text(
-                                        "Sin procesos de tipo\n\"${activeFilter.label}\"",
-                                        style = AppTypography.labelSmall,
-                                        color = TextSecondary.copy(alpha = 0.6f),
-                                        textAlign = TextAlign.Center
-                                    )
-                                }
-                            }
-                        } else {
-                            LazyColumn(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .weight(1f),
-                                contentPadding = PaddingValues(
-                                    horizontal = AppSpacing.sm,
-                                    vertical = AppSpacing.sm
-                                ),
-                                verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
-                            ) {
-                                items(filteredTerminals, key = { it.id }) { term ->
-                                    TerminalListItem(
-                                        terminal = term,
-                                        isSelected = term.id == selectedTerminalId,
-                                        onClick = {
-                                            viewModel.selectTerminal(term.id)
-                                            showTerminalDrawer = false
-                                        }
-                                    )
-                                }
-                            }
-                        }
-
-                        // Drawer footer — new shell button
-                        Surface(
-                            modifier = Modifier.fillMaxWidth(),
-                            color = SlateBg,
-                            border = androidx.compose.foundation.BorderStroke(
-                                width = 0.5.dp,
-                                color = SlateBorder
-                            )
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(AppSpacing.sm),
-                                horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm)
-                            ) {
-                                Button(
-                                    onClick = {
-                                        viewModel.spawnNewTerminal()
-                                        showTerminalDrawer = false
-                                    },
-                                    modifier = Modifier.weight(1f),
-                                    shape = AppShapes.button,
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = PrimaryIndigo,
-                                        contentColor = Color.White
+                                Icon(
+                                    filter.icon,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp),
+                                    tint = if (activeFilter == filter) PrimaryIndigo else TextSecondary
+                                )
+                                Text(
+                                    "${filter.label} ($count)",
+                                    style = AppTypography.labelSmall.copy(
+                                        fontWeight = if (activeFilter == filter) FontWeight.Bold else FontWeight.Normal,
+                                        fontSize = 11.sp
                                     ),
-                                    contentPadding = PaddingValues(vertical = 10.dp)
-                                ) {
-                                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        "Abrir Nueva Shell",
-                                        style = AppTypography.labelSmall.copy(fontWeight = FontWeight.Bold)
-                                    )
-                                }
+                                    color = if (activeFilter == filter) PrimaryIndigo else TextSecondary
+                                )
                             }
                         }
                     }
                 }
-            }
-        }
-    }
-}
 
-/**
- * Entry point to the APK deliveries screen, styled like the interactive
- * terminal card above it: one line of what it is, one button to the list.
- */
-@Composable
-private fun DeliveriesShortcutCard(onOpen: () -> Unit) {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = AppShapes.card,
-        color = SlateCard,
-        border = androidx.compose.foundation.BorderStroke(1.dp, PrimaryIndigo.copy(alpha = 0.45f))
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(AppSpacing.md),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm)
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(34.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(PrimaryIndigo.copy(alpha = 0.15f)),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.FileDownload,
-                    contentDescription = null,
-                    tint = PrimaryIndigo,
-                    modifier = Modifier.size(18.dp)
-                )
-            }
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    "Entregas",
-                    style = AppTypography.bodySmall.copy(
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp
-                    ),
-                    color = TextPrimary
-                )
-                Text(
-                    "APKs enviadas desde la PC con idupi-push",
-                    style = AppTypography.labelSmall.copy(fontSize = 10.sp),
-                    color = TextSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-            Button(
-                onClick = onOpen,
-                shape = AppShapes.button,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = PrimaryIndigo,
-                    contentColor = Color.White
-                ),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-            ) {
-                Text(
-                    "Abrir",
-                    style = AppTypography.labelSmall.copy(fontWeight = FontWeight.Bold)
-                )
-            }
-        }
-    }
-}
-
-/**
- * Prominent entry point to real interactive terminals. The legacy console
- * below stays untouched: this section lists attachable PTYs and opens a new
- * one; the list refreshes each time the screen is entered (and the user can
- * pull-to-refresh with the toolbar button).
- */
-@Composable
-private fun InteractiveTerminalSection(
-    ptys: List<PtyInfo>,
-    onOpenNew: () -> Unit,
-    onAttach: (String) -> Unit
-) {
-    val livePtys = remember(ptys) { ptys.filter { it.alive } }
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = AppShapes.card,
-        color = SlateCard,
-        border = androidx.compose.foundation.BorderStroke(1.dp, PrimaryIndigo.copy(alpha = 0.45f))
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(AppSpacing.md),
-            verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    modifier = Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm)
-                ) {
+                if (filteredTerminals.isEmpty()) {
                     Box(
                         modifier = Modifier
-                            .size(34.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(PrimaryIndigo.copy(alpha = 0.15f)),
+                            .fillMaxWidth()
+                            .weight(1f),
                         contentAlignment = Alignment.Center
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.Terminal,
-                            contentDescription = null,
-                            tint = PrimaryIndigo,
-                            modifier = Modifier.size(18.dp)
-                        )
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+                        ) {
+                            Icon(
+                                Icons.Default.SearchOff,
+                                contentDescription = null,
+                                tint = TextSecondary.copy(alpha = 0.4f),
+                                modifier = Modifier.size(36.dp)
+                            )
+                            Text(
+                                "Sin procesos de tipo\n\"${activeFilter.label}\"",
+                                style = AppTypography.labelSmall,
+                                color = TextSecondary.copy(alpha = 0.6f),
+                                textAlign = TextAlign.Center
+                            )
+                        }
                     }
-                    Column {
-                        Text(
-                            "Terminal interactiva",
-                            style = AppTypography.bodySmall.copy(
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 14.sp
-                            ),
-                            color = TextPrimary
-                        )
-                        Text(
-                            "TUIs reales (gentle-ai, idu-pi) desde tu PC",
-                            style = AppTypography.labelSmall.copy(fontSize = 10.sp),
-                            color = TextSecondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
-                Button(
-                    onClick = onOpenNew,
-                    shape = AppShapes.button,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = PrimaryIndigo,
-                        contentColor = Color.White
-                    ),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text(
-                        "Nueva terminal",
-                        style = AppTypography.labelSmall.copy(fontWeight = FontWeight.Bold)
-                    )
-                }
-            }
-
-            if (livePtys.isEmpty()) {
-                Text(
-                    "No hay terminales interactivas abiertas.",
-                    style = AppTypography.labelSmall,
-                    color = TextSecondary.copy(alpha = 0.7f)
-                )
-            } else {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(AppSpacing.xs)
-                ) {
-                    livePtys.forEach { pty ->
-                        PtyChip(pty = pty, onClick = { onAttach(pty.id) })
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f),
+                        contentPadding = PaddingValues(vertical = AppSpacing.xs),
+                        verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
+                    ) {
+                        items(filteredTerminals, key = { it.id }) { term ->
+                            TerminalListItem(
+                                terminal = term,
+                                isSelected = term.id == selectedTerminalId,
+                                onClick = {
+                                    viewModel.selectTerminal(term.id)
+                                    showLogs = true
+                                },
+                                onRestart = { viewModel.restartTerminal(term.id) },
+                                onStop = { viewModel.cancelTask() }
+                            )
+                        }
                     }
                 }
             }
@@ -868,55 +516,92 @@ private fun InteractiveTerminalSection(
     }
 }
 
+/**
+ * Compact header of the terminal whose log is on screen, with its two actions.
+ */
 @Composable
-private fun PtyChip(pty: PtyInfo, onClick: () -> Unit) {
-    val shellName = pty.shell
-        ?.substringBefore(' ')
-        ?.substringAfterLast('\\')
-        ?.ifBlank { null }
-        ?: "shell"
+private fun SelectedProcessCard(
+    terminal: TerminalSessionItem,
+    onRestart: () -> Unit,
+    onStop: () -> Unit
+) {
     Surface(
-        onClick = onClick,
-        shape = AppShapes.chip,
-        color = SlateBg,
+        modifier = Modifier.fillMaxWidth(),
+        shape = AppShapes.card,
+        color = SlateCard,
         border = androidx.compose.foundation.BorderStroke(1.dp, SlateBorder)
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AppSpacing.md, vertical = AppSpacing.sm),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Box(
-                modifier = Modifier
-                    .size(7.dp)
-                    .clip(CircleShape)
-                    .background(StatusConnected)
-            )
-            Column {
-                Text(
-                    text = shellName,
-                    style = AppTypography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
-                    color = TextPrimary,
-                    maxLines = 1
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm),
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(
+                    imageVector = terminalIcon(terminal.type),
+                    contentDescription = null,
+                    tint = PrimaryIndigo,
+                    modifier = Modifier.size(20.dp)
                 )
-                Text(
-                    text = "PID ${pty.pid}",
-                    style = AppTypography.labelSmall.copy(fontSize = 9.sp),
-                    color = TextSecondary
-                )
+                Column {
+                    Text(
+                        text = terminal.name,
+                        style = AppTypography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = TextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        text = "PID: ${terminal.pid} · ${terminal.type}",
+                        style = AppTypography.labelSmall,
+                        color = TextSecondary
+                    )
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                IconButton(
+                    onClick = onRestart,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        Icons.Default.RestartAlt,
+                        contentDescription = "Reiniciar",
+                        tint = StatusWorking,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                IconButton(
+                    onClick = onStop,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Stop,
+                        contentDescription = "Detener",
+                        tint = StatusError,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
         }
     }
 }
 
 /**
- * Single vertical terminal item card for the drawer list.
+ * Single vertical process item card for the list.
  */
 @Composable
 private fun TerminalListItem(
     terminal: TerminalSessionItem,
     isSelected: Boolean,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onRestart: () -> Unit,
+    onStop: () -> Unit
 ) {
     val highlightBorder = if (isSelected) PrimaryIndigo else SlateBorder
     val highlightBg = if (isSelected) PrimaryIndigo.copy(alpha = 0.08f) else Color.Transparent
@@ -1010,6 +695,32 @@ private fun TerminalListItem(
                             color = TextSecondary
                         )
                     }
+                }
+            }
+
+            // Per-process actions
+            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                IconButton(
+                    onClick = onRestart,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        Icons.Default.RestartAlt,
+                        contentDescription = "Reiniciar",
+                        tint = StatusWorking,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                IconButton(
+                    onClick = onStop,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        Icons.Default.Stop,
+                        contentDescription = "Detener",
+                        tint = StatusError,
+                        modifier = Modifier.size(18.dp)
+                    )
                 }
             }
 

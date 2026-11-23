@@ -278,6 +278,7 @@ class FakeIduPiClient : IduPiClient {
     val ptyResizes = mutableListOf<Triple<String, Int, Int>>()
     var killPtyResult: Boolean = true
     var lastKilledPtyId: String? = null
+    var listPtysCalls: Int = 0
 
     override suspend fun createPty(cols: Int, rows: Int, cwd: String?): PtyInfo {
         maybeFail()
@@ -289,6 +290,7 @@ class FakeIduPiClient : IduPiClient {
 
     override suspend fun listPtys(): List<PtyInfo> {
         maybeFail()
+        listPtysCalls++
         return ptyListToReturn
     }
 

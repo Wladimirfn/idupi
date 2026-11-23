@@ -35,7 +35,7 @@ enum class Screen(val title: String) {
     ALERTS("Alertas Supervisor"),
     PROJECTS("Proyectos"),
     TERMINALS("Terminales"),
-    CONSOLE("Terminal"),
+    CONSOLE("Procesos"),
     PTY_TERMINAL("Terminal interactiva"),
     DELIVERIES("Entregas"),
     REMOTE("Escritorio Remoto"),
@@ -56,13 +56,15 @@ fun AppNavigation() {
     val connectionViewModel: ConnectionViewModel = viewModel()
     val alertsViewModel: AlertsViewModel = viewModel()
     val projectsViewModel: ProjectsViewModel = viewModel()
+    val terminalsViewModel: TerminalsViewModel = viewModel()
     val consoleViewModel: ConsoleViewModel = viewModel()
     val ptyTerminalViewModel: PtyTerminalViewModel = viewModel()
     val remoteViewModel: RemoteScreenViewModel = viewModel()
     val deliveriesViewModel: DeliveriesViewModel = viewModel()
 
-    // Interactive terminal target chosen from the Console screen: null means
-    // "create a new PTY"; an id attaches to one already running on the PC.
+    // Interactive terminal target chosen from the Terminals screen. The
+    // Terminals screen creates the PTY first and passes its id; null would
+    // mean "create a new one" for callers that navigate directly.
     var ptyTerminalTargetId by remember { mutableStateOf<String?>(null) }
 
     // Notification taps arrive before/after Compose starts; MainActivity parks
@@ -82,6 +84,7 @@ fun AppNavigation() {
     ObserveViewModelError(connectionViewModel.errorMessage, snackbarHostState, connectionViewModel::clearError)
     ObserveViewModelError(alertsViewModel.errorMessage, snackbarHostState, alertsViewModel::clearError)
     ObserveViewModelError(projectsViewModel.errorMessage, snackbarHostState, projectsViewModel::clearError)
+    ObserveViewModelError(terminalsViewModel.errorMessage, snackbarHostState, terminalsViewModel::clearError)
     ObserveViewModelError(consoleViewModel.errorMessage, snackbarHostState, consoleViewModel::clearError)
     ObserveViewModelError(deliveriesViewModel.errorMessage, snackbarHostState, deliveriesViewModel::clearError)
 
@@ -186,16 +189,17 @@ fun AppNavigation() {
                                 HorizontalDivider(color = SlateBorder, modifier = Modifier.padding(horizontal = 20.dp))
                                 Spacer(modifier = Modifier.height(10.dp))
 
-                                // Drawer destination order. The interactive
-                                // terminals were promoted to the start screen,
-                                // so the remaining items keep their slots.
+                                // Drawer destination order for the reshaped app:
+                                // live terminals first, then the surfaces that
+                                // replaced chat.
                                 val navItems = listOf(
-                                    Screen.REMOTE to Icons.AutoMirrored.Filled.ScreenShare,
+                                    Screen.TERMINALS to Icons.Default.Terminal,
+                                    Screen.DELIVERIES to Icons.Default.FileDownload,
+                                    Screen.CONSOLE to Icons.Default.List,
+                                    Screen.DASHBOARD to Icons.Default.Dashboard,
                                     Screen.PROJECTS to Icons.Default.Folder,
                                     Screen.ALERTS to Icons.Default.Notifications,
-                                    Screen.DASHBOARD to Icons.Default.Dashboard,
-                                    Screen.CONSOLE to Icons.Default.Terminal,
-                                    Screen.DELIVERIES to Icons.Default.FileDownload,
+                                    Screen.REMOTE to Icons.AutoMirrored.Filled.ScreenShare,
                                     Screen.SETTINGS to Icons.Default.Settings
                                 )
 
@@ -249,14 +253,13 @@ fun AppNavigation() {
                                 viewModel = mainViewModel,
                                 onMenuClick = { scope.launch { drawerState.open() } }
                             )
-                            Screen.TERMINALS -> ConsoleScreen(
-                                viewModel = consoleViewModel,
+                            Screen.TERMINALS -> TerminalsScreen(
+                                viewModel = terminalsViewModel,
                                 onMenuClick = { scope.launch { drawerState.open() } },
-                                onOpenPtyTerminal = { targetId ->
-                                    ptyTerminalTargetId = targetId
+                                onOpenTerminal = { id ->
+                                    ptyTerminalTargetId = id
                                     navigateTo(Screen.PTY_TERMINAL)
-                                },
-                                onOpenDeliveries = { navigateTo(Screen.DELIVERIES) }
+                                }
                             )
                             Screen.ALERTS -> AlertsScreen(
                                 viewModel = alertsViewModel,
@@ -268,12 +271,7 @@ fun AppNavigation() {
                             )
                             Screen.CONSOLE -> ConsoleScreen(
                                 viewModel = consoleViewModel,
-                                onMenuClick = { scope.launch { drawerState.open() } },
-                                onOpenPtyTerminal = { targetId ->
-                                    ptyTerminalTargetId = targetId
-                                    navigateTo(Screen.PTY_TERMINAL)
-                                },
-                                onOpenDeliveries = { navigateTo(Screen.DELIVERIES) }
+                                onMenuClick = { scope.launch { drawerState.open() } }
                             )
                             Screen.PTY_TERMINAL -> PtyTerminalScreen(
                                 viewModel = ptyTerminalViewModel,
