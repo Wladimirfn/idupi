@@ -52,7 +52,7 @@ idu-pi orchestrator screen (owner decision after testing).
 - [x] T1 Go ConPTY host mode (`pty_windows.go`, frame parser + tests, `main.go` dispatch).
 - [x] T2 Node PtyManager + routes + tests; legacy `closeTerminal` tree-kill with honest
       result; `exec` without a terminal id no longer routes into Pi chat.
-- [ ] T3 App: vendored xterm.js assets, `PtyTerminalView`, client methods, extra-keys bar,
+- [x] T3 App: vendored xterm.js assets, `PtyTerminalView`, client methods, extra-keys bar,
       Console screen integration.
 - [ ] T4 Version bump, signed APK, live test with the owner (gentle-ai, idu-pi, stop).
 
@@ -79,8 +79,9 @@ idu-pi orchestrator screen (owner decision after testing).
 | Task | Commit | Checks |
 |------|--------|--------|
 | T1 | 5a30171 | gofmt clean (new files), go vet no new output, go test ok (-count=20 Pty stable); smoke: echo/exit codes, taskkill host kills powershell child. Audit audit-5 (pi/kimi-k3.1-pro): no blockers; fixed #2 (fail() closes pipes before ClosePseudoConsole) and #5 (startup-error test bounded); #1/#3/#4 refuted (stdin EOF is the parent-death watchdog; Read 0 = broken pipe). Note for T2: chunk input frames well under 1 MiB. |
-| T2 | (this commit) | Writer idu-pi work-1 (opencode/deepseek-v4.1-flash). pty tests 31/31 + request-guard/fs-imports/screen-routes-auth = 40/40; node --check ok; full suite per-file: all pass except sessions-runtime (local-env hang + known OpenCode failure; passes in a clean worktree with T2 code). Live smoke on :8789: 401 without token, 201 create, PS prompt + ANSI, input evaluated (PTY-42), DELETE kills host + 3 children, second DELETE 404. Audit audit-1 (agy/gemini-4-argon-high): no blockers; fixed cwd resolve + UNC reject, LIMIT TOCTOU, startup error visibility (300 ms settle), stream backpressure cap 1 MiB, subscribe race, sync host kill on exit. Parent fix: legacy killProcessTree killed cmd.exe before taskkill could walk the tree (re-orphaning PowerShell) -> direct kill now runs in the taskkill callback. |
+| T2 | 26a9c1c | Writer idu-pi work-1 (opencode/deepseek-v4.1-flash). pty tests 31/31 + request-guard/fs-imports/screen-routes-auth = 40/40; node --check ok; full suite per-file: all pass except sessions-runtime (local-env hang + known OpenCode failure; passes in a clean worktree with T2 code). Live smoke on :8789: 401 without token, 201 create, PS prompt + ANSI, input evaluated (PTY-42), DELETE kills host + 3 children, second DELETE 404. Audit audit-1 (agy/gemini-4-argon-high): no blockers; fixed cwd resolve + UNC reject, LIMIT TOCTOU, startup error visibility (300 ms settle), stream backpressure cap 1 MiB, subscribe race, sync host kill on exit. Parent fix: legacy killProcessTree killed cmd.exe before taskkill could walk the tree (re-orphaning PowerShell) -> direct kill now runs in the taskkill callback. |
+| T3 | (this commit) | Writer idu-pi work-1 (opencode/deepseek-v4.1-flash). gradlew :app:testDebugUnitTest BUILD SUCCESSFUL (352 tests, 26 new); :app:assembleDebug BUILD SUCCESSFUL with assets packaged; node --check terminal.js ok. Parent review: WebView JS on, file/content/domStorage off, navigation blocked, token stays in Kotlin. Live WebView proof deferred to T4. |
 
 ## Next step
 
-T3 (app: xterm.js WebView terminal) via idu-pi work slot.
+T4: signing config, version bump, signed APK, live test with the owner.

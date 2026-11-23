@@ -53,6 +53,18 @@ interface IduPiClient {
     suspend fun restartTerminalServer(terminalId: String): String
     suspend fun closeTerminal(terminalId: String): Boolean
 
+    // Interactive PTY terminals (ConPTY on the PC, xterm.js on the phone).
+    // The stream is raw VT bytes over a chunked response: it replays recent
+    // output first, then goes live, and ENDS when the shell exits or when the
+    // client falls far enough behind that the server drops it -- reconnect is
+    // the recovery path for that case, not an error.
+    suspend fun createPty(cols: Int, rows: Int, cwd: String? = null): PtyInfo
+    suspend fun listPtys(): List<PtyInfo>
+    fun ptyStream(id: String): Flow<ByteArray>
+    suspend fun ptyInput(id: String, data: String)
+    suspend fun ptyResize(id: String, cols: Int, rows: Int)
+    suspend fun killPty(id: String): Boolean
+
     fun connectChat(): Flow<ChatEvent>
     suspend fun sendMessage(message: String)
 

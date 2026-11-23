@@ -354,6 +354,75 @@ class RealIduPiClient : IduPiClient {
         return true
     }
 
+    // --- Interactive PTY terminals ---
+
+    override suspend fun createPty(cols: Int, rows: Int, cwd: String?): PtyInfo =
+        send(HttpMethod.Post, "/api/v1/pty") {
+            contentType(ContentType.Application.Json)
+            setBody(CreatePtyPayload(cols = cols, rows = rows, cwd = cwd))
+        }.body()
+
+    override suspend fun listPtys(): List<PtyInfo> =
+        send(HttpMethod.Get, "/api/v1/pty").body<PtyListResponse>().terminals
+
+    /**
+     * Raw VT bytes over the existing chunked-response pattern. Same shape as
+     * [screenFrames] -- plain `send` would buffer the whole body, which never
+     * completes on a live terminal -- but with NO idle socket timeout: an
+     * interactive terminal legitimately produces zero bytes while the user
+     * reads the screen, so a per-read timeout would tear down healthy idle
+     * sessions every 30 seconds.
+     */
+    override fun ptyStream(id: String): Flow<ByteArray> = flow {
+        val url = "$baseUrl/api/v1/pty/$id/stream"
+        client.prepareGet(url) {
+            authorize()
+            timeout {
+                requestTimeoutMillis = HttpTimeout.INFINITE_TIMEOUT_MS
+                socketTimeoutMillis = HttpTimeout.INFINITE_TIMEOUT_MS
+            }
+        }.execute { response ->
+            if (!response.status.isSuccess()) {
+                Log.w(TAG, "GET /api/v1/pty/$id/stream -> ${response.status.value}")
+                throw IduPiHttpException(response.status.value, url, describeHttpFailure(response.status.value))
+            }
+            val channel = response.bodyAsChannel()
+            val buf = ByteArray(32 * 1024)
+            while (!channel.isClosedForRead) {
+                val n = channel.readAvailable(buf, 0, buf.size)
+                if (n == -1) break
+                if (n <= 0) continue
+                emit(buf.copyOfRange(0, n))
+            }
+        }
+    }
+
+    override suspend fun ptyInput(id: String, data: String) {
+        send(HttpMethod.Post, "/api/v1/pty/$id/input") {
+            contentType(ContentType.Application.Json)
+            setBody(PtyInputPayload(data))
+        }
+    }
+
+    override suspend fun ptyResize(id: String, cols: Int, rows: Int) {
+        send(HttpMethod.Post, "/api/v1/pty/$id/resize") {
+            contentType(ContentType.Application.Json)
+            setBody(PtyResizePayload(cols = cols, rows = rows))
+        }
+    }
+
+    /**
+     * Tree-kill request. A 404 means the terminal was already gone, which is
+     * the outcome the caller wanted -- reporting `false` instead of throwing
+     * keeps "stop an already-dead terminal" from surfacing as an error.
+     */
+    override suspend fun killPty(id: String): Boolean = try {
+        send(HttpMethod.Delete, "/api/v1/pty/$id")
+        true
+    } catch (e: IduPiHttpException) {
+        if (e.statusCode == 404) false else throw e
+    }
+
     /**
      * Connects to the server's chat SSE stream and translates each frame into a
      * [ChatEvent], merged with [chatEventFlow] -- the in-process events
@@ -774,6 +843,24 @@ class RealIduPiClient : IduPiClient {
 
 @Serializable
 private data class ApplySddProfilePayload(val profileId: String)
+
+// --- Interactive PTY wire payloads ---
+
+/** POST /api/v1/pty body. A null cwd makes the server use its default. */
+@Serializable
+private data class CreatePtyPayload(val cols: Int, val rows: Int, val cwd: String? = null)
+
+/** GET /api/v1/pty response: `{ "terminals": [info...] }`. */
+@Serializable
+private data class PtyListResponse(val terminals: List<PtyInfo> = emptyList())
+
+/** POST /api/v1/pty/{id}/input body: UTF-8 keystrokes, max 256 KiB. */
+@Serializable
+private data class PtyInputPayload(val data: String)
+
+/** POST /api/v1/pty/{id}/resize body. */
+@Serializable
+private data class PtyResizePayload(val cols: Int, val rows: Int)
 
 /**
  * Wire header that carries the OpenCode auto-approve toggle to the server.

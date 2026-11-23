@@ -6,10 +6,12 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -30,6 +32,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.idupi.app.domain.model.PtyInfo
 import com.idupi.app.domain.repository.TerminalSessionItem
 import com.idupi.app.ui.theme.*
 import com.idupi.app.viewmodel.ConsoleViewModel
@@ -46,13 +49,15 @@ private enum class TerminalFilter(val label: String, val icon: ImageVector) {
 @Composable
 fun ConsoleScreen(
     viewModel: ConsoleViewModel,
-    onMenuClick: () -> Unit
+    onMenuClick: () -> Unit,
+    onOpenPtyTerminal: (String?) -> Unit
 ) {
     val logs by viewModel.logs.collectAsState()
     val terminals by viewModel.terminals.collectAsState()
     val selectedTerminalId by viewModel.selectedTerminalId.collectAsState()
     val isExecuting by viewModel.isExecuting.collectAsState()
     val activeTask by viewModel.activeTask.collectAsState()
+    val interactivePtys by viewModel.interactivePtys.collectAsState()
 
     var commandInput by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
@@ -66,6 +71,7 @@ fun ConsoleScreen(
     // Auto-refresh and live polling
     DisposableEffect(Unit) {
         viewModel.refreshTerminals()
+        viewModel.refreshInteractivePtys()
         viewModel.startPolling()
         onDispose {
             viewModel.stopPolling()
@@ -160,7 +166,10 @@ fun ConsoleScreen(
                                 )
                             }
                         }
-                        IconButton(onClick = { viewModel.refreshTerminals() }) {
+                        IconButton(onClick = {
+                            viewModel.refreshTerminals()
+                            viewModel.refreshInteractivePtys()
+                        }) {
                             Icon(
                                 imageVector = Icons.Default.Refresh,
                                 contentDescription = "Refrescar",
@@ -180,6 +189,14 @@ fun ConsoleScreen(
                     .padding(horizontal = AppSpacing.md, vertical = AppSpacing.sm),
                 verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
             ) {
+                // Interactive PTY terminals (xterm.js over ConPTY): a real TUI
+                // on the phone, unlike the ANSI-stripped log stream below.
+                InteractiveTerminalSection(
+                    ptys = interactivePtys,
+                    onOpenNew = { onOpenPtyTerminal(null) },
+                    onAttach = { id -> onOpenPtyTerminal(id) }
+                )
+
                 // Selected terminal info card (compact)
                 selectedTerminal?.let { term ->
                     Surface(
@@ -665,6 +682,154 @@ fun ConsoleScreen(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Prominent entry point to real interactive terminals. The legacy console
+ * below stays untouched: this section lists attachable PTYs and opens a new
+ * one; the list refreshes each time the screen is entered (and the user can
+ * pull-to-refresh with the toolbar button).
+ */
+@Composable
+private fun InteractiveTerminalSection(
+    ptys: List<PtyInfo>,
+    onOpenNew: () -> Unit,
+    onAttach: (String) -> Unit
+) {
+    val livePtys = remember(ptys) { ptys.filter { it.alive } }
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = AppShapes.card,
+        color = SlateCard,
+        border = androidx.compose.foundation.BorderStroke(1.dp, PrimaryIndigo.copy(alpha = 0.45f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(AppSpacing.md),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(PrimaryIndigo.copy(alpha = 0.15f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Terminal,
+                            contentDescription = null,
+                            tint = PrimaryIndigo,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    Column {
+                        Text(
+                            "Terminal interactiva",
+                            style = AppTypography.bodySmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            ),
+                            color = TextPrimary
+                        )
+                        Text(
+                            "TUIs reales (gentle-ai, idu-pi) desde tu PC",
+                            style = AppTypography.labelSmall.copy(fontSize = 10.sp),
+                            color = TextSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+                Button(
+                    onClick = onOpenNew,
+                    shape = AppShapes.button,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = PrimaryIndigo,
+                        contentColor = Color.White
+                    ),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        "Nueva terminal",
+                        style = AppTypography.labelSmall.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+            }
+
+            if (livePtys.isEmpty()) {
+                Text(
+                    "No hay terminales interactivas abiertas.",
+                    style = AppTypography.labelSmall,
+                    color = TextSecondary.copy(alpha = 0.7f)
+                )
+            } else {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(AppSpacing.xs)
+                ) {
+                    livePtys.forEach { pty ->
+                        PtyChip(pty = pty, onClick = { onAttach(pty.id) })
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PtyChip(pty: PtyInfo, onClick: () -> Unit) {
+    val shellName = pty.shell
+        ?.substringBefore(' ')
+        ?.substringAfterLast('\\')
+        ?.ifBlank { null }
+        ?: "shell"
+    Surface(
+        onClick = onClick,
+        shape = AppShapes.chip,
+        color = SlateBg,
+        border = androidx.compose.foundation.BorderStroke(1.dp, SlateBorder)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(StatusConnected)
+            )
+            Column {
+                Text(
+                    text = shellName,
+                    style = AppTypography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = TextPrimary,
+                    maxLines = 1
+                )
+                Text(
+                    text = "PID ${pty.pid}",
+                    style = AppTypography.labelSmall.copy(fontSize = 9.sp),
+                    color = TextSecondary
+                )
             }
         }
     }

@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.idupi.app.data.IduPiClientProvider
 import com.idupi.app.domain.model.ChatEvent
+import com.idupi.app.domain.model.PtyInfo
 import com.idupi.app.domain.repository.IduPiClientSource
 import com.idupi.app.domain.repository.TerminalSessionItem
 import kotlinx.coroutines.CancellationException
@@ -42,6 +43,14 @@ class ConsoleViewModel(
 
     private val _isExecuting = MutableStateFlow(false)
     val isExecuting = _isExecuting.asStateFlow()
+
+    /**
+     * Interactive PTY terminals (ConPTY) listed from `/api/v1/pty`. Kept
+     * separate from the legacy [terminals] poll: those are log streams, these
+     * are attachable full terminals.
+     */
+    private val _interactivePtys = MutableStateFlow<List<PtyInfo>>(emptyList())
+    val interactivePtys = _interactivePtys.asStateFlow()
 
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
@@ -98,6 +107,24 @@ class ConsoleViewModel(
     fun selectTerminal(id: String) {
         _selectedTerminalId.value = id
         loadLogsForSelectedTerminal()
+    }
+
+    /**
+     * Refreshes the interactive-terminal list. Failures stay silent on purpose:
+     * this section is a shortcut, and a server build without the PTY routes
+     * must not spam a snackbar every time the console screen opens. The legacy
+     * terminal polling still surfaces real connectivity errors.
+     */
+    fun refreshInteractivePtys() {
+        viewModelScope.launch {
+            try {
+                _interactivePtys.value = client.listPtys()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to list interactive PTYs", e)
+            }
+        }
     }
 
     fun loadLogsForSelectedTerminal() {
