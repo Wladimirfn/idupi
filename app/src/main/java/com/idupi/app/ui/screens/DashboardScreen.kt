@@ -298,21 +298,23 @@ private fun MetricsContent(metrics: SystemMetrics, refreshFailed: Boolean) {
         BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
             val columns = dashboardGridColumns(maxWidth.value)
             val rows = cards.chunked(columns)
-            rows.forEachIndexed { rowIndex, rowCards ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(IntrinsicSize.Min),
-                    horizontalArrangement = Arrangement.spacedBy(AppSpacing.itemGap)
-                ) {
-                    rowCards.forEach { card ->
-                        card(Modifier.weight(1f).fillMaxHeight())
+            // BoxWithConstraints stacks its children like a Box: without this
+            // Column every grid row is drawn on top of the previous one, and
+            // the GPU row hid the CPU/RAM row.
+            Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.itemGap)) {
+                rows.forEach { rowCards ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(IntrinsicSize.Min),
+                        horizontalArrangement = Arrangement.spacedBy(AppSpacing.itemGap)
+                    ) {
+                        rowCards.forEach { card ->
+                            card(Modifier.weight(1f).fillMaxHeight())
+                        }
+                        // An odd number of cards leaves the last row half-width.
+                        if (rowCards.size == 1 && columns == 2) Spacer(Modifier.weight(1f))
                     }
-                    // An odd number of cards leaves the last row half-width.
-                    if (rowCards.size == 1 && columns == 2) Spacer(Modifier.weight(1f))
-                }
-                if (rowIndex != rows.lastIndex) {
-                    Spacer(modifier = Modifier.height(AppSpacing.itemGap))
                 }
             }
         }
