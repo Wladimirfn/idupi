@@ -19,17 +19,6 @@ data class AiModelItem(
     val provider: String
 )
 
-@Serializable
-data class TerminalSessionItem(
-    val id: String,
-    val name: String,
-    val type: String = "shell", // "agent", "server", "shell"
-    val status: String = "running",
-    val cwd: String? = null,
-    val pid: Int = 0,
-    val logCount: Int = 0
-)
-
 interface IduPiClient {
     suspend fun getStatus(): ServerStatus
     suspend fun getProjects(): List<Project>
@@ -45,13 +34,9 @@ interface IduPiClient {
     suspend fun switchModel(modelName: String, provider: String? = null): Boolean
     suspend fun selectEngine(engineId: String): Boolean
     
-    // Multiterminal PC Manager
-    suspend fun getTerminals(): List<TerminalSessionItem>
-    suspend fun getTerminalLogs(terminalId: String): List<String>
-    suspend fun spawnTerminal(name: String? = null): TerminalSessionItem?
-    suspend fun sendTerminalCommand(terminalId: String, command: String): String
-    suspend fun restartTerminalServer(terminalId: String): String
-    suspend fun closeTerminal(terminalId: String): Boolean
+    // Multiterminal PC Manager: live interactive PTYs only. The older
+    // /api/v1/terminals log-stream list is gone; Procesos shows the real OS
+    // process list instead (see getOsProcesses below).
 
     // Interactive PTY terminals (ConPTY on the PC, xterm.js on the phone).
     // The stream is raw VT bytes over a chunked response: it replays recent
@@ -74,6 +59,19 @@ interface IduPiClient {
      * may be null; the server never fabricates a reading.
      */
     suspend fun getSystemMetrics(): SystemMetrics
+
+    /**
+     * Every process on the PC (`GET /api/v1/os/processes`), with window titles,
+     * working-set memory, CPU % and the server's category/protected flags.
+     */
+    suspend fun getOsProcesses(): OsProcessSample
+
+    /**
+     * Asks the PC to end a process. 404 means it was already gone ([KillProcessOutcome.GONE]),
+     * 409 means the server protects it ([KillProcessOutcome.PROTECTED]); any other
+     * failure throws so the UI can surface the real error.
+     */
+    suspend fun killOsProcess(pid: Int): KillProcessOutcome
 
     /**
      * Streams one delivery's APK bytes. Chunked like [ptyStream] so the

@@ -2,6 +2,8 @@ package com.idupi.app
 
 import com.idupi.app.domain.model.ChatEvent
 import com.idupi.app.domain.model.FileNode
+import com.idupi.app.domain.model.KillProcessOutcome
+import com.idupi.app.domain.model.OsProcessSample
 import com.idupi.app.domain.model.Project
 import com.idupi.app.domain.model.PtyInfo
 import com.idupi.app.domain.model.QuickCommand
@@ -14,7 +16,6 @@ import com.idupi.app.domain.repository.AiModelItem
 import com.idupi.app.domain.repository.IduPiClient
 import com.idupi.app.domain.repository.IduPiClientSource
 import com.idupi.app.domain.repository.SessionHistoryItem
-import com.idupi.app.domain.repository.TerminalSessionItem
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -75,12 +76,6 @@ class FakeIduPiClient : IduPiClient {
     var availableModelsToReturn: List<AiModelItem> = emptyList()
     var switchModelResult: Boolean = true
     var selectEngineResult: Boolean = true
-    var terminalsToReturn: List<TerminalSessionItem> = emptyList()
-    var terminalLogsToReturn: List<String> = emptyList()
-    var spawnTerminalResult: TerminalSessionItem? = null
-    var sendTerminalCommandResult: String = ""
-    var restartTerminalServerResult: String = ""
-    var closeTerminalResult: Boolean = true
     var projectFilesToReturn: List<FileNode> = emptyList()
     var fileContentToReturn: String = ""
     var availableCommandsToReturn: List<QuickCommand> = emptyList()
@@ -230,36 +225,6 @@ class FakeIduPiClient : IduPiClient {
         return selectEngineResult
     }
 
-    override suspend fun getTerminals(): List<TerminalSessionItem> {
-        maybeFail()
-        return terminalsToReturn
-    }
-
-    override suspend fun getTerminalLogs(terminalId: String): List<String> {
-        maybeFail()
-        return terminalLogsToReturn
-    }
-
-    override suspend fun spawnTerminal(name: String?): TerminalSessionItem? {
-        maybeFail()
-        return spawnTerminalResult
-    }
-
-    override suspend fun sendTerminalCommand(terminalId: String, command: String): String {
-        maybeFail()
-        return sendTerminalCommandResult
-    }
-
-    override suspend fun restartTerminalServer(terminalId: String): String {
-        maybeFail()
-        return restartTerminalServerResult
-    }
-
-    override suspend fun closeTerminal(terminalId: String): Boolean {
-        maybeFail()
-        return closeTerminalResult
-    }
-
     // --- Interactive PTY terminals ---
 
     var ptyCreateResult: PtyInfo = PtyInfo(id = "pty-1", pid = 1001, cols = 80, rows = 24, alive = true)
@@ -371,6 +336,33 @@ class FakeIduPiClient : IduPiClient {
         getSystemMetricsCalls++
         failMetricsWith?.let { throw it }
         return metricsToReturn
+    }
+
+    // --- OS processes (Procesos screen, T10) ---
+
+    var osProcessesToReturn: OsProcessSample = OsProcessSample()
+
+    /** When non-null, [getOsProcesses] throws this while still counting the call. */
+    var failOsProcessesWith: Exception? = null
+
+    /** Counts attempts, including failed ones, so polling tests can assert cadence. */
+    var getOsProcessesCalls: Int = 0
+
+    var killOsProcessDefault: KillProcessOutcome = KillProcessOutcome.KILLED
+    val killOutcomeByPid = mutableMapOf<Int, KillProcessOutcome>()
+    val killedOsPids = mutableListOf<Int>()
+
+    override suspend fun getOsProcesses(): OsProcessSample {
+        maybeFail()
+        getOsProcessesCalls++
+        failOsProcessesWith?.let { throw it }
+        return osProcessesToReturn
+    }
+
+    override suspend fun killOsProcess(pid: Int): KillProcessOutcome {
+        maybeFail()
+        killedOsPids += pid
+        return killOutcomeByPid[pid] ?: killOsProcessDefault
     }
 
     override fun connectChat(): Flow<ChatEvent> = chatEvents.asSharedFlow()

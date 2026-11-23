@@ -300,46 +300,6 @@ class RealIduPiClient : IduPiClient {
         return true
     }
 
-    override suspend fun getTerminals(): List<com.idupi.app.domain.repository.TerminalSessionItem> =
-        send(HttpMethod.Get, "/api/v1/terminals").body()
-
-    override suspend fun getTerminalLogs(terminalId: String): List<String> =
-        send(HttpMethod.Get, "/api/v1/terminals/$terminalId/logs").body()
-
-    override suspend fun spawnTerminal(name: String?): com.idupi.app.domain.repository.TerminalSessionItem? {
-        val payload = if (name != null) mapOf("name" to name) else emptyMap<String, String>()
-        val res: Map<String, JsonElement> = send(HttpMethod.Post, "/api/v1/terminals/spawn") {
-            contentType(ContentType.Application.Json)
-            setBody(payload)
-        }.body()
-
-        val termObj = res["terminal"]
-        return if (termObj != null) {
-            json.decodeFromJsonElement(com.idupi.app.domain.repository.TerminalSessionItem.serializer(), termObj)
-        } else null
-    }
-
-    override suspend fun sendTerminalCommand(terminalId: String, command: String): String {
-        val res: Map<String, String> = send(HttpMethod.Post, "/api/v1/terminals/exec") {
-            contentType(ContentType.Application.Json)
-            setBody(mapOf("termId" to terminalId, "command" to command))
-        }.body()
-        return res["output"] ?: "Comando enviado."
-    }
-
-    override suspend fun restartTerminalServer(terminalId: String): String {
-        val res: Map<String, String> = send(HttpMethod.Post, "/api/v1/terminals/restart") {
-            contentType(ContentType.Application.Json)
-            setBody(mapOf("termId" to terminalId))
-        }.body()
-        return res["message"] ?: "Servidor reseteado."
-    }
-
-    override suspend fun closeTerminal(terminalId: String): Boolean {
-        send(HttpMethod.Delete, "/api/v1/terminals/$terminalId")
-        return true
-    }
-
     // --- Interactive PTY terminals ---
 
     override suspend fun createPty(cols: Int, rows: Int, cwd: String?): PtyInfo =
@@ -416,6 +376,27 @@ class RealIduPiClient : IduPiClient {
 
     override suspend fun getSystemMetrics(): SystemMetrics =
         send(HttpMethod.Get, "/api/v1/system/metrics").body()
+
+    // --- OS processes (Procesos screen, T10) ---
+
+    override suspend fun getOsProcesses(): OsProcessSample =
+        send(HttpMethod.Get, "/api/v1/os/processes").body()
+
+    /**
+     * 200 -> killed; 404 -> already gone (the outcome the caller wanted);
+     * 409 -> the server refuses because the process is protected. Anything else
+     * is a real failure and propagates as [IduPiHttpException].
+     */
+    override suspend fun killOsProcess(pid: Int): KillProcessOutcome = try {
+        send(HttpMethod.Post, "/api/v1/os/processes/$pid/kill")
+        KillProcessOutcome.KILLED
+    } catch (e: IduPiHttpException) {
+        when (e.statusCode) {
+            404 -> KillProcessOutcome.GONE
+            409 -> KillProcessOutcome.PROTECTED
+            else -> throw e
+        }
+    }
 
     /**
      * Raw APK bytes over the chunked-response pattern: the caller writes each
