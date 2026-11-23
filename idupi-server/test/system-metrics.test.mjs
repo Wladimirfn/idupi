@@ -421,11 +421,13 @@ test("helper nulls stay null instead of becoming zero", async () => {
     assert.equal(sample.cpu.powerW, null);
     assert.equal(sample.memory.temperatureC, null);
     // A fresh helper that cannot read the CPU (no kernel driver) does not own
-    // the source: the LHM web server may still answer, else the hint names
-    // the missing PawnIO driver.
+    // the source: the LHM web server may still answer, else the hint names the
+    // installer, which brings PawnIO and the pinned LibreHardwareMonitor.
     assert.equal(sample.sources.sensors, null);
     assert.equal(sample.hints.length, 1);
     assert.match(sample.hints[0], /PawnIO/);
+    assert.match(sample.hints[0], /install-sensors-helper\.ps1/);
+    assert.match(sample.hints[0], /LibreHardwareMonitor/);
 });
 
 test("helper zeros (LHM without a driver) are treated as unreadable", async () => {
@@ -438,6 +440,7 @@ test("helper zeros (LHM without a driver) are treated as unreadable", async () =
     assert.equal(sample.cpu.powerW, null);
     assert.equal(sample.memory.temperatureC, null);
     assert.match(sample.hints[0], /PawnIO/);
+    assert.match(sample.hints[0], /install-sensors-helper\.ps1/);
 });
 
 test("the no-source hint names the installer and the LHM alternative", async () => {

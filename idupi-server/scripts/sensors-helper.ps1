@@ -6,10 +6,17 @@
 
 .DESCRIPTION
     Windows exposes no Ryzen CPU temperature or package power through WMI on this PC
-    (MSAcpi_ThermalZoneTemperature has 0 instances), so this helper loads the same
-    LibreHardwareMonitorLib 0.9.5 that RivaTuner's LHMDataProvider ships. Sensor
-    values read as 0 without administrator rights; install-sensors-helper.ps1
-    registers this script as a logon task with highest privileges.
+    (MSAcpi_ThermalZoneTemperature has 0 instances), so this helper loads the pinned
+    LibreHardwareMonitorLib that install-sensors-helper.ps1 downloads into
+    %ProgramData%\IDUPI\lhm. LibreHardwareMonitor reads those sensors through the
+    PawnIO kernel driver, installed by the same installer. Sensor values read as 0
+    without administrator rights; install-sensors-helper.ps1 registers this script
+    as a logon task with highest privileges.
+
+    The library is loaded with [Reflection.Assembly]::LoadFrom, not Add-Type: the
+    LoadFrom context resolves the dependency DLLs that sit next to it, while Add-Type
+    does not. Do not add a scriptblock AssemblyResolve handler: it overflows the stack
+    in PowerShell 5.1 with this dependency set.
 
     Every hardware and subhardware is updated before each sample: motherboard
     SuperIO and DIMM sensors live in SubHardware. Package power is an energy delta,
@@ -19,12 +26,14 @@
     never ends the loop.
 
 .PARAMETER LibDir
-    Folder with LibreHardwareMonitorLib.dll and HidSharp.dll. Defaults to
-    $env:IDUPI_LHM_LIB_DIR, then the RivaTuner LHMDataProvider folder, then
-    C:\Program Files\LibreHardwareMonitor.
+    Folder with LibreHardwareMonitorLib.dll and its dependency DLLs. Non-elevated
+    calls default to $env:IDUPI_LHM_LIB_DIR, then %ProgramData%\IDUPI\lhm. Elevated
+    calls always use %ProgramData%\IDUPI\lhm: a normal user controls that environment
+    variable and an elevated load from a user-writable folder would be a privilege
+    escalation.
 
 .PARAMETER OutFile
-    JSON destination. Defaults to $env:ProgramData\IDUPI\sensors.json.
+    JSON destination. Defaults to %ProgramData%\IDUPI\sensors.json.
 
 .PARAMETER IntervalMs
     Delay between samples. Defaults to 2000 ms.
@@ -44,44 +53,43 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$RtssLibDir = "C:\Program Files (x86)\RivaTuner Statistics Server\Plugins\Client\LHMDataProvider"
-$FallbackLibDir = "C:\Program Files\LibreHardwareMonitor"
-
 $Identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
 $Principal = New-Object System.Security.Principal.WindowsPrincipal($Identity)
 $Elevated = $Principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
 
-if (-not $LibDir) {
-    # Elevated, user environment variables are attacker-controlled input: a
-    # non-admin process could point the DLL load at its own code and gain admin.
-    # Only the admin-owned install folders are trusted then.
-    if ($env:IDUPI_LHM_LIB_DIR -and -not $Elevated) {
+# Resolved through the shell API, not $env:ProgramData: the environment is
+# attacker-controlled input and this helper runs elevated.
+$ProgramDataRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+if (-not $ProgramDataRoot) { $ProgramDataRoot = "C:\ProgramData" }
+$InstalledLibDir = Join-Path $ProgramDataRoot "IDUPI\lhm"
+
+if ($Elevated) {
+    # Elevated, user environment variables and arguments are attacker-controlled
+    # input: a non-admin process could point the DLL load at its own code and gain
+    # admin. Only the admin-owned install folder is trusted then.
+    if ($LibDir) {
+        Write-Warning "Elevated: ignoring -LibDir '$LibDir'; loading only from '$InstalledLibDir'."
+    }
+    $LibDir = $InstalledLibDir
+} elseif (-not $LibDir) {
+    if ($env:IDUPI_LHM_LIB_DIR) {
         $LibDir = $env:IDUPI_LHM_LIB_DIR
-    } elseif (Test-Path -LiteralPath $RtssLibDir) {
-        $LibDir = $RtssLibDir
     } else {
-        $LibDir = $FallbackLibDir
+        $LibDir = $InstalledLibDir
     }
 }
 
 if (-not $OutFile) {
-    # Resolved through the shell API, not $env:ProgramData, for the same reason.
-    $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
-    if (-not $programData) { $programData = "C:\ProgramData" }
-    $OutFile = Join-Path $programData "IDUPI\sensors.json"
+    $OutFile = Join-Path $ProgramDataRoot "IDUPI\sensors.json"
 }
 
 if ($IntervalMs -lt 500) { $IntervalMs = 500 }
 
 $LhmPath = Join-Path $LibDir "LibreHardwareMonitorLib.dll"
-$HidPath = Join-Path $LibDir "HidSharp.dll"
 if (-not (Test-Path -LiteralPath $LhmPath)) {
-    throw "LibreHardwareMonitorLib.dll not found in '$LibDir'. Pass -LibDir or set IDUPI_LHM_LIB_DIR."
+    throw "LibreHardwareMonitorLib.dll not found in '$LibDir'. Run idupi-server\scripts\install-sensors-helper.ps1 or pass -LibDir."
 }
-if (Test-Path -LiteralPath $HidPath) {
-    Add-Type -Path $HidPath
-}
-Add-Type -Path $LhmPath
+[void][Reflection.Assembly]::LoadFrom($LhmPath)
 
 $LibVersion = $null
 try {
@@ -116,14 +124,15 @@ function Add-HardwareTree {
 }
 
 function Convert-SensorValue {
-    param($Sensor, [bool]$IsElevated)
+    param($Sensor)
     $raw = $Sensor.Value
     if ($null -eq $raw) { return $null }
     $value = [double]$raw
     if ([double]::IsNaN($value) -or [double]::IsInfinity($value)) { return $null }
-    # Non-elevated reads come back as 0 instead of "unknown"; report null so the
-    # dashboard never shows a fake 0 °C / 0 W.
-    if ((-not $IsElevated) -and $value -eq 0) { return $null }
+    # LibreHardwareMonitor reports exactly 0 for a sensor it cannot read (no
+    # PawnIO driver, no administrator rights): report null so the dashboard never
+    # shows a fake 0 C / 0 W. The server applies the same rule to every source.
+    if ($value -eq 0) { return $null }
     return [math]::Round($value, 1)
 }
 
@@ -148,7 +157,7 @@ function Get-SensorSnapshot {
                 hardware = [string]$Hardware.Name
                 type     = $sensorType
                 name     = [string]$Sensor.Name
-                value    = Convert-SensorValue -Sensor $Sensor -IsElevated $IsElevated
+                value    = Convert-SensorValue -Sensor $Sensor
             })
         }
     }
@@ -275,8 +284,18 @@ try {
     }
 
     if ($Mutex -and -not $OwnsMutex) {
-        $AlreadyRunning = $true
-        Write-Warning "Another IDUPI sensors helper instance is already running."
+        if ($Once) {
+            # A one-shot diagnostic sample may run next to the installed service:
+            # it writes its own snapshot and exits, so it would otherwise be
+            # impossible to smoke-test a library folder while the task is live.
+            Write-Warning "Another IDUPI sensors helper instance is running; taking one sample anyway (-Once)."
+            try { $Mutex.Dispose() } catch { }
+            $Mutex = $null
+            $OwnsMutex = $false
+        } else {
+            $AlreadyRunning = $true
+            Write-Warning "Another IDUPI sensors helper instance is already running."
+        }
     }
 
     if (-not $AlreadyRunning) {

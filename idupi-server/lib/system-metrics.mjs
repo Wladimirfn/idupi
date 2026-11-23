@@ -10,10 +10,12 @@
 //
 // The owner's Ryzen 5600X reports no temperature or power through WMI
 // (MSAcpi_ThermalZoneTemperature has 0 instances). Windows only exposes those
-// sensors to an elevated process, hence the helper: it loads the same
-// LibreHardwareMonitorLib 0.9.5 RivaTuner ships and refreshes a small JSON
-// snapshot. A fresh helper file wins over the web server; a file older than
-// 10 s is treated as absent (the helper stopped), and the web server is tried.
+// sensors to an elevated process, hence the helper: it loads the pinned
+// LibreHardwareMonitorLib (0.9.6, installed under %ProgramData%\IDUPI\lhm by
+// scripts/install-sensors-helper.ps1, reading through the PawnIO driver) and
+// refreshes a small JSON snapshot. A fresh helper file wins over the web server;
+// a file older than 10 s is treated as absent (the helper stopped), and the web
+// server is tried.
 // A null here is the contract: the app renders "no disponible" instead of a
 // made-up number.
 //
@@ -59,7 +61,7 @@ const SENSORS_INSTALL_HINT =
 const SENSORS_STALE_HINT =
     "El servicio de sensores no está corriendo: sensors.json tiene más de 10 segundos sin actualizarse. Revisá la tarea programada 'IDUPI Sensors' (se instala con idupi-server\\scripts\\install-sensors-helper.ps1; alternativa: LibreHardwareMonitor con 'Remote Web Server' en el puerto 8085)";
 const SENSORS_NO_DRIVER_HINT =
-    "El servicio de sensores corre, pero LibreHardwareMonitor no puede leer el CPU: falta el driver PawnIO (https://pawnio.eu). Instalalo y reiniciá la tarea 'IDUPI Sensors'";
+    "El servicio de sensores corre, pero LibreHardwareMonitor no puede leer el CPU. Volvé a ejecutar idupi-server\\scripts\\install-sensors-helper.ps1: instala el driver PawnIO y la versión fija de LibreHardwareMonitor que el helper necesita";
 const GPU_HINT =
     "No se detectó nvidia-smi: no hay métricas de GPU disponibles en esta PC";
 
