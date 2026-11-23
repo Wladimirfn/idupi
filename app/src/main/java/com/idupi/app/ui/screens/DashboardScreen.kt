@@ -1,8 +1,11 @@
 package com.idupi.app.ui.screens
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -34,12 +37,16 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.idupi.app.domain.model.CpuMetrics
+import com.idupi.app.domain.model.DiskMetrics
+import com.idupi.app.domain.model.DiskUsageLevel
 import com.idupi.app.domain.model.GpuMetrics
 import com.idupi.app.domain.model.MemoryMetrics
 import com.idupi.app.domain.model.PowerSummary
 import com.idupi.app.domain.model.SystemMetrics
+import com.idupi.app.domain.model.diskUsageLevel
 import com.idupi.app.domain.model.formatMemoryUsageBytes
 import com.idupi.app.domain.model.formatMetricCelsius
+import com.idupi.app.domain.model.formatMetricGigabytes
 import com.idupi.app.domain.model.formatMetricPercent
 import com.idupi.app.domain.model.formatMetricWatts
 import com.idupi.app.domain.model.knownPowerSummary
@@ -309,6 +316,7 @@ private fun MetricsContent(metrics: SystemMetrics, refreshFailed: Boolean) {
                 }
             }
         }
+        StorageCard(metrics.disks)
         PowerSummaryCard(metrics)
         if (metrics.hints.isNotEmpty()) {
             HintsCard(metrics.hints)
@@ -374,6 +382,132 @@ private fun GpuCard(title: String, gpu: GpuMetrics, modifier: Modifier) {
             value = formatMemoryUsageBytes(gpu.memoryUsedBytes, gpu.memoryTotalBytes)
         )
     }
+}
+
+/**
+ * Full-width "Almacenamiento" card: one swipeable page per fixed disk.
+ *
+ * The pager state survives the 2 s polling updates because the pages are keyed
+ * by mount point; a new sample replaces the numbers, not the page identity, so
+ * the owner does not get thrown back to C: while reading D:.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun StorageCard(disks: List<DiskMetrics>) {
+    MetricCard(title = "Almacenamiento", modifier = Modifier.fillMaxWidth()) {
+        if (disks.isEmpty()) {
+            Text(
+                text = "Sin discos",
+                style = AppTypography.bodySmall,
+                color = TextSecondary
+            )
+            return@MetricCard
+        }
+
+        val pagerState = rememberPagerState(pageCount = { disks.size })
+        HorizontalPager(
+            state = pagerState,
+            key = { index -> disks[index].mount },
+            pageSpacing = AppSpacing.md,
+            modifier = Modifier.fillMaxWidth()
+        ) { page ->
+            DiskPage(disks[page])
+        }
+
+        if (disks.size > 1) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = AppSpacing.xs),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                repeat(disks.size) { index ->
+                    val selected = index == pagerState.currentPage
+                    Box(
+                        modifier = Modifier
+                            .padding(horizontal = AppSpacing.xxs)
+                            .size(if (selected) 8.dp else 6.dp)
+                            .clip(AppShapes.pill)
+                            .background(if (selected) PrimaryIndigo else SlateBorder)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiskPage(disk: DiskMetrics) {
+    Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = disk.mount.ifBlank { "Disco" },
+                style = AppTypography.titleMedium,
+                color = TextPrimary,
+                maxLines = 1
+            )
+            if (!disk.label.isNullOrBlank()) {
+                Spacer(modifier = Modifier.width(AppSpacing.sm))
+                Text(
+                    text = disk.label,
+                    style = AppTypography.bodySmall,
+                    color = TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+
+        val percent = disk.usagePercent
+        if (percent != null && percent.isFinite()) {
+            val color = diskColor(diskUsageLevel(percent))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Uso del disco",
+                    style = AppTypography.bodySmall,
+                    color = TextSecondary
+                )
+                Text(
+                    text = formatMetricPercent(percent) ?: "—",
+                    style = AppTypography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = color
+                )
+            }
+            LinearProgressIndicator(
+                progress = (percent / 100.0).toFloat().coerceIn(0f, 1f),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(6.dp)
+                    .clip(AppShapes.pill),
+                color = color,
+                trackColor = SlateBorder
+            )
+        }
+
+        MetricRow(
+            label = "Usado",
+            value = formatMemoryUsageBytes(disk.usedBytes, disk.totalBytes)
+        )
+        MetricRow(label = "Libre", value = formatMetricGigabytes(disk.freeBytes))
+        MetricRow(label = "Sistema de archivos", value = disk.fileSystem)
+    }
+}
+
+@Composable
+private fun diskColor(level: DiskUsageLevel): Color = when (level) {
+    DiskUsageLevel.OK -> StatusConnected
+    DiskUsageLevel.WARN -> StatusWorking
+    DiskUsageLevel.CRITICAL -> StatusError
+    DiskUsageLevel.UNKNOWN -> TextSecondary
 }
 
 @Composable

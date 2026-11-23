@@ -133,6 +133,67 @@ class SystemMetricsTest {
     }
 
     @Test
+    fun `decodes the disks array with sizes, labels and file systems`() {
+        val payload = """
+            {
+              "sampledAt": "2026-11-23T12:00:00.000Z",
+              "cpu": { "name": "AMD Ryzen 5 5600X" },
+              "disks": [
+                {
+                  "mount": "C:",
+                  "label": "Windows",
+                  "fileSystem": "NTFS",
+                  "totalBytes": 511000000000,
+                  "freeBytes": 123000000000,
+                  "usedBytes": 388000000000,
+                  "usagePercent": 75.9
+                },
+                {
+                  "mount": "D:",
+                  "label": null,
+                  "fileSystem": null,
+                  "totalBytes": 1000000000000,
+                  "freeBytes": 900000000000,
+                  "usedBytes": 100000000000,
+                  "usagePercent": 10.0
+                }
+              ]
+            }
+        """.trimIndent()
+
+        val metrics = json.decodeFromString<SystemMetrics>(payload)
+
+        assertEquals(2, metrics.disks.size)
+        val system = metrics.disks[0]
+        assertEquals("C:", system.mount)
+        assertEquals("Windows", system.label)
+        assertEquals("NTFS", system.fileSystem)
+        assertEquals(511000000000L, system.totalBytes)
+        assertEquals(388000000000L, system.usedBytes)
+        assertEquals(75.9, system.usagePercent!!, 0.0001)
+        assertNull(metrics.disks[1].label)
+        assertNull(metrics.disks[1].fileSystem)
+    }
+
+    @Test
+    fun `a missing disks section decodes to an empty list`() {
+        val metrics = json.decodeFromString<SystemMetrics>("""{ "cpu": { "name": "x" } }""")
+
+        assertTrue(metrics.disks.isEmpty())
+    }
+
+    @Test
+    fun `disk usage level follows the 75 and 90 percent thresholds`() {
+        assertEquals(DiskUsageLevel.OK, diskUsageLevel(0.0))
+        assertEquals(DiskUsageLevel.OK, diskUsageLevel(74.9))
+        assertEquals(DiskUsageLevel.WARN, diskUsageLevel(75.0))
+        assertEquals(DiskUsageLevel.WARN, diskUsageLevel(89.9))
+        assertEquals(DiskUsageLevel.CRITICAL, diskUsageLevel(90.0))
+        assertEquals(DiskUsageLevel.CRITICAL, diskUsageLevel(100.0))
+        assertEquals(DiskUsageLevel.UNKNOWN, diskUsageLevel(null))
+    }
+
+    @Test
     fun `summary sums known watts and flags the missing CPU sensor`() {
         val gpuOnly = SystemMetrics(
             gpus = listOf(GpuMetrics(powerW = 13.02), GpuMetrics(powerW = 8.0))

@@ -21,9 +21,41 @@ data class SystemMetrics(
     val cpu: CpuMetrics = CpuMetrics(),
     val memory: MemoryMetrics = MemoryMetrics(),
     val gpus: List<GpuMetrics> = emptyList(),
+    /**
+     * Every fixed local disk. `mount` is the drive letter with a colon (for
+     * example `C:`); sizes come from statfs on the server and are null when a
+     * probe could not read that drive.
+     */
+    val disks: List<DiskMetrics> = emptyList(),
     val sources: MetricsSources = MetricsSources(),
     val hints: List<String> = emptyList(),
 )
+
+@Serializable
+data class DiskMetrics(
+    val mount: String = "",
+    val label: String? = null,
+    val fileSystem: String? = null,
+    val totalBytes: Long? = null,
+    val freeBytes: Long? = null,
+    val usedBytes: Long? = null,
+    val usagePercent: Double? = null,
+)
+
+/** Storage card thresholds: below 75 % is healthy, from 90 % it is critical. */
+enum class DiskUsageLevel { OK, WARN, CRITICAL, UNKNOWN }
+
+/**
+ * Maps the server's usage percentage to the storage card's bar colour. The
+ * thresholds are the task's: <75 green, <90 amber, >=90 red; an unreadable
+ * drive stays neutral instead of pretending to be healthy.
+ */
+fun diskUsageLevel(usagePercent: Double?): DiskUsageLevel = when {
+    usagePercent == null || !usagePercent.isFinite() -> DiskUsageLevel.UNKNOWN
+    usagePercent < 75.0 -> DiskUsageLevel.OK
+    usagePercent < 90.0 -> DiskUsageLevel.WARN
+    else -> DiskUsageLevel.CRITICAL
+}
 
 @Serializable
 data class CpuMetrics(
