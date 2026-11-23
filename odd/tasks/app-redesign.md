@@ -95,7 +95,7 @@ dead surfaces, give terminals and deliveries their own entries, rename the CLI c
 | T9 | 0a0ec16 | DataStore theme_mode/preset/custom colors; presets Índigo/Esmeralda/Ámbar; custom swatches + contrast warning; removed auto-approve (+ header plumbing/tests), wallpaper, dead mute toggle. |
 | T10 | 6ab53cd, a93a5d9 | Server GET /api/v1/os/processes (one PowerShell sample, cpu deltas, categories idupi>agents>windows>apps>background, protected list) + POST kill (409 protected / 404 / taskkill). App list with chips/search/sort/details/confirm. Live: 328 processes in 573 ms, kill pid 4 -> 409, no token -> 401. Old /api/v1/terminals client surface removed. |
 | Release 1.35 | 2d4865b | Parent: testDebugUnitTest (285) + assembleRelease EXIT 0, versionCode 36 same cert, server restarted (PID 35340), pushed dlv-83f23c4229e2. Pending: owner on-device check (no device run by workers). |
-
+| Fix 1.36 | 6de3195 | Owner report: CPU/RAM cards missing on 1.35. Cause (T7 regression): grid rows emitted directly inside BoxWithConstraints (Box semantics) so the GPU row overlapped the CPU/RAM row; unit tests do not cover layout. Parent fix: rows wrapped in a Column. testDebugUnitTest + assembleRelease EXIT 0, versionCode 37 same cert, pushed dlv-55b79002227f. |
 
 ## Next step
 
