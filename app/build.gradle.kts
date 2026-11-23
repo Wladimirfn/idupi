@@ -32,8 +32,8 @@ android {
         // "which APK am I running" is answerable from the system settings.
         // Same-versionCode installs get silently skipped by some phone
         // installers -- that is how a stale build masqueraded as the new one.
-        versionCode = 35
-        versionName = "1.34-app-redesign"
+        versionCode = 36
+        versionName = "1.35-themes-processes"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
