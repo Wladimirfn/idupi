@@ -50,6 +50,10 @@ import { createPtyRoutes } from "./lib/pty-routes.mjs";
 // idupi-server/deliveries/, so a rebuild cannot change bytes mid-download.
 import { createDeliveryRegistry } from "./lib/delivery-registry.mjs";
 import { createDeliveryRoutes } from "./lib/delivery-routes.mjs";
+// Live PC metrics for the dashboard (app-redesign, T3): CPU/RAM from os, GPU
+// from nvidia-smi, and optional CPU temperature/power from LibreHardwareMonitor.
+import { createSystemMetrics } from "./lib/system-metrics.mjs";
+import { createSystemMetricsRoutes } from "./lib/system-metrics-routes.mjs";
 // Browser view of those same PTYs (live-shared-terminals T2): loopback-only
 // static files, served before auth because they hold no secrets.
 import { createTerminalWebRoutes } from "./lib/terminal-web-routes.mjs";
@@ -1212,6 +1216,11 @@ const deliveryRegistry = createDeliveryRegistry({
     storeDir: fileURLToPath(new URL("./deliveries", import.meta.url)),
 });
 const handleDeliveryRoute = createDeliveryRoutes(deliveryRegistry);
+
+// Dashboard metrics: one sampler for the whole process, so its ~1.5 s cache
+// and the previous CPU delta sample are shared by every poller instead of
+// spawning nvidia-smi once per request.
+const handleSystemMetricsRoute = createSystemMetricsRoutes(createSystemMetrics());
 
 // Browser view of the shared terminals: page files live in web/terminal, and
 // the xterm assets are the SAME vendored 5.5.0 copy the Android app loads, so
@@ -3166,6 +3175,8 @@ const handleRequest = async (req, res) => {
     if (await handlePtyRoute(req, res, pathname)) return;
     // APK deliveries live in lib/delivery-routes.mjs; behind the same token.
     if (await handleDeliveryRoute(req, res, pathname)) return;
+    // Dashboard metrics live in lib/system-metrics-routes.mjs; behind the same token.
+    if (await handleSystemMetricsRoute(req, res, pathname)) return;
 
     // 0. Stream de eventos del chat (SSE). Long-lived: no responde y sigue abierto.
     if (pathname === "/api/v1/chat/stream" && req.method === "GET") {

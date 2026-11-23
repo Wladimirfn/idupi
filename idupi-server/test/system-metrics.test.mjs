@@ -1,0 +1,464 @@
+// Tests for the dashboard metrics endpoint (app-redesign, T3).
+//
+// Three layers with the smallest harness that proves each:
+//   - pure parsers (nvidia-smi CSV, LHM tree, CPU delta maths);
+//   - the sampler factory with injected os/execFile/fetch/clock, so no test
+//     touches real hardware, a real GPU process, or the wall clock;
+//   - a real http.Server on an ephemeral port for the route shape, plus one
+//     static check that index.mjs wires the handler AFTER requireAuth.
+//
+// Run (from repo root):
+//   node --test idupi-server/test/system-metrics.test.mjs
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import http from "node:http";
+import { readFile } from "node:fs/promises";
+
+import {
+    createSystemMetrics,
+    cpuUsagePercent,
+    parseLhmSensors,
+    parseNvidiaSmi,
+} from "../lib/system-metrics.mjs";
+import { createSystemMetricsRoutes } from "../lib/system-metrics-routes.mjs";
+
+const GIB = 1024 * 1024 * 1024;
+const MIB = 1024 * 1024;
+
+const nvidiaLine = "NVIDIA GeForce RTX 3060, 4, 39.97, 13.36, 1026, 12288";
+
+function cpuTimes({ user, nice = 0, sys, idle, irq = 0 }) {
+    return { user, nice, sys, idle, irq };
+}
+
+/** Fake `os` whose cpus() walks a fixed list of snapshots, one per call. */
+function fakeOs({ snapshots, totalBytes = 16 * GIB, freeBytes = 6 * GIB, model = "AMD Ryzen 5 5600X" }) {
+    let call = 0;
+    return {
+        cpus() {
+            const snapshot = snapshots[Math.min(call, snapshots.length - 1)];
+            call++;
+            return snapshot.map((times) => ({ model, speed: 3600, times }));
+        },
+        totalmem: () => totalBytes,
+        freemem: () => freeBytes,
+    };
+}
+
+function unusableSources() {
+    return {
+        execFile: async () => {
+            const error = new Error("spawn nvidia-smi ENOENT");
+            error.code = "ENOENT";
+            throw error;
+        },
+        fetch: async () => {
+            throw new Error("ECONNREFUSED 127.0.0.1:8085");
+        },
+    };
+}
+
+const lhmAmdTree = {
+    Text: "Sensor",
+    Children: [
+        {
+            Text: "AMD Ryzen 5 5600X",
+            Children: [
+                {
+                    Text: "Temperatures",
+                    Type: "Group",
+                    Children: [
+                        {
+                            Text: "Core (Tctl/Tdie)",
+                            Value: "45.3 °C",
+                            Type: "Temperature",
+                            SensorId: "/amdcpu/0/temperature/2",
+                        },
+                        { Text: "Core #1", Value: "41.0 °C", Type: "Temperature" },
+                    ],
+                },
+                {
+                    Text: "Powers",
+                    Children: [{ Text: "Package", Value: "65.2 W", Type: "Power" }],
+                },
+            ],
+        },
+    ],
+};
+
+const lhmIntelTree = {
+    Text: "Sensor",
+    Children: [
+        {
+            Text: "Intel Core i7-12700K",
+            Children: [
+                {
+                    Text: "Temperatures",
+                    Children: [
+                        { Text: "Core #1", Value: "50.0 °C" },
+                        { Text: "CPU Package", Value: "55.0 °C" },
+                    ],
+                },
+                {
+                    Text: "Powers",
+                    Children: [{ Text: "Package", Value: "88.1 W" }],
+                },
+            ],
+        },
+        {
+            Text: "Motherboard",
+            Children: [
+                {
+                    Text: "Temperatures",
+                    Children: [{ Text: "DIMM #1", Value: "38.0 °C" }],
+                },
+            ],
+        },
+    ],
+};
+
+// --- nvidia-smi ------------------------------------------------------------
+
+test("nvidia-smi rows: numeric sensors become numbers, [N/A] stays null", () => {
+    const gpus = parseNvidiaSmi(
+        `${nvidiaLine}\nNVIDIA T400, [N/A], [N/A], [N/A], [N/A], [N/A]\n`,
+    );
+
+    assert.equal(gpus.length, 2);
+    assert.deepEqual(gpus[0], {
+        name: "NVIDIA GeForce RTX 3060",
+        usagePercent: 4,
+        temperatureC: 39.97,
+        powerW: 13.36,
+        memoryUsedBytes: 1026 * MIB,
+        memoryTotalBytes: 12288 * MIB,
+    });
+    assert.deepEqual(gpus[1], {
+        name: "NVIDIA T400",
+        usagePercent: null,
+        temperatureC: null,
+        powerW: null,
+        memoryUsedBytes: null,
+        memoryTotalBytes: null,
+    });
+});
+
+test("nvidia-smi parsing ignores blank and truncated rows", () => {
+    assert.deepEqual(parseNvidiaSmi(""), []);
+    assert.deepEqual(parseNvidiaSmi("only, three, cells\n"), []);
+    assert.deepEqual(parseNvidiaSmi(undefined), []);
+});
+
+// --- CPU delta maths -------------------------------------------------------
+
+test("cpu usage is the busy fraction between two snapshots", () => {
+    const previous = [cpuTimes({ user: 100, sys: 100, idle: 800 })];
+    const current = [cpuTimes({ user: 200, sys: 150, idle: 1650 })];
+
+    // total delta 1000, idle delta 850 -> 15% busy.
+    assert.equal(cpuUsagePercent(previous, current), 15);
+});
+
+test("cpu usage is null without a forward-moving delta", () => {
+    const same = [cpuTimes({ user: 100, sys: 100, idle: 800 })];
+    assert.equal(cpuUsagePercent(same, same), null);
+    assert.equal(cpuUsagePercent([], []), null);
+    assert.equal(cpuUsagePercent(undefined, same), null);
+});
+
+// --- LibreHardwareMonitor tree ---------------------------------------------
+
+test("LHM AMD tree: Tctl/Tdie temperature and Package power win", () => {
+    const sensors = parseLhmSensors(lhmAmdTree);
+
+    assert.equal(sensors.cpuTemperatureC, 45.3);
+    assert.equal(sensors.cpuPowerW, 65.2);
+    assert.equal(sensors.memoryTemperatureC, null);
+});
+
+test("LHM Intel tree: CPU Package temperature and Package power", () => {
+    const sensors = parseLhmSensors(lhmIntelTree);
+
+    assert.equal(sensors.cpuTemperatureC, 55);
+    assert.equal(sensors.cpuPowerW, 88.1);
+    assert.equal(sensors.memoryTemperatureC, 38);
+});
+
+test("LHM tree without CPU sensors leaves the fields null", () => {
+    const sensors = parseLhmSensors({ Text: "Sensor", Children: [] });
+
+    assert.deepEqual(sensors, {
+        cpuTemperatureC: null,
+        cpuPowerW: null,
+        memoryTemperatureC: null,
+    });
+});
+
+// --- sampler ---------------------------------------------------------------
+
+test("sample composes cpu, memory and GPU values from the injected sources", async () => {
+    const bus = fakeOs({
+        snapshots: [
+            Array.from({ length: 8 }, () => cpuTimes({ user: 100, sys: 100, idle: 800 })),
+            Array.from({ length: 8 }, () => cpuTimes({ user: 200, sys: 150, idle: 1650 })),
+        ],
+    });
+    const calls = [];
+    const metrics = createSystemMetrics({
+        os: bus,
+        execFile: async (file, args, options) => {
+            calls.push({ file, args, options });
+            return { stdout: `${nvidiaLine}\n` };
+        },
+        fetch: async () => {
+            throw new Error("ECONNREFUSED");
+        },
+        sleep: async () => {},
+        now: () => Date.parse("2026-11-23T12:00:00.000Z"),
+    });
+
+    const sample = await metrics.sample();
+
+    assert.equal(sample.sampledAt, "2026-11-23T12:00:00.000Z");
+    assert.deepEqual(sample.cpu, {
+        name: "AMD Ryzen 5 5600X",
+        usagePercent: 15,
+        temperatureC: null,
+        powerW: null,
+        cores: 8,
+    });
+    assert.deepEqual(sample.memory, {
+        usedBytes: 10 * GIB,
+        totalBytes: 16 * GIB,
+        usagePercent: 62.5,
+        temperatureC: null,
+    });
+    assert.equal(sample.gpus.length, 1);
+    assert.equal(sample.gpus[0].name, "NVIDIA GeForce RTX 3060");
+    assert.equal(sample.gpus[0].memoryTotalBytes, 12288 * MIB);
+    assert.deepEqual(sample.sources, { gpu: "nvidia-smi", sensors: null });
+    assert.equal(sample.hints.length, 1);
+    assert.match(sample.hints[0], /LibreHardwareMonitor/);
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].file, "nvidia-smi");
+    assert.deepEqual(calls[0].args, [
+        "--query-gpu=name,utilization.gpu,temperature.gpu,power.draw,memory.used,memory.total",
+        "--format=csv,noheader,nounits",
+    ]);
+    assert.equal(calls[0].options.timeout, 3000);
+});
+
+test("a missing nvidia-smi degrades to no GPUs plus a hint", async () => {
+    const metrics = createSystemMetrics({
+        os: fakeOs({
+            snapshots: [
+                [cpuTimes({ user: 10, sys: 10, idle: 80 })],
+                [cpuTimes({ user: 20, sys: 20, idle: 160 })],
+            ],
+        }),
+        ...unusableSources(),
+        sleep: async () => {},
+    });
+
+    const sample = await metrics.sample();
+
+    assert.deepEqual(sample.gpus, []);
+    assert.deepEqual(sample.sources, { gpu: null, sensors: null });
+    assert.equal(sample.hints.length, 2);
+    assert.match(sample.hints[0], /nvidia-smi/);
+    assert.match(sample.hints[1], /LibreHardwareMonitor/);
+    // The rest of the sample is still real: a dead GPU probe must not blank CPU/RAM.
+    assert.equal(sample.cpu.usagePercent, 20);
+    assert.equal(sample.memory.totalBytes, 16 * GIB);
+});
+
+test("LHM sensors reach the sample; unreachable LHM keeps them null", async () => {
+    const base = {
+        os: fakeOs({
+            snapshots: [
+                [cpuTimes({ user: 10, sys: 10, idle: 80 })],
+                [cpuTimes({ user: 20, sys: 20, idle: 160 })],
+            ],
+        }),
+        execFile: async () => ({ stdout: `${nvidiaLine}\n` }),
+        sleep: async () => {},
+    };
+
+    const withSensors = await createSystemMetrics({
+        ...base,
+        fetch: async () => ({ ok: true, json: async () => lhmAmdTree }),
+    }).sample();
+    assert.equal(withSensors.cpu.temperatureC, 45.3);
+    assert.equal(withSensors.cpu.powerW, 65.2);
+    assert.equal(withSensors.sources.sensors, "librehardwaremonitor");
+    assert.deepEqual(withSensors.hints, []);
+
+    const withoutSensors = await createSystemMetrics({
+        ...base,
+        fetch: async () => ({ ok: false, json: async () => ({}) }),
+    }).sample();
+    assert.equal(withoutSensors.cpu.temperatureC, null);
+    assert.equal(withoutSensors.sources.sensors, null);
+    assert.match(withoutSensors.hints[0], /LibreHardwareMonitor/);
+});
+
+test("concurrent pollers share one sample inside the cache window", async () => {
+    let clock = 1_000_000;
+    let nvidiaCalls = 0;
+    const metrics = createSystemMetrics({
+        os: fakeOs({
+            snapshots: [
+                [cpuTimes({ user: 10, sys: 10, idle: 80 })],
+                [cpuTimes({ user: 20, sys: 20, idle: 160 })],
+            ],
+        }),
+        execFile: async () => {
+            nvidiaCalls++;
+            return { stdout: `${nvidiaLine}\n` };
+        },
+        fetch: async () => {
+            throw new Error("ECONNREFUSED");
+        },
+        sleep: async () => {},
+        now: () => clock,
+        cacheMs: 1500,
+    });
+
+    const [first, second] = await Promise.all([metrics.sample(), metrics.sample()]);
+    const third = await metrics.sample();
+    assert.equal(first, second);
+    assert.equal(first, third);
+    assert.equal(nvidiaCalls, 1);
+
+    clock += 1600;
+    await metrics.sample();
+    assert.equal(nvidiaCalls, 2);
+});
+
+// --- route -----------------------------------------------------------------
+
+const fixtureSample = {
+    sampledAt: "2026-11-23T12:00:00.000Z",
+    cpu: { name: "AMD Ryzen 5 5600X", usagePercent: 12.5, temperatureC: null, powerW: null, cores: 12 },
+    memory: { usedBytes: 10 * GIB, totalBytes: 32 * GIB, usagePercent: 31.3, temperatureC: null },
+    gpus: [
+        {
+            name: "NVIDIA GeForce RTX 3060",
+            usagePercent: 4,
+            temperatureC: 39.97,
+            powerW: 13.36,
+            memoryUsedBytes: 1026 * MIB,
+            memoryTotalBytes: 12288 * MIB,
+        },
+    ],
+    sources: { gpu: "nvidia-smi", sensors: null },
+    hints: ["librehardwaremonitor apagado"],
+};
+
+async function startHarness(t, metrics) {
+    const handle = createSystemMetricsRoutes(metrics);
+    const server = http.createServer(async (req, res) => {
+        try {
+            const pathname = new URL(req.url, "http://localhost").pathname;
+            if (await handle(req, res, pathname)) return;
+            // Anything the handler does not own stands in for the rest of the
+            // route chain: a distinct status proves it was not answered here.
+            res.writeHead(418);
+            res.end();
+        } catch (err) {
+            if (!res.headersSent) res.writeHead(500);
+            res.end(String((err && err.message) || err));
+        }
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    t.after(async () => {
+        server.closeAllConnections?.();
+        await new Promise((resolve) => server.close(resolve));
+    });
+    return base;
+}
+
+test("GET /api/v1/system/metrics answers the dashboard shape", async (t) => {
+    const base = await startHarness(t, { sample: async () => fixtureSample });
+
+    const res = await fetch(`${base}/api/v1/system/metrics`);
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("content-type"), "application/json");
+    assert.equal(res.headers.get("cache-control"), "no-store");
+
+    const body = await res.json();
+    assert.deepEqual(Object.keys(body), [
+        "sampledAt",
+        "cpu",
+        "memory",
+        "gpus",
+        "sources",
+        "hints",
+    ]);
+    assert.deepEqual(body.cpu, fixtureSample.cpu);
+    assert.deepEqual(body.memory, fixtureSample.memory);
+    assert.deepEqual(body.gpus, fixtureSample.gpus);
+    assert.deepEqual(body.sources, fixtureSample.sources);
+    assert.deepEqual(body.hints, fixtureSample.hints);
+});
+
+test("HEAD answers the same headers with no body; other paths are not ours", async (t) => {
+    const base = await startHarness(t, { sample: async () => fixtureSample });
+
+    const head = await fetch(`${base}/api/v1/system/metrics`, { method: "HEAD" });
+    assert.equal(head.status, 200);
+    assert.ok(Number(head.headers.get("content-length")) > 0);
+    assert.equal((await head.arrayBuffer()).byteLength, 0);
+
+    const foreign = await fetch(`${base}/api/v1/status`);
+    assert.equal(foreign.status, 418);
+    await foreign.arrayBuffer();
+});
+
+test("non read-only methods answer 405 with Allow", async (t) => {
+    let sampled = 0;
+    const base = await startHarness(t, {
+        sample: async () => {
+            sampled++;
+            return fixtureSample;
+        },
+    });
+
+    for (const method of ["POST", "PUT", "DELETE", "PATCH"]) {
+        const res = await fetch(`${base}/api/v1/system/metrics`, { method });
+        assert.equal(res.status, 405, method);
+        assert.equal(res.headers.get("allow"), "GET, HEAD");
+        assert.equal((await res.json()).code, "METHOD_NOT_ALLOWED");
+    }
+    assert.equal(sampled, 0);
+});
+
+test("a failing sampler answers 500 instead of a malformed payload", async (t) => {
+    const base = await startHarness(t, {
+        sample: async () => {
+            throw new Error("nvidia exploded");
+        },
+    });
+
+    const res = await fetch(`${base}/api/v1/system/metrics`);
+    assert.equal(res.status, 500);
+    assert.equal((await res.json()).code, "INTERNAL");
+});
+
+// --- wiring ----------------------------------------------------------------
+
+test("index.mjs wires the metrics route behind requireAuth", async () => {
+    const source = await readFile(new URL("../index.mjs", import.meta.url), "utf8");
+    const authGate = source.indexOf("if (!requireAuth(req, res)) return;");
+    const metricsWire = source.indexOf("handleSystemMetricsRoute(req, res, pathname)");
+
+    assert.ok(authGate > -1, "the bearer-token gate must exist");
+    assert.ok(metricsWire > -1, "the metrics handler must be called in the route chain");
+    assert.ok(
+        metricsWire > authGate,
+        "the metrics handler must run after the bearer-token check",
+    );
+});
