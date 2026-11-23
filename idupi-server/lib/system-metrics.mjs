@@ -58,6 +58,8 @@ const SENSORS_INSTALL_HINT =
     "Para temperatura y consumo del CPU, instalá el servicio de sensores con permisos de administrador: idupi-server\\scripts\\install-sensors-helper.ps1 (alternativa: LibreHardwareMonitor con 'Remote Web Server' activado en el puerto 8085)";
 const SENSORS_STALE_HINT =
     "El servicio de sensores no está corriendo: sensors.json tiene más de 10 segundos sin actualizarse. Revisá la tarea programada 'IDUPI Sensors' (se instala con idupi-server\\scripts\\install-sensors-helper.ps1; alternativa: LibreHardwareMonitor con 'Remote Web Server' en el puerto 8085)";
+const SENSORS_NO_DRIVER_HINT =
+    "El servicio de sensores corre, pero LibreHardwareMonitor no puede leer el CPU: falta el driver PawnIO (https://pawnio.eu). Instalalo y reiniciá la tarea 'IDUPI Sensors'";
 const GPU_HINT =
     "No se detectó nvidia-smi: no hay métricas de GPU disponibles en esta PC";
 
@@ -90,6 +92,11 @@ export function parseSensorNumber(value) {
     if (!match) return null;
     const parsed = Number(match[0]);
     return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** Sensor readings that cannot be real when zero or negative become null. */
+export function positiveOrNull(value) {
+    return typeof value === "number" && value > 0 ? value : null;
 }
 
 /**
@@ -371,11 +378,17 @@ export function createSystemMetrics({
             return { status: "stale" };
         }
 
+        // LibreHardwareMonitor reports 0 for sensors it cannot read (no kernel
+        // driver), and 0 °C / 0 W is never a real reading on a running CPU.
+        const cpuTemperatureC = positiveOrNull(parseSensorNumber(data?.cpu?.temperatureC));
+        const cpuPowerW = positiveOrNull(parseSensorNumber(data?.cpu?.powerW));
+        if (cpuTemperatureC === null && cpuPowerW === null) return { status: "nodriver" };
+
         return {
             status: "fresh",
-            cpuTemperatureC: parseSensorNumber(data?.cpu?.temperatureC),
-            cpuPowerW: parseSensorNumber(data?.cpu?.powerW),
-            memoryTemperatureC: parseSensorNumber(data?.memory?.temperatureC),
+            cpuTemperatureC,
+            cpuPowerW,
+            memoryTemperatureC: positiveOrNull(parseSensorNumber(data?.memory?.temperatureC)),
         };
     }
 
@@ -437,7 +450,11 @@ export function createSystemMetrics({
         const hints = [];
         if (!gpuResult.available) hints.push(GPU_HINT);
         if (!sensors.source) {
-            hints.push(sensors.helperStatus === "stale" ? SENSORS_STALE_HINT : SENSORS_INSTALL_HINT);
+            hints.push(
+                sensors.helperStatus === "stale" ? SENSORS_STALE_HINT
+                    : sensors.helperStatus === "nodriver" ? SENSORS_NO_DRIVER_HINT
+                        : SENSORS_INSTALL_HINT
+            );
         }
 
         return {

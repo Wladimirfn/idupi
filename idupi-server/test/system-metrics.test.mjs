@@ -420,10 +420,24 @@ test("helper nulls stay null instead of becoming zero", async () => {
     assert.equal(sample.cpu.temperatureC, null);
     assert.equal(sample.cpu.powerW, null);
     assert.equal(sample.memory.temperatureC, null);
-    // A fresh helper file still owns the source even when it cannot read the
-    // sensors (installed but not elevated, for example).
-    assert.equal(sample.sources.sensors, "sensors-helper");
-    assert.deepEqual(sample.hints, []);
+    // A fresh helper that cannot read the CPU (no kernel driver) does not own
+    // the source: the LHM web server may still answer, else the hint names
+    // the missing PawnIO driver.
+    assert.equal(sample.sources.sensors, null);
+    assert.equal(sample.hints.length, 1);
+    assert.match(sample.hints[0], /PawnIO/);
+});
+
+test("helper zeros (LHM without a driver) are treated as unreadable", async () => {
+    const sample = await helperMetrics({
+        readFile: async () =>
+            helperSnapshot({ cpuTemperatureC: 0, cpuPowerW: 0, memoryTemperatureC: 0 }),
+    }).sample();
+
+    assert.equal(sample.cpu.temperatureC, null);
+    assert.equal(sample.cpu.powerW, null);
+    assert.equal(sample.memory.temperatureC, null);
+    assert.match(sample.hints[0], /PawnIO/);
 });
 
 test("the no-source hint names the installer and the LHM alternative", async () => {
