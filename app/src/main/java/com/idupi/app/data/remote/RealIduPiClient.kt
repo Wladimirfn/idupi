@@ -164,6 +164,18 @@ class RealIduPiClient : IduPiClient {
         this.useHttps = useHttps
     }
 
+    /**
+     * Read-only snapshot of the values every request is built from. Used by
+     * [com.idupi.app.data.IduPiClientProvider.clear]'s test and by diagnostics;
+     * it must never become a second way to configure the client.
+     */
+    internal fun connectionSnapshot(): ClientConnectionSnapshot = ClientConnectionSnapshot(
+        host = host,
+        port = port,
+        token = token,
+        useHttps = useHttps
+    )
+
     private val httpScheme: String get() = if (useHttps) "https" else "http"
     private val wsScheme: String get() = if (useHttps) "wss" else "ws"
     private val baseUrl: String get() = "$httpScheme://$host:$port"
@@ -850,6 +862,17 @@ class RealIduPiClient : IduPiClient {
 
 @Serializable
 private data class ApplySddProfilePayload(val profileId: String)
+
+/**
+ * The host/port/token every request is built from, as one immutable value.
+ * Package-internal so tests can assert a reset without exposing mutators.
+ */
+internal data class ClientConnectionSnapshot(
+    val host: String,
+    val port: Int,
+    val token: String,
+    val useHttps: Boolean
+)
 
 // --- Interactive PTY wire payloads ---
 

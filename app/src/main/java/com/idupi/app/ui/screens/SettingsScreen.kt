@@ -23,6 +23,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.idupi.app.BuildConfig
+import com.idupi.app.IduPiApp
+import com.idupi.app.data.IduPiClientProvider
 import com.idupi.app.data.connection.ConnectionStorage
 import com.idupi.app.domain.model.MIN_READABLE_CONTRAST_RATIO
 import com.idupi.app.domain.model.ThemeColors
@@ -107,6 +109,11 @@ fun SettingsScreen(
                 },
                 onClearCredentials = {
                     connectionStorage.clear()
+                    // Persisted credentials are gone, but the in-memory client
+                    // and the delivery poller would keep using the old host and
+                    // token until the process restarted.
+                    IduPiClientProvider.clear()
+                    (context.applicationContext as? IduPiApp)?.stopDeliveryWatcher()
                     onNavigateToWelcome()
                 }
             )

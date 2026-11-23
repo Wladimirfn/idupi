@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.idupi.app.IduPiApp
 import com.idupi.app.data.IduPiClientProvider
 import com.idupi.app.data.connection.ConnectionStorage
 import com.idupi.app.data.remote.RealIduPiClient
@@ -157,6 +158,9 @@ class ConnectionViewModel : ViewModel() {
         }
 
         IduPiClientProvider.configureRealClient(profile)
+        // Clearing credentials stops the delivery poller; saving a profile
+        // brings it back without waiting for the next process start.
+        (context.applicationContext as? IduPiApp)?.startDeliveryWatcher()
         _saveSuccess.value = true
     }
 

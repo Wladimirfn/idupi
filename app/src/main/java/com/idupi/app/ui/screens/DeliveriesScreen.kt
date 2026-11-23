@@ -99,6 +99,7 @@ fun DeliveriesScreen(
             if (event == Lifecycle.Event.ON_RESUME) {
                 viewModel.refreshPermission()
                 viewModel.refresh()
+                viewModel.onScreenResumed()
                 notificationsBlocked = !DeliveryNotifications(context).canPost()
             }
         }

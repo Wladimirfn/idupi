@@ -19,4 +19,14 @@ object IduPiClientProvider : IduPiClientSource {
             useHttps = profile.useHttps
         )
     }
+
+    /**
+     * Forgets the configured PC: the in-memory client falls back to the local
+     * defaults and an empty token. "Borrar credenciales" must call this, or
+     * every screen keeps talking to the old server with the old token until
+     * the process restarts.
+     */
+    fun clear() {
+        realInstance.configure(host = "", port = 0, token = "", useHttps = false)
+    }
 }

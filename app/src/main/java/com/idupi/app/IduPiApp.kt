@@ -36,6 +36,16 @@ class IduPiApp : Application() {
         ).also { it.start(appScope) }
     }
 
+    /**
+     * Stops the poller. "Borrar credenciales" calls this so the loop cannot
+     * keep hitting the old server with the old token; [startDeliveryWatcher]
+     * starts a fresh loop once a profile is saved again.
+     */
+    fun stopDeliveryWatcher() {
+        deliveryWatcher?.stop()
+        deliveryWatcher = null
+    }
+
     companion object {
         lateinit var instance: IduPiApp
             private set

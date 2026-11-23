@@ -12,6 +12,7 @@ import com.idupi.app.data.install.PackageInstallerApkInstaller
 import com.idupi.app.domain.model.DeliveryInfo
 import com.idupi.app.domain.repository.IduPiClientSource
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -49,9 +50,17 @@ class DeliveriesViewModel(
         }
     },
     private val resultStore: InstallResultStore = InstallResultStore.shared,
+    /**
+     * Scope for the install coroutine. Production always uses `viewModelScope`;
+     * the seam exists so a test can cancel one install without tearing down the
+     * whole ViewModel.
+     */
+    installScope: CoroutineScope? = null,
 ) : ViewModel() {
 
     private val client get() = clientSource.client
+
+    private val scope: CoroutineScope = installScope ?: viewModelScope
 
     // Lazy so JVM tests can inject a fake provider without touching IduPiApp.
     private val installer: ApkInstaller by lazy { installerProvider() }
@@ -74,6 +83,18 @@ class DeliveriesViewModel(
 
     /** Delivery with an install in flight; installs are serialized. */
     private var activeInstallId: String? = null
+
+    /**
+     * True once the row moved to [DeliveryInstallState.Installing], i.e. the
+     * system confirmation dialog was launched. ON_RESUME after that dialog is
+     * dismissed arrives without an [InstallOutcome] when the owner cancelled,
+     * which is the case [onScreenResumed] repairs.
+     */
+    private var awaitingSystemConfirmation = false
+
+    /** Test seam: the delivery with an install in flight, if any. */
+    internal val activeInstallIdForTest: String?
+        get() = activeInstallId
 
     init {
         refreshPermission()
@@ -117,9 +138,10 @@ class DeliveriesViewModel(
         }
 
         activeInstallId = delivery.id
+        awaitingSystemConfirmation = false
         setInstallState(delivery.id, DeliveryInstallState.Downloading(initialProgress(delivery)))
 
-        viewModelScope.launch {
+        scope.launch {
             try {
                 installer.install(delivery) { written ->
                     setInstallState(
@@ -127,12 +149,21 @@ class DeliveriesViewModel(
                         DeliveryInstallState.Downloading(progressOf(delivery, written))
                     )
                 }
-                setInstallState(delivery.id, DeliveryInstallState.Installing)
+                // The receiver can publish the terminal outcome while the last
+                // bytes are being written. Do not overwrite it with Installing:
+                // the row would sit on "Esperando confirmación" forever.
+                if (_installStates.value[delivery.id] is DeliveryInstallState.Downloading) {
+                    awaitingSystemConfirmation = true
+                    setInstallState(delivery.id, DeliveryInstallState.Installing)
+                }
             } catch (e: CancellationException) {
+                if (activeInstallId == delivery.id) activeInstallId = null
+                awaitingSystemConfirmation = false
                 throw e
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to install ${delivery.id}", e)
                 activeInstallId = null
+                awaitingSystemConfirmation = false
                 setInstallState(
                     delivery.id,
                     DeliveryInstallState.Failed(
@@ -163,10 +194,28 @@ class DeliveriesViewModel(
         _errorMessage.value = null
     }
 
+    /**
+     * The Entregas screen calls this on ON_RESUME. Returning from the system
+     * install confirmation without confirming publishes no outcome at all, so
+     * the row would stay on "Esperando confirmación del sistema…" forever.
+     * Only a row that actually launched the confirmation is reset, and only
+     * while it still has no terminal outcome.
+     */
+    fun onScreenResumed() {
+        if (!awaitingSystemConfirmation) return
+        awaitingSystemConfirmation = false
+        val deliveryId = activeInstallId ?: return
+        if (_installStates.value[deliveryId] == DeliveryInstallState.Installing) {
+            activeInstallId = null
+            setInstallState(deliveryId, DeliveryInstallState.Idle)
+        }
+    }
+
     private fun onInstallOutcome(outcome: InstallOutcome) {
         val deliveryId = outcome.deliveryId ?: activeInstallId ?: return
         if (activeInstallId == deliveryId) {
             activeInstallId = null
+            awaitingSystemConfirmation = false
         }
         setInstallState(
             deliveryId,
