@@ -20,6 +20,17 @@ object AppTypography {
         letterSpacing = (-0.5).sp
     )
 
+    /**
+     * Metric headline inside the half-width Dashboard cards. One step smaller
+     * than [displayLarge] so a "100 %" reading fits the card instead of
+     * pushing the label rows out of the way on a 412 dp phone.
+     */
+    val metricHeadline = TextStyle(
+        fontSize = 24.sp,
+        fontWeight = FontWeight.Black,
+        letterSpacing = (-0.5).sp
+    )
+
     /** Section headers inside screens. */
     val titleMedium = TextStyle(
         fontSize = 16.sp,

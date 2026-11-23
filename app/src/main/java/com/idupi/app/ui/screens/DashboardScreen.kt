@@ -256,10 +256,21 @@ private fun ConnectionHeader(
     }
 }
 
+/**
+ * Dashboard grid width rule: two cards per row only when the content area is
+ * wide enough for a readable half-width card. Below this the cards stack, which
+ * is what stops the CPU/RAM rows from being squeezed on small phones.
+ */
+internal fun dashboardGridColumns(availableWidthDp: Float): Int =
+    if (availableWidthDp < MIN_TWO_COLUMN_WIDTH_DP) 1 else 2
+
+private const val MIN_TWO_COLUMN_WIDTH_DP = 360f
+
 @Composable
 private fun MetricsContent(metrics: SystemMetrics, refreshFailed: Boolean) {
     // CPU and RAM always exist; one card per GPU follows. Two per row keeps
-    // the phone layout dense without hiding any sensor behind a tap.
+    // the phone layout dense without hiding any sensor behind a tap; a narrow
+    // content area drops to one column instead of compressing the text.
     val cards: List<@Composable (Modifier) -> Unit> = buildList<@Composable (Modifier) -> Unit> {
         add { modifier -> CpuCard(metrics.cpu, modifier) }
         add { modifier -> RamCard(metrics.memory, modifier) }
@@ -277,16 +288,25 @@ private fun MetricsContent(metrics: SystemMetrics, refreshFailed: Boolean) {
                 color = StatusWorking
             )
         }
-        cards.chunked(2).forEach { rowCards ->
-            Row(
-                modifier = Modifier.height(IntrinsicSize.Min),
-                horizontalArrangement = Arrangement.spacedBy(AppSpacing.itemGap)
-            ) {
-                rowCards.forEach { card ->
-                    card(Modifier.weight(1f).fillMaxHeight())
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val columns = dashboardGridColumns(maxWidth.value)
+            val rows = cards.chunked(columns)
+            rows.forEachIndexed { rowIndex, rowCards ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(IntrinsicSize.Min),
+                    horizontalArrangement = Arrangement.spacedBy(AppSpacing.itemGap)
+                ) {
+                    rowCards.forEach { card ->
+                        card(Modifier.weight(1f).fillMaxHeight())
+                    }
+                    // An odd number of cards leaves the last row half-width.
+                    if (rowCards.size == 1 && columns == 2) Spacer(Modifier.weight(1f))
                 }
-                // An odd number of cards leaves the last row half-width.
-                if (rowCards.size == 1) Spacer(Modifier.weight(1f))
+                if (rowIndex != rows.lastIndex) {
+                    Spacer(modifier = Modifier.height(AppSpacing.itemGap))
+                }
             }
         }
         PowerSummaryCard(metrics)
@@ -482,17 +502,19 @@ private fun UsageHeadline(percent: Double?) {
     if (text == null || percent == null) {
         Text(
             text = "—",
-            style = AppTypography.displayLarge,
+            style = AppTypography.metricHeadline,
             color = TextSecondary
         )
         Text(
             text = "no disponible",
             style = AppTypography.labelSmall,
-            color = TextSecondary.copy(alpha = 0.7f)
+            color = TextSecondary.copy(alpha = 0.7f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     } else {
         val color = usageColor(percent)
-        Text(text = text, style = AppTypography.displayLarge, color = color)
+        Text(text = text, style = AppTypography.metricHeadline, color = color, maxLines = 1)
         LinearProgressIndicator(
             progress = (percent / 100.0).toFloat().coerceIn(0f, 1f),
             modifier = Modifier
@@ -505,6 +527,12 @@ private fun UsageHeadline(percent: Double?) {
     }
 }
 
+/**
+ * One label/value line inside a metric card. The label takes the flexible half
+ * and the value never wraps: before this, a long value like "8.9 GB / 15.9 GB"
+ * and its label both claimed the full row width and overlapped on a half-width
+ * card. Both ends ellipsize instead of spilling over each other.
+ */
 @Composable
 private fun MetricRow(
     label: String,
@@ -513,18 +541,33 @@ private fun MetricRow(
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(text = label, style = AppTypography.bodySmall, color = TextSecondary)
+        Text(
+            text = label,
+            style = AppTypography.bodySmall,
+            color = TextSecondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Spacer(modifier = Modifier.width(AppSpacing.sm))
         if (value == null) {
             Text(
                 text = "— no disponible",
                 style = AppTypography.labelSmall,
-                color = TextSecondary.copy(alpha = 0.7f)
+                color = TextSecondary.copy(alpha = 0.7f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         } else {
-            Text(text = value, style = AppTypography.bodyLarge, color = valueColor)
+            Text(
+                text = value,
+                style = AppTypography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                color = valueColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
         }
     }
 }
