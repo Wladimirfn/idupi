@@ -1,6 +1,6 @@
 # Privacy Policy — IDUPI
 
-**Last updated:** 28 August 2026  
+**Last updated:** 23 November 2026  
 **App:** IDUPI — `com.idupi.app`  
 **Contact:** idubox.chile@gmail.com — https://github.com/Wladimirfn/idupi
 
@@ -10,23 +10,27 @@ IDUPI runs entirely on **your own hardware**. The Android app (`com.idupi.app`) 
 ## Data Collection
 - **IDUPI itself does not collect personal data.** No analytics SDK, no ads SDK, no tracking.
 - The server generates a local **access token** (64 hex characters) stored as `.idupi-token` on your PC. This token is used only to authenticate the connection between your phone and your PC. It never leaves your devices.
-- Screen capture, terminal output, and chat content stay **in memory** on your PC and are streamed to your phone over your network (LAN or Tailscale). They are **not persisted** to our servers.
+- Screen capture, **terminal input and output**, the **process list** and **system metrics** (CPU, RAM, GPU, temperatures, power, storage) are read and processed **in memory** on your PC and streamed to your phone over your network (LAN or Tailscale). They are **not sent to us or persisted by us**.
+- **APK deliveries:** when you run `idupi-push` on the PC, the server stores a local copy of that APK in `idupi-server/deliveries/` so the phone downloads stable bytes. The newest 10 deliveries are kept (up to 300 MB each). You can delete a delivery from the app or by removing that folder on your PC.
 
 ## Data Usage & Sharing
 - Data is used solely to display and control **your** PC from **your** phone.
 - We do **not** share data with third parties.
-- If you use AI agents (Pi, Claude, OpenCode) through IDUPI, those agents may contact their respective model providers (e.g., OpenAI, Anthropic) according to **their** own configuration and privacy policies. IDUPI does not proxy or store those conversations beyond the session history kept locally on your PC.
+- If you run AI agents (Claude Code, OpenCode, Codex, Pi, etc.) inside an IDUPI terminal, those agents may contact their respective model providers according to **their** own configuration and privacy policies. IDUPI does not proxy, log or store those conversations.
+- The optional browser terminal page at `http://127.0.0.1:8788/terminal/` is served only to the PC itself (loopback). The access token travels in the URL fragment, which is not sent to the server.
 
 ## Network & Permissions
 - **Permissions requested by the Android app:**
   - `INTERNET` / `ACCESS_NETWORK_STATE` — to connect to your PC.
-  - `POST_NOTIFICATIONS` / `FOREGROUND_SERVICE` — to keep the connection alive in background.
+  - `POST_NOTIFICATIONS` / `FOREGROUND_SERVICE` / `FOREGROUND_SERVICE_DATA_SYNC` — to keep the connection alive in background and announce deliveries.
   - `WAKE_LOCK` / `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` — optional, to prevent the system from killing the session.
+  - `REQUEST_INSTALL_PACKAGES` — to install APKs that you pushed from your own PC. Android always asks you to confirm each sideload install.
 - By default the server is intended to be exposed **only via Tailscale** (or your local Wi-Fi). Do not expose it directly to the Internet. Tailscale’s own privacy policy applies when you use it.
 
 ## Data Retention & Deletion
-- No data is retained on our side. Session history is stored locally as `idupi-server/projects.json` on your PC and can be deleted by removing that file or uninstalling the server.
-- Uninstalling the Android app removes all local app data.
+- No data is retained on our side.
+- The server stores only local state on your PC: `.idupi-token`, registered projects in `idupi-server/projects.json`, APK snapshots in `idupi-server/deliveries/`, server logs in `idupi-server/logs/`, and sensor readings in `%ProgramData%\IDUPI\`. Delete those files or run the uninstall options of the server scripts to remove them.
+- Uninstalling the Android app removes all local app data, including connection profiles and appearance settings.
 
 ## Children’s Privacy
 IDUPI is not directed to children under 13 and does not knowingly collect data from them.
