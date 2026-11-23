@@ -185,7 +185,7 @@ fun ConnectionScreen(
             OutlinedTextField(
                 value = port,
                 onValueChange = { viewModel.updatePort(it) },
-                label = { Text("Puerto del Orquestador", color = TextSecondary) },
+                label = { Text("Puerto del servidor", color = TextSecondary) },
                 placeholder = { Text("8787", color = TextSecondary.copy(alpha = 0.5f)) },
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = TextPrimary,

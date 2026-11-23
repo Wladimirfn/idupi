@@ -179,7 +179,7 @@ fun AppNavigation() {
                                                 .background(StatusConnected)
                                         )
                                         Text(
-                                            text = "Orquestador Activo",
+                                            text = "Servidor PC conectado",
                                             color = StatusConnected,
                                             style = AppTypography.labelSmall
                                         )
