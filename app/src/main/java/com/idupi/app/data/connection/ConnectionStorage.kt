@@ -35,6 +35,15 @@ class ConnectionStorage(private val context: Context) {
         return profile.token.isEmpty() || encryptedToken != null
     }
 
+    /**
+     * Lightweight "can the background delivery poller try at all?" check:
+     * reads only the stored host, never decrypts the token.
+     */
+    fun hasConfiguredServer(): Boolean {
+        val host = prefs.getString("profile_host", "") ?: ""
+        return host.isNotBlank()
+    }
+
     fun getProfile(): ConnectionProfile? {
         val name = prefs.getString("profile_name", null) ?: return null
         val modeStr = prefs.getString("profile_mode", ConnectionMode.TAILSCALE.name) ?: ConnectionMode.TAILSCALE.name

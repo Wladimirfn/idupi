@@ -423,6 +423,50 @@ class RealIduPiClient : IduPiClient {
         if (e.statusCode == 404) false else throw e
     }
 
+    // --- APK deliveries (PC -> phone) ---
+
+    override suspend fun listDeliveries(): List<DeliveryInfo> =
+        send(HttpMethod.Get, "/api/v1/deliveries").body<DeliveryListResponse>().deliveries
+
+    /**
+     * Raw APK bytes over the chunked-response pattern: the caller writes each
+     * chunk straight into the PackageInstaller session, so neither side ever
+     * holds a whole APK in memory. Same timeout shape as [ptyStream]: an APK
+     * on a slow link can legitimately pause between reads, so the client does
+     * not impose a per-read deadline -- the installer bounds the attempt by
+     * cancelling the coroutine instead.
+     */
+    override fun downloadDelivery(id: String): Flow<ByteArray> = flow {
+        val url = "$baseUrl/api/v1/deliveries/$id/download"
+        client.prepareGet(url) {
+            authorize()
+            timeout {
+                requestTimeoutMillis = HttpTimeout.INFINITE_TIMEOUT_MS
+                socketTimeoutMillis = HttpTimeout.INFINITE_TIMEOUT_MS
+            }
+        }.execute { response ->
+            if (!response.status.isSuccess()) {
+                Log.w(TAG, "GET /api/v1/deliveries/$id/download -> ${response.status.value}")
+                throw IduPiHttpException(response.status.value, url, describeHttpFailure(response.status.value))
+            }
+            val channel = response.bodyAsChannel()
+            val buf = ByteArray(64 * 1024)
+            while (!channel.isClosedForRead) {
+                val n = channel.readAvailable(buf, 0, buf.size)
+                if (n == -1) break
+                if (n <= 0) continue
+                emit(buf.copyOfRange(0, n))
+            }
+        }
+    }
+
+    override suspend fun deleteDelivery(id: String): Boolean = try {
+        send(HttpMethod.Delete, "/api/v1/deliveries/$id")
+        true
+    } catch (e: IduPiHttpException) {
+        if (e.statusCode == 404) false else throw e
+    }
+
     /**
      * Connects to the server's chat SSE stream and translates each frame into a
      * [ChatEvent], merged with [chatEventFlow] -- the in-process events
@@ -853,6 +897,10 @@ private data class CreatePtyPayload(val cols: Int, val rows: Int, val cwd: Strin
 /** GET /api/v1/pty response: `{ "terminals": [info...] }`. */
 @Serializable
 private data class PtyListResponse(val terminals: List<PtyInfo> = emptyList())
+
+/** GET /api/v1/deliveries response: `{ "deliveries": [info...] }`, newest first. */
+@Serializable
+private data class DeliveryListResponse(val deliveries: List<DeliveryInfo> = emptyList())
 
 /** POST /api/v1/pty/{id}/input body: UTF-8 keystrokes, max 256 KiB. */
 @Serializable
