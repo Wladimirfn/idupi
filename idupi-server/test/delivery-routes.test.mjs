@@ -121,6 +121,31 @@ test("register rejects relative, UNC, device, wrong-extension, directory, missin
     assert.deepEqual(registry.list(), []);
 });
 
+test("an EEXIST id collision never deletes the file that already owns the name", async (t) => {
+    const root = await makeTempDir(t);
+    const sourceDir = await makeTempDir(t);
+    const storeDir = join(root, "deliveries");
+    await mkdir(storeDir, { recursive: true });
+    const source = await writeApk(sourceDir, "app-release.apk");
+    const squatter = join(storeDir, "dlv-aaaaaaaaaaaa.apk");
+    await writeFile(squatter, "someone else's snapshot");
+
+    const registry = createDeliveryRegistry({
+        storeDir,
+        newId: () => "dlv-aaaaaaaaaaaa",
+        log: silentLog,
+        now: () => new Date("2026-11-23T10:00:00Z"),
+    });
+
+    await assert.rejects(registry.register(source), (err) => err.code === "EEXIST");
+    assert.equal(
+        await readFile(squatter, "utf8"),
+        "someone else's snapshot",
+        "the retry path must not unlink a file this attempt did not create",
+    );
+    assert.deepEqual(registry.list(), []);
+});
+
 test("eviction beyond maxEntries deletes the oldest snapshot", async (t) => {
     const root = await makeTempDir(t);
     const sourceDir = await makeTempDir(t);

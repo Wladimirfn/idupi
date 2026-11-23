@@ -269,8 +269,26 @@ export function categorizeProcess(entry, { selfPid, byPid, idupiRoots, systemRoo
  * purpose: ending it only restarts the shell.
  */
 export function isProtectedProcess(entry, { selfPid }) {
-    if (entry.pid === 0 || entry.pid === 4 || entry.pid === selfPid) return true;
+    if (isProtectedPid(entry.pid, { selfPid })) return true;
     return CRITICAL_PROCESS_NAMES.has(normalizeProcessName(entry.name));
+}
+
+/**
+ * Protection that only needs a pid, for callers that do not hold a sample:
+ * 0/4, the IDUPI server itself, and every ancestor of the server. An ancestor
+ * matters because `taskkill /T` walks descendants -- ending it would take the
+ * server down with it.
+ *
+ * @param {number|string} pid
+ * @param {{ selfPid?: number, processes?: Array<{ pid: number, parentPid: number|null }> }} [options]
+ */
+export function isProtectedPid(pid, { selfPid = process.pid, processes = [] } = {}) {
+    const value = Number(pid);
+    if (!Number.isInteger(value)) return true;
+    if (value === 0 || value === 4 || value === selfPid) return true;
+    if (!Array.isArray(processes) || processes.length === 0) return false;
+    const byPid = new Map(processes.map((entry) => [entry.pid, entry]));
+    return ancestorChain(selfPid, byPid).includes(value);
 }
 
 function taskkillNotFound(err) {
@@ -330,24 +348,13 @@ export function createOsProcesses({
         if (!(elapsed > 0)) return null;
         const delta = entry.cpuTimeMs - before;
         if (!(delta >= 0)) return null;
-        return roundTo((delta / (elapsed * cpuCount)) * 100, 1);
+        // A process counter that jumps further than wall time × cores is a
+        // measurement artefact; the wire field is a percentage, never 300 %.
+        const percent = (delta / (elapsed * cpuCount)) * 100;
+        return roundTo(Math.min(100, Math.max(0, percent)), 1);
     }
 
-    async function buildSample() {
-        const at = now();
-        const totalMemoryBytes = Number(osImpl.totalmem());
-        const cpus = osImpl.cpus();
-        const cpuCount = Math.max(1, Array.isArray(cpus) && cpus.length > 0 ? cpus.length : 1);
-        const empty = {
-            sampledAt: new Date(at).toISOString(),
-            totalMemoryBytes,
-            cpuCount,
-            processes: [],
-        };
-
-        if (platform !== "win32") return empty;
-
-        let rows;
+    async function probeProcesses() {
         try {
             const { stdout } = await execFile(
                 "powershell",
@@ -359,15 +366,37 @@ export function createOsProcesses({
                     encoding: "utf8",
                 },
             );
-            rows = parseProcessList(stdout);
+            return { ok: true, rows: parseProcessList(stdout) };
         } catch (err) {
             // A failed probe answers an empty list, never invented processes;
             // the previous CPU baseline is kept so the next good sample can
             // still report deltas.
             log(`[os-processes] process query failed: ${(err && err.message) || err}`);
-            return empty;
+            return { ok: false, rows: [] };
         }
+    }
 
+    async function buildSample() {
+        const totalMemoryBytes = Number(osImpl.totalmem());
+        const cpus = osImpl.cpus();
+        const cpuCount = Math.max(1, Array.isArray(cpus) && cpus.length > 0 ? cpus.length : 1);
+        const empty = {
+            sampledAt: new Date(now()).toISOString(),
+            totalMemoryBytes,
+            cpuCount,
+            processes: [],
+        };
+
+        if (platform !== "win32") return empty;
+
+        const probe = await probeProcesses();
+        if (!probe.ok) return empty;
+
+        // Stamp the sample AFTER the PowerShell call resolves. Stamping it
+        // before would charge the probe's own seconds to the next CPU delta
+        // and under-report every percentage that follows.
+        const at = now();
+        const rows = probe.rows;
         const byPid = new Map(rows.map((entry) => [entry.pid, entry]));
         const byKey = new Map(rows.map((entry) => [`${entry.pid}:${entry.name}`, entry.cpuTimeMs]));
         const context = {
@@ -399,33 +428,69 @@ export function createOsProcesses({
         };
     }
 
-    function findProcess(pid) {
-        return sample().then((result) => result.processes.find((entry) => entry.pid === pid) ?? null);
-    }
-
-    /** @returns {Promise<{ status: "killed" | "protected" | "gone" | "failed", name: string | null, error?: string }>} */
+    /**
+     * Kill guard, in order:
+     *   1. pid 0/4 and the server itself are refused before any sample;
+     *   2. a fresh probe decides, not the 2 s cache: a failed probe or a pid
+     *      missing from it returns without taskkill, because killing on a
+     *      missing list is how the wrong process dies;
+     *   3. the entry's own protection plus "is an ancestor of the server",
+     *      since `taskkill /T` would take the server down through it.
+     *
+     * @returns {Promise<{ status: "killed" | "protected" | "gone" | "failed", name: string | null, error?: string }>}
+     */
     async function kill(pid) {
-        const entry = await findProcess(pid);
-        if (entry && entry.protected) {
+        const value = Number(pid);
+        if (!Number.isInteger(value)) {
+            return { status: "failed", name: null, error: "invalid pid" };
+        }
+        if (isProtectedPid(value, { selfPid })) {
+            return { status: "protected", name: null };
+        }
+        if (value <= 0) {
+            return { status: "failed", name: null, error: "invalid pid" };
+        }
+
+        const probe = await probeProcesses();
+        if (!probe.ok) {
+            return { status: "failed", name: null, error: "process sample unavailable" };
+        }
+
+        const byPid = new Map(probe.rows.map((entry) => [entry.pid, entry]));
+        const entry = byPid.get(value) ?? null;
+        if (!entry) {
+            return { status: "gone", name: null };
+        }
+
+        if (ancestorChain(selfPid, byPid).includes(value)) {
+            return { status: "protected", name: entry.name };
+        }
+        const context = {
+            selfPid,
+            byPid,
+            idupiRoots: resolveIdupiRoots(),
+            systemRoot: systemRoot(),
+        };
+        if (isProtectedProcess(entry, context)) {
             return { status: "protected", name: entry.name };
         }
 
         try {
-            await execFile("taskkill", ["/PID", String(pid), "/T", "/F"], {
+            await execFile("taskkill", ["/PID", String(value), "/T", "/F"], {
                 timeout: TASKKILL_TIMEOUT_MS,
                 windowsHide: true,
                 maxBuffer: TASKKILL_MAX_BUFFER,
                 encoding: "utf8",
             });
-            log(`[os-processes] killed ${entry ? entry.name : "unknown process"} (PID ${pid})`);
-            return { status: "killed", name: entry ? entry.name : null };
+            log(`[os-processes] killed ${entry.name} (PID ${value})`);
+            return { status: "killed", name: entry.name };
         } catch (err) {
             if (taskkillNotFound(err)) {
-                return { status: "gone", name: entry ? entry.name : null };
+                return { status: "gone", name: entry.name };
             }
             return {
                 status: "failed",
-                name: entry ? entry.name : null,
+                name: entry.name,
                 error: (err && err.message) || "taskkill failed",
             };
         }

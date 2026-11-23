@@ -213,6 +213,19 @@ function collectNodes(node, out = []) {
     return out;
 }
 
+/**
+ * Depth-first walk that records each node's depth. `collectNodes` stays the
+ * flat list the parsers use; this one is what lets "prefer the deepest match"
+ * resolve a score tie without a second traversal.
+ */
+function collectNodesWithDepth(node, depth = 0, out = []) {
+    if (!node || typeof node !== "object") return out;
+    out.push({ node, depth });
+    const children = Array.isArray(node.Children) ? node.Children : [];
+    for (const child of children) collectNodesWithDepth(child, depth + 1, out);
+    return out;
+}
+
 function nodeText(node) {
     return String(node?.Text ?? "").trim();
 }
@@ -238,30 +251,52 @@ function isPowerNode(node) {
  * the device name ("Temperatures", "Powers", ...), so the name test skips the
  * group containers and prefers a device-looking node; the fallback covers
  * boards whose device name is not AMD/Intel branded.
+ *
+ * The root ("Sensor") and the computer node contain the whole tree, so their
+ * descendants always mention Tctl/Package and they would win the fallback
+ * score on an unbranded device name ("AMD Athlon 3000G"). Nodes that merely
+ * contain another candidate are dropped, and equal scores resolve to the
+ * deeper node: the CPU device wins, never its containers.
  */
-function findCpuNode(nodes) {
-    let best = null;
-    let bestScore = 0;
-    for (const node of nodes) {
+export function findCpuNode(root) {
+    const groups = new Set(Array.from(SENSOR_GROUPS, (name) => name.toLowerCase()));
+    const candidates = [];
+    for (const { node, depth } of collectNodesWithDepth(root)) {
         const children = Array.isArray(node.Children) ? node.Children : [];
         if (children.length === 0) continue;
         const text = nodeText(node);
-        if (SENSOR_GROUPS.has(text.toLowerCase())) continue;
+        if (groups.has(text.toLowerCase())) continue;
 
         let score = 0;
         if (/ryzen|threadripper|intel|core\s*i\d|xeon/i.test(text)) score = 3;
         else if (/^cpu\b/i.test(text)) score = 2;
-        else {
-            const descendants = collectNodes(node).map((entry) => nodeText(entry));
-            if (descendants.some((entry) => /tctl|tdie|cpu package/i.test(entry))) score = 1;
+        else if (collectNodes(node).some((entry) => /tctl|tdie|cpu package/i.test(nodeText(entry)))) {
+            score = 1;
         }
-        // Higher score wins; equal scores keep the first (shallower) match.
-        if (score > bestScore) {
-            best = node;
-            bestScore = score;
+        if (score === 0) continue;
+        candidates.push({ node, depth, score });
+    }
+
+    const leaves = candidates.filter(
+        (candidate) =>
+            !candidates.some(
+                (other) =>
+                    other !== candidate &&
+                    collectNodes(candidate.node).includes(other.node),
+            ),
+    );
+
+    let best = null;
+    for (const candidate of leaves) {
+        if (
+            !best ||
+            candidate.score > best.score ||
+            (candidate.score === best.score && candidate.depth > best.depth)
+        ) {
+            best = candidate;
         }
     }
-    return best;
+    return best ? best.node : null;
 }
 
 function pickCpuTemperature(nodes) {
@@ -301,17 +336,23 @@ function pickCpuPower(nodes) {
  */
 export function parseLhmSensors(root) {
     const nodes = collectNodes(root);
-    const cpuNode = findCpuNode(nodes);
+    const cpuNode = findCpuNode(root);
     const cpuNodes = cpuNode ? collectNodes(cpuNode) : [];
     const memoryTemperature = nodes
         .filter((node) => isTemperatureNode(node) && /dimm|smbus|memory/i.test(nodeText(node)))
         .map((node) => ({ node, value: parseSensorNumber(node.Value) }))
         .find((entry) => entry.value !== null);
 
+    // LHM reports 0 for a sensor it cannot read (no kernel driver), and 0 °C /
+    // 0 W is never a real reading of a running CPU.
     return {
-        cpuTemperatureC: cpuNodes.length > 0 ? pickCpuTemperature(cpuNodes) : null,
-        cpuPowerW: cpuNodes.length > 0 ? pickCpuPower(cpuNodes) : null,
-        memoryTemperatureC: memoryTemperature ? memoryTemperature.value : null,
+        cpuTemperatureC: cpuNodes.length > 0
+            ? positiveOrNull(pickCpuTemperature(cpuNodes))
+            : null,
+        cpuPowerW: cpuNodes.length > 0 ? positiveOrNull(pickCpuPower(cpuNodes)) : null,
+        memoryTemperatureC: memoryTemperature
+            ? positiveOrNull(memoryTemperature.value)
+            : null,
     };
 }
 
@@ -619,12 +660,19 @@ export function createSystemMetrics({
         }
 
         const lhm = await readLhmSensors();
+        // LHM answering with all-null CPU readings is the same "no kernel
+        // driver" case as the helper's: keep the values null, do not claim a
+        // source, and let the hint name the installer instead of asking for a
+        // web server that is already running.
+        const lhmReadable = lhm.available &&
+            (lhm.cpuTemperatureC !== null || lhm.cpuPowerW !== null);
         return {
-            source: lhm.available ? "librehardwaremonitor" : null,
+            source: lhmReadable ? "librehardwaremonitor" : null,
             cpuTemperatureC: lhm.cpuTemperatureC,
             cpuPowerW: lhm.cpuPowerW,
             memoryTemperatureC: lhm.memoryTemperatureC,
             helperStatus: helper.status,
+            lhmStatus: lhm.available ? (lhmReadable ? "fresh" : "nodriver") : null,
         };
     }
 
@@ -642,9 +690,11 @@ export function createSystemMetrics({
         const hints = [];
         if (!gpuResult.available) hints.push(GPU_HINT);
         if (!sensors.source) {
+            const noDriver =
+                sensors.helperStatus === "nodriver" || sensors.lhmStatus === "nodriver";
             hints.push(
-                sensors.helperStatus === "stale" ? SENSORS_STALE_HINT
-                    : sensors.helperStatus === "nodriver" ? SENSORS_NO_DRIVER_HINT
+                noDriver ? SENSORS_NO_DRIVER_HINT
+                    : sensors.helperStatus === "stale" ? SENSORS_STALE_HINT
                         : SENSORS_INSTALL_HINT
             );
         }

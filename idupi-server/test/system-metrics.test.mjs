@@ -18,6 +18,7 @@ import { readFile } from "node:fs/promises";
 import {
     createSystemMetrics,
     cpuUsagePercent,
+    findCpuNode,
     parseLhmSensors,
     parseLogicalDisks,
     parseNvidiaSmi,
@@ -240,6 +241,79 @@ test("LHM tree without CPU sensors leaves the fields null", () => {
     const sensors = parseLhmSensors({ Text: "Sensor", Children: [] });
 
     assert.deepEqual(sensors, {
+        cpuTemperatureC: null,
+        cpuPowerW: null,
+        memoryTemperatureC: null,
+    });
+});
+
+// LHM nests hardware under root -> computer -> motherboard. "AMD Athlon 3000G"
+// matches no vendor/product name test, so every container used to win the
+// fallback score first and the CPU node was never selected.
+const lhmUnbrandedCpuTree = {
+    Text: "Sensor",
+    Children: [
+        {
+            Text: "DESKTOP-IDUPI",
+            Children: [
+                {
+                    Text: "B450M DS3H",
+                    Children: [
+                        {
+                            Text: "AMD Athlon 3000G",
+                            Children: [
+                                {
+                                    Text: "Temperatures",
+                                    Children: [
+                                        { Text: "Core (Tctl/Tdie)", Value: "48.0 °C" },
+                                        { Text: "Core #1", Value: "46.0 °C" },
+                                    ],
+                                },
+                                {
+                                    Text: "Powers",
+                                    Children: [{ Text: "Package", Value: "35.0 W" }],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        },
+    ],
+};
+
+test("LHM CPU lookup prefers the unbranded CPU device over the root/computer node", () => {
+    const cpuNode = findCpuNode(lhmUnbrandedCpuTree);
+
+    assert.ok(cpuNode);
+    assert.equal(cpuNode.Text, "AMD Athlon 3000G");
+
+    const sensors = parseLhmSensors(lhmUnbrandedCpuTree);
+    assert.equal(sensors.cpuTemperatureC, 48);
+    assert.equal(sensors.cpuPowerW, 35);
+});
+
+test("LHM zero readings are unreadable, not a real 0 °C / 0 W", () => {
+    const zeroTree = {
+        Text: "Sensor",
+        Children: [
+            {
+                Text: "AMD Ryzen 5 5600X",
+                Children: [
+                    {
+                        Text: "Temperatures",
+                        Children: [{ Text: "Core (Tctl/Tdie)", Value: "0.0 °C" }],
+                    },
+                    {
+                        Text: "Powers",
+                        Children: [{ Text: "Package", Value: "0.0 W" }],
+                    },
+                ],
+            },
+        ],
+    };
+
+    assert.deepEqual(parseLhmSensors(zeroTree), {
         cpuTemperatureC: null,
         cpuPowerW: null,
         memoryTemperatureC: null,
@@ -750,6 +824,44 @@ test("helper zeros (LHM without a driver) are treated as unreadable", async () =
     assert.equal(sample.memory.temperatureC, null);
     assert.match(sample.hints[0], /PawnIO/);
     assert.match(sample.hints[0], /install-sensors-helper\.ps1/);
+});
+
+test("an LHM server with all-null CPU readings counts like nodriver for the hint", async () => {
+    const sample = await helperMetrics({
+        readFile: async () => {
+            const error = new Error("ENOENT: sensors.json");
+            error.code = "ENOENT";
+            throw error;
+        },
+        fetch: async () => ({
+            ok: true,
+            json: async () => ({
+                Text: "Sensor",
+                Children: [
+                    {
+                        Text: "AMD Ryzen 5 5600X",
+                        Children: [
+                            {
+                                Text: "Temperatures",
+                                Children: [{ Text: "Core (Tctl/Tdie)", Value: "0.0 °C" }],
+                            },
+                            {
+                                Text: "Powers",
+                                Children: [{ Text: "Package", Value: "0.0 W" }],
+                            },
+                        ],
+                    },
+                ],
+            }),
+        }),
+    }).sample();
+
+    assert.equal(sample.cpu.temperatureC, null);
+    assert.equal(sample.cpu.powerW, null);
+    // LHM answered but cannot read the CPU: not a usable source, and the hint
+    // must point at the driver/installer instead of a web server that is up.
+    assert.equal(sample.sources.sensors, null);
+    assert.match(sample.hints[0], /PawnIO/);
 });
 
 test("the no-source hint names the installer and the LHM alternative", async () => {

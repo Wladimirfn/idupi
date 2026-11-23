@@ -242,6 +242,54 @@ test("cpuPercent is the TotalProcessorTime delta over elapsed time and cpu count
     assert.equal(third.processes[0].cpuPercent, null, "a decreasing counter is not a percentage");
 });
 
+test("the CPU sample is stamped after the PowerShell call, not before it", async () => {
+    let clock = 1_000_000;
+    let calls = 0;
+    const processes = makeProcesses({
+        execFile: async () => {
+            calls++;
+            // First probe costs 4 s, the second 1 s. The CPU counter delta is
+            // the 8 s of CPU time accrued over the second probe only.
+            clock += calls === 1 ? 4000 : 1000;
+            return {
+                stdout: psJson([row({ id: 100, name: "app", cpuMs: calls === 1 ? 0 : 8000 })]),
+            };
+        },
+        now: () => clock,
+        cacheMs: 0,
+    });
+
+    await processes.sample();
+    const second = await processes.sample();
+
+    // 8000 ms of CPU over 1000 ms × 8 cores = 100 %. Stamping at request start
+    // would charge the first probe's 4 s and report 25 %.
+    assert.equal(second.processes[0].cpuPercent, 100);
+});
+
+test("cpuPercent is clamped to 0..100 even when the counter over-reports", async () => {
+    let clock = 1_000_000;
+    let calls = 0;
+    const processes = makeProcesses({
+        execFile: async () => {
+            calls++;
+            clock += 1000;
+            return {
+                stdout: psJson([row({ id: 100, name: "app", cpuMs: calls === 1 ? 0 : 50_000 })]),
+            };
+        },
+        now: () => clock,
+        cacheMs: 0,
+    });
+
+    await processes.sample();
+    const second = await processes.sample();
+
+    // 50 s of CPU in a 1 s × 8-core window would be 625 %; the wire field is
+    // a percentage, so it cannot leave that range.
+    assert.equal(second.processes[0].cpuPercent, 100);
+});
+
 test("concurrent pollers share one sample inside the 2 s cache window", async () => {
     let clock = 1_000_000;
     let calls = 0;
@@ -450,6 +498,75 @@ test("kill maps an unexpected taskkill failure to 500", async (t) => {
     const res = await fetch(`${base}/api/v1/os/processes/300/kill`, { method: "POST" });
     assert.equal(res.status, 500);
     assert.equal((await res.json()).code, "INTERNAL");
+});
+
+test("kill refuses 0, 4, the server and its ancestors without calling taskkill", async () => {
+    const taskkillCalls = [];
+    const rows = [
+        row({ id: 900, name: "cmd" }),
+        row({ id: 4000, name: "node", parent: 900 }), // the server itself
+        row({ id: 300, name: "notepad", path: "C:\\Apps\\notepad.exe" }),
+    ];
+    const processes = makeProcesses({
+        rows,
+        selfPid: 4000,
+        execFile: async (file, args) => {
+            if (file === "powershell") return { stdout: psJson(rows) };
+            taskkillCalls.push(args);
+            return { stdout: "ok" };
+        },
+    });
+
+    assert.equal((await processes.kill(0)).status, "protected");
+    assert.equal((await processes.kill(4)).status, "protected");
+    assert.equal((await processes.kill(4000)).status, "protected");
+
+    // 900 is cmd, but the server is its child: taskkill /T would take IDUPI
+    // down with it.
+    const ancestor = await processes.kill(900);
+    assert.equal(ancestor.status, "protected");
+    assert.equal(ancestor.name, "cmd");
+    assert.equal(taskkillCalls.length, 0);
+});
+
+test("a pid missing from a fresh sample reports gone without calling taskkill", async () => {
+    const taskkillCalls = [];
+    const rows = [row({ id: 300, name: "notepad" })];
+    const processes = makeProcesses({
+        rows,
+        execFile: async (file, args) => {
+            if (file === "powershell") return { stdout: psJson(rows) };
+            taskkillCalls.push(args);
+            return { stdout: "ok" };
+        },
+    });
+
+    const result = await processes.kill(555);
+
+    assert.equal(result.status, "gone");
+    assert.equal(result.name, null);
+    assert.equal(taskkillCalls.length, 0);
+});
+
+test("a failed fresh probe refuses to kill instead of killing blind", async () => {
+    const taskkillCalls = [];
+    const processes = makeProcesses({
+        execFile: async (file, args) => {
+            if (file === "powershell") {
+                const error = new Error("powershell timed out");
+                error.code = "ETIMEDOUT";
+                throw error;
+            }
+            taskkillCalls.push(args);
+            return { stdout: "ok" };
+        },
+    });
+
+    const result = await processes.kill(300);
+
+    assert.equal(result.status, "failed");
+    assert.match(result.error, /sample unavailable/);
+    assert.equal(taskkillCalls.length, 0);
 });
 
 // --- wiring ----------------------------------------------------------------

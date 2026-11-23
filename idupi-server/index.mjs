@@ -6,6 +6,7 @@
 
 import http from "node:http";
 import { spawn, execSync, execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 import { readdirSync, statSync, readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, unlinkSync, openSync, readSync, closeSync } from "node:fs";
 import { homedir, networkInterfaces } from "node:os";
 import { join, basename, relative, dirname } from "node:path";
@@ -56,7 +57,7 @@ import { createSystemMetrics } from "./lib/system-metrics.mjs";
 import { createSystemMetricsRoutes } from "./lib/system-metrics-routes.mjs";
 // Every PC process plus end-process (app-redesign, T10): one PowerShell sample
 // per 2 s, and taskkill behind the same token as every other route.
-import { createOsProcesses } from "./lib/os-processes.mjs";
+import { createOsProcesses, isProtectedPid } from "./lib/os-processes.mjs";
 import { createOsProcessesRoutes } from "./lib/os-processes-routes.mjs";
 // Browser view of those same PTYs (live-shared-terminals T2): loopback-only
 // static files, served before auth because they hold no secrets.
@@ -299,6 +300,7 @@ import {
 } from "./lib/orchestrator/routes.mjs";
 
 const PORT = process.env.PORT || 8788;
+const execFileAsync = promisify(execFile);
 const requireAuth = createAuthGuard(loadToken());
 const PI_CLI_JS = join(
     homedir(),
@@ -833,6 +835,26 @@ function killProcessTree(child) {
     child.kill("SIGTERM");
 }
 
+/**
+ * Shared guard for the legacy `proc-<pid>` rows the Procesos screen exposes.
+ * Reuses the os-processes protection contract: a pid that is 0/4, the server
+ * itself, a critical Windows name, or an ancestor of the server is refused --
+ * `taskkill /T` on an ancestor would take IDUPI down through it. A sample that
+ * does not contain the pid refuses too, instead of killing blind.
+ *
+ * @returns {Promise<{ ok: true } | { ok: false, reason: "protected" | "gone" }>}
+ */
+async function guardLegacyProcKill(pid) {
+    const sample = await osProcesses.sample();
+    const entry = sample.processes.find((item) => item.pid === pid);
+    if (entry && entry.protected) return { ok: false, reason: "protected" };
+    if (isProtectedPid(pid, { selfPid: process.pid, processes: sample.processes })) {
+        return { ok: false, reason: "protected" };
+    }
+    if (!entry) return { ok: false, reason: "gone" };
+    return { ok: true };
+}
+
 class TerminalManager {
     constructor() {
         this.terminals = new Map();
@@ -1153,12 +1175,23 @@ class TerminalManager {
         });
     }
 
-    restartServer(termId) {
+    async restartServer(termId) {
         if (termId.startsWith("proc-")) {
             const pid = parseInt(termId.replace("proc-", ""), 10);
             if (pid && !isNaN(pid)) {
+                const guard = await guardLegacyProcKill(pid);
+                if (!guard.ok) {
+                    return guard.reason === "protected"
+                        ? `No se detuvo el proceso PID ${pid}: está protegido (es el servidor IDUPI, un proceso crítico de Windows o un ancestro del servidor).`
+                        : `El proceso PID ${pid} ya no existe.`;
+                }
                 try {
-                    execSync(`taskkill /F /PID ${pid}`, { timeout: 3000, maxBuffer: EXEC_MAX_BUFFER });
+                    await execFileAsync("taskkill", ["/F", "/PID", String(pid)], {
+                        timeout: 3000,
+                        maxBuffer: EXEC_MAX_BUFFER,
+                        windowsHide: true,
+                        encoding: "utf8",
+                    });
                     return `Proceso real (PID ${pid}) finalizado/detenido en tu PC exitosamente.`;
                 } catch (e) {
                     return `Error al finalizar proceso PID ${pid}: ${e.message}`;
@@ -1185,12 +1218,19 @@ class TerminalManager {
         return "Proceso/Servidor reseteado.";
     }
 
-    closeTerminal(termId) {
+    async closeTerminal(termId) {
         if (termId.startsWith("proc-")) {
             const pid = parseInt(termId.replace("proc-", ""), 10);
             if (pid && !isNaN(pid)) {
+                const guard = await guardLegacyProcKill(pid);
+                if (!guard.ok) return false;
                 try {
-                    execSync(`taskkill /F /PID ${pid}`, { timeout: 3000, maxBuffer: EXEC_MAX_BUFFER });
+                    await execFileAsync("taskkill", ["/F", "/PID", String(pid)], {
+                        timeout: 3000,
+                        maxBuffer: EXEC_MAX_BUFFER,
+                        windowsHide: true,
+                        encoding: "utf8",
+                    });
                     return true;
                 } catch (e) {}
             }
@@ -3479,12 +3519,12 @@ const handleRequest = async (req, res) => {
     if (pathname === "/api/v1/terminals/restart" && req.method === "POST") {
         let body = "";
         req.on("data", chunk => { body += chunk; });
-        req.on("end", () => {
+        req.on("end", async () => {
             try {
                 const parsed = JSON.parse(body || "{}");
                 const termId = parsed.termId || "pi-cli";
                 console.log(`[Terminal Reset] Reiniciando/deteniendo servidor o proceso '${termId}'...`);
-                const msg = terminalMgr.restartServer(termId);
+                const msg = await terminalMgr.restartServer(termId);
                 res.writeHead(200, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ status: "ok", message: msg }));
             } catch (err) {
@@ -3502,7 +3542,7 @@ const handleRequest = async (req, res) => {
         const termId = parts[4];
         // An unknown terminal is a 404, not a fake success: the app used to
         // believe a surviving shell had been closed.
-        if (!terminalMgr.closeTerminal(termId)) {
+        if (!(await terminalMgr.closeTerminal(termId))) {
             res.writeHead(404, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ status: "error", message: "not found" }));
             return;
