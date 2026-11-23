@@ -47,3 +47,6 @@ idupi-server/drivers/
 *~
 # Local scratch workspace (copies of other repos, experiments)
 /scratch/
+
+# Detached server logs (scripts/start-server.ps1)
+idupi-server/logs/
