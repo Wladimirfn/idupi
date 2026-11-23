@@ -3,17 +3,20 @@ package com.idupi.app.data.settings
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
+import com.idupi.app.domain.model.ThemeColors
+import com.idupi.app.domain.model.ThemeDefaults
+import com.idupi.app.domain.model.ThemeMode
+import com.idupi.app.domain.model.ThemePreset
+import com.idupi.app.domain.model.ThemeSettings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -21,18 +24,12 @@ import org.junit.rules.TemporaryFolder
 import java.io.File
 
 /**
- * PR 3 / Task 4.2 — RED-first coverage for [DataStoreSettingsRepository].
+ * Persistence contract for the T9 theme settings.
  *
- * Persistence contract the spec demands: the OpenCode auto-approve toggle
- * MUST survive an app restart. An in-memory fake can pass
- * [InMemorySettingsRepositoryTest]; this file pins the DataStore path
- * that production uses.
- *
- * No Android Context here: the repository is constructed from a
- * `DataStore<Preferences>` so the test exercises the same code path the
- * production wiring does (the production wiring just delegates to the
- * `Context.preferencesDataStore` extension on Android, which yields an
- * equivalent `DataStore<Preferences>`).
+ * The theme MUST survive an app restart: applying a preset and closing the app
+ * cannot silently send the owner back to the default dark/Índigo palette. A
+ * second repository instance over the same file is how that invariant is
+ * pinned without an Android Context.
  */
 class DataStoreSettingsRepositoryTest {
 
@@ -41,18 +38,16 @@ class DataStoreSettingsRepositoryTest {
 
     private lateinit var file: File
     private lateinit var scope: CoroutineScope
-    private lateinit var dataStore: DataStore<Preferences>
+    private lateinit var store: DataStore<Preferences>
     private lateinit var repo: DataStoreSettingsRepository
 
     @Before
     fun setUp() {
         file = tempFolder.newFile("settings.preferences_pb")
-        // Delete the file so DataStore creates a fresh store on first use.
-        // (PreferenceDataStoreFactory will recreate it on the first write.)
         file.delete()
         scope = CoroutineScope(Dispatchers.Unconfined + SupervisorJob())
-        dataStore = PreferenceDataStoreFactory.create(scope = scope) { file }
-        repo = DataStoreSettingsRepository(dataStore)
+        store = createStore()
+        repo = DataStoreSettingsRepository(store)
     }
 
     @After
@@ -60,68 +55,76 @@ class DataStoreSettingsRepositoryTest {
         scope.cancel()
     }
 
-    @Test
-    fun `opencodeAutoApprove defaults to false when the DataStore is empty`() = runTest {
-        assertFalse(
-            "fresh DataStore MUST default to false (toggle OFF, sidecar path); " +
-                "without the default-false invariant, the first launch could " +
-                "silently ship X-OpenCode-Auto-Approve: 1 and self-approve " +
-                "every prompt before the user has touched the toggle",
-            repo.opencodeAutoApprove.first(),
-        )
-    }
+    private fun createStore(): DataStore<Preferences> =
+        PreferenceDataStoreFactory.create(scope = scope) { file }
 
-    @Test
-    fun `setOpencodeAutoApprove true persists across a new repository instance`() = runTest {
-        // Write with the first instance.
-        repo.setOpencodeAutoApprove(true)
-
-        // Tear down the first DataStore and build a second one against the
-        // SAME file. A new repository instance must see the persisted value.
+    private suspend fun reopen(): DataStoreSettingsRepository {
         scope.cancel()
         scope = CoroutineScope(Dispatchers.Unconfined + SupervisorJob())
-        val reopenDataStore = PreferenceDataStoreFactory.create(scope = scope) { file }
-        val reopenedRepo = DataStoreSettingsRepository(reopenDataStore)
-
-        assertTrue(
-            "the toggle MUST survive an app restart: writing true with one " +
-                "instance and reading with another pointed at the same file " +
-                "is the crash-safe persistence invariant the Settings UI relies on",
-            reopenedRepo.opencodeAutoApprove.first(),
-        )
+        store = createStore()
+        repo = DataStoreSettingsRepository(store)
+        return repo
     }
 
     @Test
-    fun `setOpencodeAutoApprove false after true round-trips back to false on reopen`() = runTest {
-        repo.setOpencodeAutoApprove(true)
-
-        repo.setOpencodeAutoApprove(false)
-
-        // Reopen to confirm the latest write (not just the in-memory state) wins.
-        scope.cancel()
-        scope = CoroutineScope(Dispatchers.Unconfined + SupervisorJob())
-        val reopenDataStore = PreferenceDataStoreFactory.create(scope = scope) { file }
-        val reopenedRepo = DataStoreSettingsRepository(reopenDataStore)
-
-        assertFalse(
-            "round-trip back to false MUST persist; a stuck-true regression " +
-                "would silently re-enable --auto on every restart",
-            reopenedRepo.opencodeAutoApprove.first(),
-        )
+    fun `an empty DataStore defaults to dark indigo with the dark custom palette`() = runTest {
+        assertEquals(ThemeSettings(), repo.themeSettings.first())
+        val defaults = repo.themeSettings.first().custom
+        assertEquals(ThemeDefaults.accentArgb, defaults.accentArgb)
+        assertEquals(ThemeDefaults.backgroundArgb, defaults.backgroundArgb)
+        assertEquals(ThemeDefaults.cardArgb, defaults.cardArgb)
+        assertEquals(ThemeDefaults.textArgb, defaults.textArgb)
     }
 
     @Test
-    fun `opencodeAutoApprove flow reflects the most recent write on the same instance`() = runTest {
-        repo.setOpencodeAutoApprove(true)
-        assertEquals(
-            "after setOpencodeAutoApprove(true), opencodeAutoApprove MUST emit true",
-            true, repo.opencodeAutoApprove.first(),
-        )
+    fun `mode and preset persist across a new repository instance`() = runTest {
+        repo.setThemeMode(ThemeMode.LIGHT)
+        repo.setThemePreset(ThemePreset.EMERALD)
 
-        repo.setOpencodeAutoApprove(false)
-        assertEquals(
-            "after setOpencodeAutoApprove(false), opencodeAutoApprove MUST emit false",
-            false, repo.opencodeAutoApprove.first(),
+        val reopened = reopen().themeSettings.first()
+
+        assertEquals(ThemeMode.LIGHT, reopened.mode)
+        assertEquals(ThemePreset.EMERALD, reopened.preset)
+    }
+
+    @Test
+    fun `custom colours persist across a new repository instance`() = runTest {
+        val custom = ThemeColors(
+            accentArgb = 0xFF10B981.toInt(),
+            backgroundArgb = 0xFFF8FAFC.toInt(),
+            cardArgb = 0xFFFFFFFF.toInt(),
+            textArgb = 0xFF0F172A.toInt(),
         )
+        repo.setThemeMode(ThemeMode.CUSTOM)
+        repo.setCustomColors(custom)
+
+        val reopened = reopen().themeSettings.first()
+
+        assertEquals(ThemeMode.CUSTOM, reopened.mode)
+        assertEquals(custom, reopened.custom)
+    }
+
+    @Test
+    fun `writing one key keeps the other choices intact`() = runTest {
+        repo.setThemeMode(ThemeMode.CUSTOM)
+        repo.setThemePreset(ThemePreset.AMBER)
+        repo.setCustomColors(ThemeColors(accentArgb = 0xFFEF4444.toInt()))
+
+        repo.setThemeMode(ThemeMode.LIGHT)
+        val afterModeChange = repo.themeSettings.first()
+
+        assertEquals(ThemeMode.LIGHT, afterModeChange.mode)
+        assertEquals(ThemePreset.AMBER, afterModeChange.preset)
+        assertEquals(0xFFEF4444.toInt(), afterModeChange.custom.accentArgb)
+    }
+
+    @Test
+    fun `an unknown stored mode falls back to the default instead of crashing`() = runTest {
+        // A value written by a future/older build must not break startup.
+        store.edit { prefs ->
+            prefs[DataStoreSettingsRepository.THEME_MODE_KEY] = "SEPIA"
+        }
+
+        assertEquals(ThemeMode.DARK, repo.themeSettings.first().mode)
     }
 }

@@ -24,8 +24,8 @@ class MainActivity : ComponentActivity() {
         openRequestedScreen(intent)
 
         setContent {
-            // Theme wrapping is handled inside AppNavigation
-            // to respect the dynamic dark/light toggle from MainViewModel.
+            // Theme wrapping happens inside AppNavigation, which resolves the
+            // persisted ThemeSettings into the palette IDUPITheme applies.
             AppNavigation()
         }
     }

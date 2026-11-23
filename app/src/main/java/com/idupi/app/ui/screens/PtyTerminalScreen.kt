@@ -181,7 +181,10 @@ fun PtyTerminalScreen(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .background(IDUPITheme.colors.matrixBg)
+                    // The terminal keeps its own dark chrome even when the app
+                    // uses a light theme: the PC shells emit light-on-dark ANSI
+                    // output and xterm's palette is built for it.
+                    .background(IDUPITheme.colors.terminalBg)
             ) {
                 PtyTerminalView(
                     controller = controller,

@@ -46,7 +46,8 @@ enum class Screen(val title: String) {
 @Composable
 fun AppNavigation() {
     val mainViewModel: MainViewModel = viewModel()
-    val darkThemeEnabled by mainViewModel.darkThemeEnabled.collectAsState()
+    val themeSettings by mainViewModel.themeSettings.collectAsState()
+    val appColors = remember(themeSettings) { ThemePalettes.resolve(themeSettings) }
 
     var currentScreen by remember { mutableStateOf(Screen.TERMINALS) }
     var previousScreen by remember { mutableStateOf<Screen?>(null) }
@@ -109,7 +110,7 @@ fun AppNavigation() {
         scope.launch { drawerState.close() }
     }
 
-    IDUPITheme(darkTheme = darkThemeEnabled) {
+    IDUPITheme(colors = appColors) {
         Box(modifier = Modifier.fillMaxSize()) {
         androidx.compose.animation.AnimatedContent(
             targetState = currentScreen,

@@ -249,7 +249,7 @@ fun ConsoleScreen(
                         .weight(1f)
                         .fillMaxWidth()
                         .clip(AppShapes.card)
-                        .background(IDUPITheme.colors.matrixBg)
+                        .background(IDUPITheme.colors.terminalBg)
                         .border(1.dp, SlateBorder, AppShapes.card)
                 ) {
                     if (logs.isEmpty()) {
@@ -314,7 +314,7 @@ fun ConsoleScreen(
                     Surface(
                         modifier = Modifier.weight(1f),
                         shape = AppShapes.input,
-                        color = IDUPITheme.colors.matrixBg,
+                        color = IDUPITheme.colors.terminalBg,
                         border = androidx.compose.foundation.BorderStroke(
                             1.dp,
                             if (commandInput.isNotBlank()) PrimaryIndigo.copy(alpha = 0.5f) else SlateBorder

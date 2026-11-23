@@ -1,49 +1,52 @@
 package com.idupi.app.data.settings
 
+import com.idupi.app.domain.model.ThemeColors
+import com.idupi.app.domain.model.ThemeMode
+import com.idupi.app.domain.model.ThemePreset
+import com.idupi.app.domain.model.ThemeSettings
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 /**
- * Single source of truth for the Settings toggles the server-side spawn
- * path reads (currently just the OpenCode auto-approve gate).
+ * Persisted app settings. Today the only settings the app keeps are the theme
+ * choices submitted from Ajustes.
  *
- * The OpenCode auto-approve toggle ships OFF by default: a fresh install
- * surfaces permission cards instead of silently self-approving with
- * `opencode run --auto`. See `opencode-permission-sidecar/spec.md`
- * ("Auto-Approve Toggle" / "Toggle OFF" scenario) and `design.md` D8.
+ * Production uses [DataStoreSettingsRepository] (crash-safe, survives app
+ * restarts); tests and ViewModels without an injected repository use
+ * [InMemorySettingsRepository].
  */
 interface SettingsRepository {
 
-    /**
-     * Observed OpenCode auto-approve setting. `true` means the spawn path
-     * is allowed to launch `opencode run --auto` (legacy autopilot); `false`
-     * means cards are surfaced through the sidecar. Defaults to `false`.
-     */
-    val opencodeAutoApprove: Flow<Boolean>
+    /** Observed theme choice; defaults to dark with the indigo accent. */
+    val themeSettings: Flow<ThemeSettings>
 
-    /**
-     * Persists the user's toggle choice. The Flow MUST emit the new value
-     * to every collector on completion so the Settings UI and the chat
-     * header stay in sync.
-     */
-    suspend fun setOpencodeAutoApprove(value: Boolean)
+    suspend fun setThemeMode(mode: ThemeMode)
+
+    suspend fun setThemePreset(preset: ThemePreset)
+
+    suspend fun setCustomColors(colors: ThemeColors)
 }
 
-/**
- * In-memory [SettingsRepository] backed by a [MutableStateFlow]. Used by
- * tests and as the default when no DataStore-backed repository has been
- * wired in (e.g. unit-test ViewModels).
- *
- * Production uses [DataStoreSettingsRepository] for crash-safe persistence.
- */
-class InMemorySettingsRepository : SettingsRepository {
+/** In-memory [SettingsRepository] backed by a [MutableStateFlow]. */
+class InMemorySettingsRepository(
+    initial: ThemeSettings = ThemeSettings(),
+) : SettingsRepository {
 
-    private val _opencodeAutoApprove = MutableStateFlow(false)
+    private val _themeSettings = MutableStateFlow(initial)
 
-    override val opencodeAutoApprove: Flow<Boolean> = _opencodeAutoApprove.asStateFlow()
+    override val themeSettings: Flow<ThemeSettings> = _themeSettings.asStateFlow()
 
-    override suspend fun setOpencodeAutoApprove(value: Boolean) {
-        _opencodeAutoApprove.value = value
+    override suspend fun setThemeMode(mode: ThemeMode) {
+        _themeSettings.update { it.copy(mode = mode) }
+    }
+
+    override suspend fun setThemePreset(preset: ThemePreset) {
+        _themeSettings.update { it.copy(preset = preset) }
+    }
+
+    override suspend fun setCustomColors(colors: ThemeColors) {
+        _themeSettings.update { it.copy(custom = colors) }
     }
 }
