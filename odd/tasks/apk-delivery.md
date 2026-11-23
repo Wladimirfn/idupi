@@ -40,7 +40,7 @@ phone shows a notification "APK lista", and tapping it installs the APK.
 
 - [x] T1 Server: registry + routes + `idupi-push` CLI + tests.
 - [x] T2 App: installer, unknown-sources gate, deliveries UI, new-delivery notification + tests.
-- [ ] T3 Live test with the owner: push the next IDUPI APK through this path.
+- [x] T3 Live test with the owner: push the next IDUPI APK through this path.
 
 ## Acceptance criteria
 
@@ -63,7 +63,8 @@ phone shows a notification "APK lista", and tapping it installs the APK.
 |------|--------|--------|
 | T1 | 5cd5e35 | Writer idu-pi work-1. 34/34 (10 new) worker; parent rerun delivery tests 10/10; routes wired after requireAuth (reviewed). Live server not restarted yet (owner had a live PTY). |
 | T2 | 1277fa9, 14bebc7 | Writer idu-pi work-1. :app:testDebugUnitTest 378/0 fail (25 new) + assembleDebug; parent: assembleRelease, APK 1.32 versionCode 33 same cert; receiver exported=false, explicit-component mutable PendingIntent. Watcher polls only while the app process lives (background push = roadmap step 3). |
+| T3 | 139e103 | Server restarted (PID 32120 on :8788). `idupi-push idupi-1.33-drawer-swipe.apk` -> dlv-27ac19c5e788 (48.1 MB); owner confirmed notification arrived and tapping it installed 1.33 (versionCode 34, same cert) over 1.32. |
 
 ## Next step
 
-T3: owner installs 1.32 by hand once, server restart (with owner OK), then idupi-push the next APK and install from the notification.
+Done. Next roadmap step: app redesign around terminals + deliveries (owner request 2026-11-23).
