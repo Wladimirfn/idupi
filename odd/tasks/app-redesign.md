@@ -31,6 +31,11 @@ dead surfaces, give terminals and deliveries their own entries, rename the CLI c
   LibreHardwareMonitor is installed. DDR4 has no temperature sensor in general. Metrics are
   nullable; the UI shows "no disponible" with a hint instead of fake numbers. Optional
   source: LibreHardwareMonitor web server (`data.json`) when running.
+- RTSS discovery (Engram `hardware/sensor-source`): RTSS's `LHMDataProvider.exe` loads
+  LibreHardwareMonitorLib 0.9.5 and shares sensor XML via `LHMDPSharedMemory`. Probe: the
+  DLL lists Ryzen `Core (Tctl/Tdie)` and `Package` power, but values are 0 without admin.
+  Owner approved an elevated helper (2026-11-23). The elevated task must not run a
+  user-writable script (privilege-escalation vector): install copies it to ProgramData.
 
 ## Tasks
 
@@ -41,6 +46,10 @@ dead surfaces, give terminals and deliveries their own entries, rename the CLI c
 - [x] T3 Server `GET /api/v1/system/metrics` (behind auth): CPU %, RAM used/total, GPU via
       nvidia-smi, optional LibreHardwareMonitor source for CPU temp/W; nulls when unknown.
 - [x] T4 Dashboard redesign on the metrics (polling while visible) + tests.
+- [ ] T6 Elevated sensor helper: loads LibreHardwareMonitorLib (same DLL RTSS's
+      LHMDataProvider uses), writes CPU temp/power (+ DIMM temp if any) JSON every 2 s to
+      `%ProgramData%\IDUPI\sensors.json`; installed as logon scheduled task with highest
+      privileges from an admin-only copy in ProgramData; server metrics prefer it.
 - [ ] T5 Bump version, build, deliver with `idupi-push`, owner check.
 
 ## Acceptance criteria
