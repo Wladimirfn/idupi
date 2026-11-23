@@ -41,6 +41,10 @@ import {
 // Remote screen module (docs/remote-screen-module.md): routes live in their
 // own module so this monolith stops growing.
 import { handleScreenRoute, shutdownScreen } from "./lib/screen-routes.mjs";
+// Interactive PTY terminals (T2): one ConPTY host per terminal, same
+// authenticated choke point as every other route.
+import { PtyManager } from "./lib/pty-manager.mjs";
+import { createPtyRoutes } from "./lib/pty-routes.mjs";
 import { resolveProjectFilePath, getProjectFilesTree } from "./lib/project-files.mjs";
 import { guardChildStreams } from "./lib/child-guards.mjs";
 import { checkBodyLimits } from "./lib/request-limits.mjs";
@@ -785,6 +789,34 @@ function resolveProject(projId) {
 }
 
 // Gestor Multiterminal Real con Inspección de Procesos en Ejecución en tu PC (Bun, Claude, Codex, Kimi, Node, Python, PowerShell, CMD)
+// Kills a spawned shell AND its descendants. child.kill() only signals the
+// cmd.exe wrapper created by `shell: true`, leaving the PowerShell child
+// running (observed PIDs outliving their terminal). taskkill /T walks the
+// tree; argv keeps it shell-free.
+function killProcessTree(child) {
+    if (!child || child.killed) return;
+    if (process.platform === "win32" && child.pid) {
+        // The direct kill MUST wait for taskkill to finish: killing the cmd.exe
+        // root first would leave taskkill /T nothing to walk from, orphaning
+        // the PowerShell child again. The kill afterwards only marks
+        // child.killed (and is the fallback when taskkill itself fails).
+        const killRoot = () => {
+            try {
+                child.kill();
+            } catch {
+                /* already gone */
+            }
+        };
+        try {
+            execFile("taskkill", ["/PID", String(child.pid), "/T", "/F"], killRoot);
+        } catch {
+            killRoot();
+        }
+        return;
+    }
+    child.kill("SIGTERM");
+}
+
 class TerminalManager {
     constructor() {
         this.terminals = new Map();
@@ -1058,20 +1090,28 @@ class TerminalManager {
     }
 
     async execCommand(termId, command) {
-        const term = this.terminals.get(termId || "pi-cli");
-        if (term) {
-            term.logs.push(`$ ${command}`);
-            if (term.id === "pi-cli") {
-                const out = await piRpc.sendPrompt(command);
-                term.logs.push(out);
-                return out;
-            }
-            if (term.child && term.child.stdin && !term.child.killed) {
-                term.child.stdin.write(command + "\n");
-                // Esperar 600ms para capturar la salida inmediata de stdout/stderr
-                await new Promise(resolve => setTimeout(resolve, 600));
-                return `Comando enviado a ${term.name}`;
-            }
+        // Only an explicit `pi-cli` id rides the Pi RPC chat. A missing or
+        // unknown terminal used to fall through to it and answer as if a shell
+        // had run, hiding the real "terminal not found" error from the app.
+        if (termId === "pi-cli") {
+            const piTerm = this.terminals.get("pi-cli");
+            if (piTerm) piTerm.logs.push(`$ ${command}`);
+            const out = await piRpc.sendPrompt(command);
+            if (piTerm) piTerm.logs.push(out);
+            return out;
+        }
+
+        const term = termId ? this.terminals.get(termId) : null;
+        if (!term) {
+            // The route turns this into a 404 instead of inventing output.
+            return { error: "terminal not found" };
+        }
+        term.logs.push(`$ ${command}`);
+        if (term.child && term.child.stdin && !term.child.killed) {
+            term.child.stdin.write(command + "\n");
+            // Esperar 600ms para capturar la salida inmediata de stdout/stderr
+            await new Promise(resolve => setTimeout(resolve, 600));
+            return `Comando enviado a ${term.name}`;
         }
 
         const activeProj = resolveProject(activeProjectId);
@@ -1119,7 +1159,7 @@ class TerminalManager {
             }
 
             if (term.child && !term.child.killed) {
-                term.child.kill("SIGTERM");
+                killProcessTree(term.child);
                 term.logs.push("[System] Proceso de terminal finalizado. Reiniciando...");
                 const newTerm = this.spawnNewTerminal(term.name);
                 return `Terminal '${term.name}' reiniciada exitosamente.`;
@@ -1142,7 +1182,7 @@ class TerminalManager {
 
         const term = this.terminals.get(termId);
         if (term && term.id !== "pi-cli") {
-            if (term.child && !term.child.killed) term.child.kill("SIGTERM");
+            if (term.child && !term.child.killed) killProcessTree(term.child);
             this.terminals.delete(termId);
             return true;
         }
@@ -1151,6 +1191,11 @@ class TerminalManager {
 }
 
 const terminalMgr = new TerminalManager();
+
+// Interactive PTY terminals: the manager owns every ConPTY host; the route
+// handler is created once so each request does not rebuild the closure.
+const ptyManager = new PtyManager();
+const handlePtyRoute = createPtyRoutes(ptyManager);
 
 // Mapa global en memoria para resolver sessionId -> filePath en <1ms
 const sessionFilePathMap = new Map();
@@ -3085,6 +3130,9 @@ const handleRequest = async (req, res) => {
     // Remote screen routes live in lib/screen-routes.mjs; it answers true when
     // the path is theirs. Still behind requireAuth like everything below.
     if (await handleScreenRoute(req, res, pathname)) return;
+    // Interactive PTY terminals live in lib/pty-routes.mjs; it answers true
+    // when the path is theirs. Still behind requireAuth like everything below.
+    if (await handlePtyRoute(req, res, pathname)) return;
 
     // 0. Stream de eventos del chat (SSE). Long-lived: no responde y sigue abierto.
     if (pathname === "/api/v1/chat/stream" && req.method === "GET") {
@@ -3351,6 +3399,12 @@ const handleRequest = async (req, res) => {
                 console.log(`[Terminal Exec] Ejecutando "${command}" en terminal '${termId || 'pi-cli'}'...`);
                 const result = await terminalMgr.execCommand(termId, command);
 
+                if (result && typeof result === "object" && result.error === "terminal not found") {
+                    res.writeHead(404, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify({ status: "error", message: "terminal not found" }));
+                    return;
+                }
+
                 res.writeHead(200, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ status: "ok", output: result }));
             } catch (err) {
@@ -3387,7 +3441,13 @@ const handleRequest = async (req, res) => {
     if (pathname.startsWith("/api/v1/terminals/") && req.method === "DELETE") {
         const parts = pathname.split("/");
         const termId = parts[4];
-        terminalMgr.closeTerminal(termId);
+        // An unknown terminal is a 404, not a fake success: the app used to
+        // believe a surviving shell had been closed.
+        if (!terminalMgr.closeTerminal(termId)) {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ status: "error", message: "not found" }));
+            return;
+        }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ status: "ok" }));
         return;
@@ -5386,6 +5446,11 @@ const server = http.createServer(guardedRequest);
 
 // Kill the capture helper when the server process exits so it never outlives us.
 process.on("exit", shutdownScreen);
+// PTY hosts must die with the server too. shutdownAll() closes each host's
+// stdin synchronously (the Go job object reaps the tree) before its promise.
+process.on("exit", () => {
+    ptyManager.shutdownAll().catch(() => {});
+});
 
 
 // TEST SEAM (behavior-preserving): skip binding the socket when IDUPI_NO_LISTEN=1
