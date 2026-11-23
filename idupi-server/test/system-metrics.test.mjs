@@ -19,7 +19,9 @@ import {
     createSystemMetrics,
     cpuUsagePercent,
     parseLhmSensors,
+    parseLogicalDisks,
     parseNvidiaSmi,
+    statfsBytes,
 } from "../lib/system-metrics.mjs";
 import { createSystemMetricsRoutes } from "../lib/system-metrics-routes.mjs";
 
@@ -61,6 +63,8 @@ function unusableSources() {
             error.code = "ENOENT";
             throw error;
         },
+        // No drive probing in unit tests: the disk cases inject their own.
+        driveLetters: [],
     };
 }
 
@@ -101,6 +105,7 @@ function helperMetrics({ readFile, fetch: fetchImpl, now = () => HELPER_NOW }) {
         readFile,
         sleep: async () => {},
         now,
+        driveLetters: [],
         env: { IDUPI_SENSORS_FILE: "C:\\ProgramData\\IDUPI\\sensors.json" },
     });
 }
@@ -241,6 +246,250 @@ test("LHM tree without CPU sensors leaves the fields null", () => {
     });
 });
 
+// --- fixed disks (T8) ------------------------------------------------------
+
+const CIM_ONE_DISK = JSON.stringify({
+    DeviceID: "C:",
+    VolumeName: "Windows",
+    FileSystem: "NTFS",
+    Size: 500 * GIB,
+    FreeSpace: 100 * GIB,
+});
+
+const CIM_TWO_DISKS = JSON.stringify([
+    {
+        DeviceID: "C:",
+        VolumeName: "Windows",
+        FileSystem: "NTFS",
+        Size: 500 * GIB,
+        FreeSpace: 100 * GIB,
+    },
+    { DeviceID: "D:", VolumeName: "", FileSystem: "NTFS", Size: 2000 * GIB, FreeSpace: 500 * GIB },
+    { DeviceID: "E:", VolumeName: "Backup", FileSystem: "NTFS", Size: 32 * GIB, FreeSpace: 30 * GIB },
+]);
+
+function statfsFor(totalBytes, freeBytes) {
+    const bsize = 4096;
+    return { bsize, blocks: totalBytes / bsize, bavail: freeBytes / bsize };
+}
+
+function diskMetrics({ execFile, statfs, access = async () => {}, driveLetters = [] }) {
+    return createSystemMetrics({
+        os: fakeOs({
+            snapshots: [
+                [cpuTimes({ user: 10, sys: 10, idle: 80 })],
+                [cpuTimes({ user: 20, sys: 20, idle: 160 })],
+            ],
+        }),
+        execFile,
+        fetch: async () => {
+            throw new Error("ECONNREFUSED");
+        },
+        readFile: async () => {
+            const error = new Error("ENOENT: sensors.json");
+            error.code = "ENOENT";
+            throw error;
+        },
+        statfs,
+        access,
+        driveLetters,
+        sleep: async () => {},
+    });
+}
+
+test("logical disk JSON parses as one object or as an array", () => {
+    assert.deepEqual(parseLogicalDisks(CIM_ONE_DISK), [
+        {
+            mount: "C:",
+            label: "Windows",
+            fileSystem: "NTFS",
+            sizeBytes: 500 * GIB,
+            freeBytes: 100 * GIB,
+        },
+    ]);
+
+    const disks = parseLogicalDisks(CIM_TWO_DISKS);
+    assert.equal(disks.length, 3);
+    assert.equal(disks[1].mount, "D:");
+    assert.equal(disks[1].label, null, "an empty VolumeName is not a label");
+
+    assert.deepEqual(parseLogicalDisks(""), []);
+    assert.deepEqual(parseLogicalDisks("not json"), []);
+    assert.deepEqual(parseLogicalDisks("null"), []);
+    assert.deepEqual(
+        parseLogicalDisks(JSON.stringify([{ DeviceID: "not-a-drive" }, { DeviceID: "C:" }])),
+        [
+            {
+                mount: "C:",
+                label: null,
+                fileSystem: null,
+                sizeBytes: null,
+                freeBytes: null,
+            },
+        ],
+    );
+});
+
+test("statfs bytes: total is blocks times block size and free is available space", () => {
+    assert.deepEqual(statfsBytes({ bsize: 4096, blocks: 1000, bavail: 250 }), {
+        totalBytes: 4096 * 1000,
+        freeBytes: 4096 * 250,
+        usedBytes: 4096 * 750,
+        usagePercent: 75,
+    });
+    assert.equal(statfsBytes({ bsize: 0, blocks: 1000, bavail: 1 }), null);
+    assert.equal(statfsBytes({ bsize: 4096, blocks: 0, bavail: 0 }), null);
+    assert.equal(statfsBytes(undefined), null);
+});
+
+test("the sample lists every fixed disk with CIM labels and statfs sizes", async () => {
+    const calls = [];
+    const metrics = diskMetrics({
+        execFile: async (file, args) => {
+            calls.push({ file, args });
+            if (file === "nvidia-smi") {
+                const error = new Error("spawn nvidia-smi ENOENT");
+                error.code = "ENOENT";
+                throw error;
+            }
+            return { stdout: CIM_TWO_DISKS };
+        },
+        statfs: async (root) => {
+            if (root === "C:\\") return statfsFor(500 * GIB, 125 * GIB);
+            if (root === "D:\\") return statfsFor(2000 * GIB, 500 * GIB);
+            // E:\\ cannot be read by statfs: the CIM Size/FreeSpace fallback
+            // still produces a disk instead of hiding it.
+            const error = new Error("ENOENT: E:\\");
+            error.code = "ENOENT";
+            throw error;
+        },
+        driveLetters: ["C", "D", "E"],
+    });
+
+    const sample = await metrics.sample();
+
+    assert.deepEqual(sample.disks, [
+        {
+            mount: "C:",
+            label: "Windows",
+            fileSystem: "NTFS",
+            totalBytes: 500 * GIB,
+            freeBytes: 125 * GIB,
+            usedBytes: 375 * GIB,
+            usagePercent: 75,
+        },
+        {
+            mount: "D:",
+            label: null,
+            fileSystem: "NTFS",
+            totalBytes: 2000 * GIB,
+            freeBytes: 500 * GIB,
+            usedBytes: 1500 * GIB,
+            usagePercent: 75,
+        },
+        {
+            mount: "E:",
+            label: "Backup",
+            fileSystem: "NTFS",
+            totalBytes: 32 * GIB,
+            freeBytes: 30 * GIB,
+            usedBytes: 2 * GIB,
+            usagePercent: 6.3,
+        },
+    ]);
+
+    const cimCall = calls.find((call) => call.file === "powershell");
+    assert.ok(cimCall, "the fixed-disk metadata query must run");
+    assert.match(cimCall.args[2], /DriveType=3/);
+    assert.match(cimCall.args[2], /Win32_LogicalDisk/);
+    assert.equal(cimCall.args[0], "-NoProfile");
+});
+
+test("a failed CIM query falls back to statfs-only disks with null labels", async () => {
+    const metrics = diskMetrics({
+        execFile: async (file) => {
+            if (file === "nvidia-smi") {
+                const error = new Error("spawn nvidia-smi ENOENT");
+                error.code = "ENOENT";
+                throw error;
+            }
+            throw new Error("powershell is not available");
+        },
+        statfs: async (root) => {
+            if (root === "C:\\") return statfsFor(100 * GIB, 40 * GIB);
+            const error = new Error("ENOENT: " + root);
+            error.code = "ENOENT";
+            throw error;
+        },
+        access: async (root) => {
+            if (root === "C:\\") return;
+            const error = new Error("ENOENT: " + root);
+            error.code = "ENOENT";
+            throw error;
+        },
+        driveLetters: ["C", "D"],
+    });
+
+    const sample = await metrics.sample();
+
+    assert.deepEqual(sample.disks, [
+        {
+            mount: "C:",
+            label: null,
+            fileSystem: null,
+            totalBytes: 100 * GIB,
+            freeBytes: 40 * GIB,
+            usedBytes: 60 * GIB,
+            usagePercent: 60,
+        },
+    ]);
+});
+
+test("the CIM disk metadata query is cached for a minute", async () => {
+    let clock = 1_000_000;
+    let cimCalls = 0;
+    const metrics = createSystemMetrics({
+        os: fakeOs({
+            snapshots: [
+                [cpuTimes({ user: 10, sys: 10, idle: 80 })],
+                [cpuTimes({ user: 20, sys: 20, idle: 160 })],
+                [cpuTimes({ user: 30, sys: 30, idle: 240 })],
+                [cpuTimes({ user: 40, sys: 40, idle: 320 })],
+            ],
+        }),
+        execFile: async (file) => {
+            if (file === "nvidia-smi") {
+                const error = new Error("spawn nvidia-smi ENOENT");
+                error.code = "ENOENT";
+                throw error;
+            }
+            cimCalls++;
+            return { stdout: CIM_ONE_DISK };
+        },
+        fetch: async () => {
+            throw new Error("ECONNREFUSED");
+        },
+        readFile: async () => {
+            const error = new Error("ENOENT: sensors.json");
+            error.code = "ENOENT";
+            throw error;
+        },
+        statfs: async () => statfsFor(500 * GIB, 100 * GIB),
+        sleep: async () => {},
+        now: () => clock,
+        cacheMs: 1500,
+    });
+
+    await metrics.sample();
+    clock += 2000;
+    await metrics.sample();
+    assert.equal(cimCalls, 1, "two samples inside a minute share the CIM query");
+
+    clock += 61_000;
+    await metrics.sample();
+    assert.equal(cimCalls, 2);
+});
+
 // --- sampler ---------------------------------------------------------------
 
 test("sample composes cpu, memory and GPU values from the injected sources", async () => {
@@ -266,6 +515,7 @@ test("sample composes cpu, memory and GPU values from the injected sources", asy
             throw error;
         },
         sleep: async () => {},
+        driveLetters: [],
         now: () => Date.parse("2026-11-23T12:00:00.000Z"),
     });
 
@@ -291,14 +541,21 @@ test("sample composes cpu, memory and GPU values from the injected sources", asy
     assert.deepEqual(sample.sources, { gpu: "nvidia-smi", sensors: null });
     assert.equal(sample.hints.length, 1);
     assert.match(sample.hints[0], /LibreHardwareMonitor/);
+    assert.deepEqual(sample.disks, []);
 
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].file, "nvidia-smi");
-    assert.deepEqual(calls[0].args, [
+    const nvidiaCalls = calls.filter((call) => call.file === "nvidia-smi");
+    assert.equal(nvidiaCalls.length, 1);
+    assert.deepEqual(nvidiaCalls[0].args, [
         "--query-gpu=name,utilization.gpu,temperature.gpu,power.draw,memory.used,memory.total",
         "--format=csv,noheader,nounits",
     ]);
-    assert.equal(calls[0].options.timeout, 3000);
+    assert.equal(nvidiaCalls[0].options.timeout, 3000);
+
+    const cimCalls = calls.filter((call) => call.file === "powershell");
+    assert.equal(cimCalls.length, 1, "the fixed-disk query runs once per sample window");
+    assert.deepEqual(cimCalls[0].args.slice(0, 2), ["-NoProfile", "-Command"]);
+    assert.match(cimCalls[0].args[2], /Win32_LogicalDisk/);
+    assert.equal(cimCalls[0].options.timeout, 8000);
 });
 
 test("a missing nvidia-smi degrades to no GPUs plus a hint", async () => {
@@ -340,6 +597,7 @@ test("LHM sensors reach the sample; unreachable LHM keeps them null", async () =
             throw error;
         },
         sleep: async () => {},
+        driveLetters: [],
     };
 
     const withSensors = await createSystemMetrics({
@@ -462,7 +720,8 @@ test("concurrent pollers share one sample inside the cache window", async () => 
                 [cpuTimes({ user: 20, sys: 20, idle: 160 })],
             ],
         }),
-        execFile: async () => {
+        execFile: async (file) => {
+            if (file !== "nvidia-smi") return { stdout: "" };
             nvidiaCalls++;
             return { stdout: `${nvidiaLine}\n` };
         },
@@ -475,6 +734,7 @@ test("concurrent pollers share one sample inside the cache window", async () => 
             throw error;
         },
         sleep: async () => {},
+        driveLetters: [],
         now: () => clock,
         cacheMs: 1500,
     });
@@ -504,6 +764,17 @@ const fixtureSample = {
             powerW: 13.36,
             memoryUsedBytes: 1026 * MIB,
             memoryTotalBytes: 12288 * MIB,
+        },
+    ],
+    disks: [
+        {
+            mount: "C:",
+            label: "Windows",
+            fileSystem: "NTFS",
+            totalBytes: 500 * GIB,
+            freeBytes: 125 * GIB,
+            usedBytes: 375 * GIB,
+            usagePercent: 75,
         },
     ],
     sources: { gpu: "nvidia-smi", sensors: null },
@@ -548,12 +819,14 @@ test("GET /api/v1/system/metrics answers the dashboard shape", async (t) => {
         "cpu",
         "memory",
         "gpus",
+        "disks",
         "sources",
         "hints",
     ]);
     assert.deepEqual(body.cpu, fixtureSample.cpu);
     assert.deepEqual(body.memory, fixtureSample.memory);
     assert.deepEqual(body.gpus, fixtureSample.gpus);
+    assert.deepEqual(body.disks, fixtureSample.disks);
     assert.deepEqual(body.sources, fixtureSample.sources);
     assert.deepEqual(body.hints, fixtureSample.hints);
 });

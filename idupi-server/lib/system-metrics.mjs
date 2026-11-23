@@ -8,6 +8,9 @@
 //   - LibreHardwareMonitor's built-in web server (data.json), the manual
 //     alternative for the same values.
 //
+// Fixed disks (T8) are separate: one cached CIM query names them (labels and
+// file system), and statfs measures each one.
+//
 // The owner's Ryzen 5600X reports no temperature or power through WMI
 // (MSAcpi_ThermalZoneTemperature has 0 instances). Windows only exposes those
 // sensors to an elevated process, hence the helper: it loads the pinned
@@ -26,7 +29,11 @@
 
 import * as nodeOs from "node:os";
 import { execFile as nodeExecFile } from "node:child_process";
-import { readFile as nodeReadFile } from "node:fs/promises";
+import {
+    access as nodeAccess,
+    readFile as nodeReadFile,
+    statfs as nodeStatfs,
+} from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -55,6 +62,18 @@ const DEFAULT_CACHE_MS = 1500;
 const FIRST_CPU_SAMPLE_MS = 250;
 
 const BYTES_PER_MIB = 1024 * 1024;
+
+// Fixed disks (T8). The CIM query is the only way to get a volume label, the
+// file system and the "fixed" drive type; it costs one PowerShell start, so it
+// is cached for a minute. Sizes come from statfs (cheap and exact), and when
+// CIM is unavailable every letter that statfs can read is reported with a null
+// label instead of hiding the card.
+const CIM_TIMEOUT_MS = 8000;
+const CIM_MAX_BUFFER = 256 * 1024;
+const DISK_CIM_CACHE_MS = 60_000;
+const DRIVE_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+const LOGICAL_DISK_SCRIPT =
+    "Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Select-Object DeviceID,VolumeName,FileSystem,Size,FreeSpace | ConvertTo-Json";
 
 const SENSORS_INSTALL_HINT =
     "Para temperatura y consumo del CPU, instalá el servicio de sensores con permisos de administrador: idupi-server\\scripts\\install-sensors-helper.ps1 (alternativa: LibreHardwareMonitor con 'Remote Web Server' activado en el puerto 8085)";
@@ -99,6 +118,64 @@ export function parseSensorNumber(value) {
 /** Sensor readings that cannot be real when zero or negative become null. */
 export function positiveOrNull(value) {
     return typeof value === "number" && value > 0 ? value : null;
+}
+
+/**
+ * `Get-CimInstance ... | ConvertTo-Json` -> fixed-disk rows. One matching
+ * drive serializes as an object and several serialize as an array, so both
+ * shapes parse. Rows without a "C:" style DeviceID are dropped instead of
+ * turning into a phantom disk.
+ */
+export function parseLogicalDisks(stdout) {
+    const text = String(stdout ?? "").trim();
+    if (!text) return [];
+    let data;
+    try {
+        data = JSON.parse(text);
+    } catch {
+        return [];
+    }
+    const rows = Array.isArray(data) ? data : [data];
+    const disks = [];
+    for (const row of rows) {
+        if (!row || typeof row !== "object") continue;
+        const deviceId = String(row.DeviceID ?? "").trim();
+        if (!/^[A-Za-z]:$/.test(deviceId)) continue;
+        const label = typeof row.VolumeName === "string" ? row.VolumeName.trim() : "";
+        const fileSystem = typeof row.FileSystem === "string" ? row.FileSystem.trim() : "";
+        const sizeBytes = Number(row.Size);
+        const freeBytes = Number(row.FreeSpace);
+        disks.push({
+            mount: deviceId.toUpperCase(),
+            label: label || null,
+            fileSystem: fileSystem || null,
+            sizeBytes: Number.isFinite(sizeBytes) && sizeBytes > 0 ? sizeBytes : null,
+            freeBytes: Number.isFinite(freeBytes) && freeBytes >= 0 ? freeBytes : null,
+        });
+    }
+    return disks;
+}
+
+/**
+ * `fs.promises.statfs` (GetDiskFreeSpaceEx on Windows) -> wire bytes. bavail is
+ * the space the caller can actually use, which is what "free" means for the
+ * storage card; used is the complement of total.
+ */
+export function statfsBytes(stats) {
+    const blockSize = Number(stats?.bsize);
+    const blocks = Number(stats?.blocks);
+    const available = Number(stats?.bavail);
+    if (!(blockSize > 0) || !(blocks > 0) || !(available >= 0)) return null;
+    const totalBytes = Math.round(blockSize * blocks);
+    const freeBytes = Math.round(blockSize * available);
+    if (!(totalBytes > 0)) return null;
+    const usedBytes = Math.max(0, totalBytes - freeBytes);
+    return {
+        totalBytes,
+        freeBytes,
+        usedBytes,
+        usagePercent: roundTo((usedBytes / totalBytes) * 100, 1),
+    };
 }
 
 /**
@@ -299,6 +376,9 @@ function resolveSensorsFile(env) {
  * @param {(file: string, args: string[], options: object) => Promise<{ stdout: string }>} [options.execFile]
  * @param {typeof fetch} [options.fetch]
  * @param {(file: string, encoding: string) => Promise<string | Buffer>} [options.readFile]
+ * @param {(root: string) => Promise<object>} [options.statfs]
+ * @param {(root: string) => Promise<void>} [options.access]
+ * @param {string[]} [options.driveLetters]
  * @param {() => number} [options.now]
  * @param {typeof import("node:os")} [options.os]
  * @param {(ms: number) => Promise<void>} [options.sleep]
@@ -309,6 +389,9 @@ export function createSystemMetrics({
     execFile = nodeExecFileAsync,
     fetch: fetchImpl = globalThis.fetch,
     readFile = nodeReadFile,
+    statfs = nodeStatfs,
+    access = nodeAccess,
+    driveLetters = DRIVE_LETTERS,
     now = () => Date.now(),
     os: osImpl = nodeOs,
     sleep = defaultSleep,
@@ -318,6 +401,7 @@ export function createSystemMetrics({
     let previousCpuTimes = null;
     let cached = null;
     let inFlight = null;
+    let cimCache = null;
 
     async function readCpu() {
         const cpus = osImpl.cpus();
@@ -413,6 +497,96 @@ export function createSystemMetrics({
         }
     }
 
+    async function statfsDisk(mount) {
+        try {
+            return statfsBytes(await statfs(`${mount}\\`));
+        } catch {
+            return null;
+        }
+    }
+
+    /** CIM Size/FreeSpace as the size fallback when statfs cannot read a drive. */
+    function cimDiskSizes(disk) {
+        if (!(disk.sizeBytes > 0) || disk.freeBytes === null) return null;
+        const totalBytes = disk.sizeBytes;
+        const freeBytes = Math.min(disk.freeBytes, totalBytes);
+        const usedBytes = Math.max(0, totalBytes - freeBytes);
+        return {
+            totalBytes,
+            freeBytes,
+            usedBytes,
+            usagePercent: roundTo((usedBytes / totalBytes) * 100, 1),
+        };
+    }
+
+    /**
+     * Fixed-disk metadata from CIM, cached for a minute. A failure is cached
+     * too: retrying a broken PowerShell every sample would spawn it on every
+     * dashboard poll. `null` means "CIM unavailable, fall back to statfs".
+     */
+    async function readCimDisks() {
+        const at = now();
+        if (cimCache && at - cimCache.at < DISK_CIM_CACHE_MS) return cimCache.entries;
+        let entries = null;
+        try {
+            const { stdout } = await execFile(
+                "powershell",
+                ["-NoProfile", "-Command", LOGICAL_DISK_SCRIPT],
+                {
+                    timeout: CIM_TIMEOUT_MS,
+                    windowsHide: true,
+                    maxBuffer: CIM_MAX_BUFFER,
+                    encoding: "utf8",
+                },
+            );
+            const parsed = parseLogicalDisks(stdout);
+            if (parsed.length > 0) entries = parsed;
+        } catch {
+            entries = null;
+        }
+        cimCache = { at, entries };
+        return entries;
+    }
+
+    /**
+     * Every fixed local disk. With CIM the list is authoritative (DriveType=3
+     * only); without it, a letter is a disk when it exists and statfs reports a
+     * positive total size. Sizes prefer statfs, so the card matches Explorer.
+     */
+    async function readDisks() {
+        const cim = await readCimDisks();
+        if (cim) {
+            const disks = await Promise.all(
+                cim.map(async (disk) => {
+                    const sizes = (await statfsDisk(disk.mount)) ?? cimDiskSizes(disk);
+                    if (!sizes) return null;
+                    return {
+                        mount: disk.mount,
+                        label: disk.label,
+                        fileSystem: disk.fileSystem,
+                        ...sizes,
+                    };
+                }),
+            );
+            return disks.filter(Boolean).sort((a, b) => a.mount.localeCompare(b.mount));
+        }
+
+        const disks = await Promise.all(
+            driveLetters.map(async (letter) => {
+                const mount = `${String(letter).toUpperCase()}:`;
+                try {
+                    await access(`${mount}\\`);
+                } catch {
+                    return null;
+                }
+                const sizes = await statfsDisk(mount);
+                if (!sizes) return null;
+                return { mount, label: null, fileSystem: null, ...sizes };
+            }),
+        );
+        return disks.filter(Boolean).sort((a, b) => a.mount.localeCompare(b.mount));
+    }
+
     /**
      * Helper file first (elevated and precise) and the LHM web server second
      * (the manual alternative). Both unavailable leaves the fields null.
@@ -440,10 +614,11 @@ export function createSystemMetrics({
     }
 
     async function buildSample() {
-        const [cpu, gpuResult, sensors] = await Promise.all([
+        const [cpu, gpuResult, sensors, disks] = await Promise.all([
             readCpu(),
             readGpus(),
             resolveSensors(),
+            readDisks(),
         ]);
 
         const totalBytes = Number(osImpl.totalmem());
@@ -475,6 +650,7 @@ export function createSystemMetrics({
                 temperatureC: sensors.memoryTemperatureC,
             },
             gpus: gpuResult.gpus,
+            disks,
             sources: {
                 gpu: gpuResult.available ? "nvidia-smi" : null,
                 sensors: sensors.source,
