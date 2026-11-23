@@ -26,6 +26,18 @@ html, body {
   left: 2px;
   padding: 0;
   background: #020617;
+  /*
+   * Wide mode: the grid can be wider than the screen, so #terminal becomes
+   * the horizontal scroller. Scrollbars stay hidden -- one would eat height
+   * and make proposeDimensions() fit fewer rows.
+   */
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+#terminal::-webkit-scrollbar {
+  display: none;
 }
 
 /* FitAddon measures #terminal (the .xterm parent), so it must fill it. */

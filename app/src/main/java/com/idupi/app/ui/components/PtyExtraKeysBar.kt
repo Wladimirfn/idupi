@@ -40,14 +40,21 @@ import com.idupi.app.ui.theme.TextPrimary
  * Layout: a single horizontally scrollable row, sitting above the soft keyboard
  * (the screen applies `imePadding()`), so landscape phones can still reach
  * every key.
+ *
+ * "Ancho" toggles wide mode: the page pins at least [WIDE_MODE_COLS] columns
+ * and pans horizontally instead of reflowing, which is the width Claude Code,
+ * OpenCode and other agent TUIs are laid out for. A phone in portrait only
+ * fits ~46 columns.
  */
 @Composable
 fun PtyExtraKeysBar(
     ctrlArmed: Boolean,
     altArmed: Boolean,
+    wideMode: Boolean,
     fontSize: Int,
     onCtrlToggle: () -> Unit,
     onAltToggle: () -> Unit,
+    onWideModeToggle: () -> Unit,
     onKey: (String) -> Unit,
     onFontSizeChange: (Int) -> Unit,
     modifier: Modifier = Modifier
@@ -88,6 +95,10 @@ fun PtyExtraKeysBar(
             KeyChip(label = "_") { onKey("_") }
             KeyChip(label = ":") { onKey(":") }
             KeyChip(label = ".") { onKey(".") }
+
+            // Wide mode: 80 columns with horizontal panning, so agent TUIs
+            // keep their expected layout instead of reflowing at ~46 columns.
+            KeyChip(label = "Ancho", armed = wideMode, onClick = onWideModeToggle)
 
             // Font size: readability on a phone beats fitting 200 columns.
             KeyChip(label = "A-") {
@@ -142,6 +153,9 @@ const val VT_HOME: String = "\u001b[H"
 const val VT_END: String = "\u001b[F"
 const val VT_PGUP: String = "\u001b[5~"
 const val VT_PGDN: String = "\u001b[6~"
+
+// Wide mode pins the grid at the width agent TUIs are designed for.
+const val WIDE_MODE_COLS: Int = 80
 
 const val MIN_FONT_SIZE: Int = 9
 const val MAX_FONT_SIZE: Int = 28

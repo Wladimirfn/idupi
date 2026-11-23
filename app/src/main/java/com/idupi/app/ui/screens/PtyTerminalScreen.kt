@@ -38,6 +38,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,6 +51,7 @@ import androidx.compose.ui.unit.sp
 import com.idupi.app.ui.components.PtyExtraKeysBar
 import com.idupi.app.ui.components.PtyTerminalView
 import com.idupi.app.ui.components.PtyTerminalWebController
+import com.idupi.app.ui.components.WIDE_MODE_COLS
 import com.idupi.app.ui.theme.AppShapes
 import com.idupi.app.ui.theme.AppSpacing
 import com.idupi.app.ui.theme.AppTypography
@@ -87,9 +89,11 @@ fun PtyTerminalScreen(
     var ctrlArmed by remember { mutableStateOf(false) }
     var altArmed by remember { mutableStateOf(false) }
     var fontSize by remember { mutableIntStateOf(13) }
+    var wideMode by rememberSaveable { mutableStateOf(false) }
     var showKillConfirm by remember { mutableStateOf(false) }
     val currentOnBack by rememberUpdatedState(onBack)
     val latestFontSize by rememberUpdatedState(fontSize)
+    val latestWideMode by rememberUpdatedState(wideMode)
 
     // A fresh screen entry targets exactly the terminal navigation asked for
     // (null = create a new one). Leaving disposes the local session WITHOUT
@@ -183,9 +187,10 @@ fun PtyTerminalScreen(
                     controller = controller,
                     onReady = { cols, rows ->
                         viewModel.onViewportReady(cols, rows)
-                        // A recreated page starts at the JS default; reapply
-                        // the size the user chose this session.
+                        // A recreated page starts at the JS defaults; reapply
+                        // the size and wide mode the user chose this session.
                         controller.setFontSize(latestFontSize)
+                        controller.setMinCols(if (latestWideMode) WIDE_MODE_COLS else 0)
                     },
                     onInput = { data -> viewModel.onInput(data) },
                     onResize = { cols, rows -> viewModel.onResize(cols, rows) },
@@ -213,6 +218,7 @@ fun PtyTerminalScreen(
             PtyExtraKeysBar(
                 ctrlArmed = ctrlArmed,
                 altArmed = altArmed,
+                wideMode = wideMode,
                 fontSize = fontSize,
                 onCtrlToggle = {
                     val next = !ctrlArmed
@@ -223,6 +229,11 @@ fun PtyTerminalScreen(
                     val next = !altArmed
                     altArmed = next
                     controller.setModifiers(ctrlArmed, next)
+                },
+                onWideModeToggle = {
+                    val next = !wideMode
+                    wideMode = next
+                    controller.setMinCols(if (next) WIDE_MODE_COLS else 0)
                 },
                 onKey = { sequence ->
                     // A bar key is not an xterm keystroke: disarm any waiting
