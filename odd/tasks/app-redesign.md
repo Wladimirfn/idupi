@@ -46,7 +46,7 @@ dead surfaces, give terminals and deliveries their own entries, rename the CLI c
 - [x] T3 Server `GET /api/v1/system/metrics` (behind auth): CPU %, RAM used/total, GPU via
       nvidia-smi, optional LibreHardwareMonitor source for CPU temp/W; nulls when unknown.
 - [x] T4 Dashboard redesign on the metrics (polling while visible) + tests.
-- [ ] T6 Elevated sensor helper: loads LibreHardwareMonitorLib (same DLL RTSS's
+- [x] T6 Elevated sensor helper: loads LibreHardwareMonitorLib (same DLL RTSS's
       LHMDataProvider uses), writes CPU temp/power (+ DIMM temp if any) JSON every 2 s to
       `%ProgramData%\IDUPI\sensors.json`; installed as logon scheduled task with highest
       privileges from an admin-only copy in ProgramData; server metrics prefer it.
@@ -79,9 +79,9 @@ dead surfaces, give terminals and deliveries their own entries, rename the CLI c
 | T2 | dd44267 | Writer idu-pi work-1. TerminalsScreen/VM (3 s visible polling, create, open, Back -> Terminales), drawer order Terminales/Entregas/Procesos/Dashboard/Proyectos/Alertas/Remoto/Ajustes, Console -> "Procesos" list-first (log stream behind app-bar toggle). Worker 257/0 (7 new); parent rerun testDebugUnitTest EXIT 0. |
 | T3 | 59f7695 | Writer idu-pi work-1. system-metrics 16/16, delivery-routes 10/10, node --check OK; wired after requireAuth (parent verified index.mjs:3168/3179). Real smoke: Ryzen 5600X 5.9 %, RAM 75 %, RTX 3060 39.7 C 13 W; CPU temp/W null + LibreHardwareMonitor hint. Live server not restarted (owner PTY alive). |
 | T4 | 92ac9ec | Writer idu-pi work-1. DashboardViewModel 2 s visible polling, 2-col cards, thresholds, hints card. testDebugUnitTest 268/0 (11 new). Note: openspec app block says strict_tdd true; tests written alongside, no RED evidence (disclosed). |
-| T6 (in progress) | afb3677, b8465b5, 654997e | Writer idu-pi work-1 (helper, installer, server source, 21 tests). Parent: elevated path ignores user env (DLL hijack), zero readings -> null + "nodriver" PawnIO hint; system-metrics 22/22. Installed live (UAC accepted): task 'IDUPI Sensors' Running, sensors.json refreshes every 2 s, elevated:true, but CPU temp/W = 0: LHM 0.9.5 needs the PawnIO driver (not installed; only inpoutx64 present). Server restarted (PID 31868), /system/metrics 200 with PawnIO hint. Pending: owner decision on PawnIO. |
+| T6 | afb3677, b8465b5, 654997e, 2c26d41 | Writer idu-pi work-1 (helper, installer, server source, packaging). Parent: elevated path ignores user env (DLL hijack); zero readings -> null + driver hint. Root cause of 0 readings: RTSS's LHM copy (0.9.5-pre392) predates PawnIO. Packaged (owner: "others must use it without problems"): `scripts/sensors-deps.json` pins LHM v0.9.6 zip (sha256 086d9f1b...) and PawnIO 2.2.0 setup (sha256 1f519a22..., Authenticode namazso verified); installer installs PawnIO if missing, extracts 9 DLLs to admin-locked `%ProgramData%\IDUPI\lhm`; nothing binary in the repo; docs `idupi-server/docs/sensors.md`. Live (owner accepted UAC): PawnIO service RUNNING, helper elevated libVersion 0.9.6.0, CPU 60.1 C / 39.2 W; server /system/metrics 200 -> cpu 58.1 C 45 W, gpu 43 C 14.7 W, sources.sensors "sensors-helper", hints 0. system-metrics 22/22. RAM temp null (no DIMM sensor). |
 | T5 (in progress) | 0ad6b92 | Parent: testDebugUnitTest + assembleRelease EXIT 0, APK 1.34 versionCode 35 same cert, pushed via idupi-push. Pending: server restart (owner OK) + owner check. |
 
 ## Next step
 
-T6: owner decides on installing PawnIO (https://pawnio.eu); then restart task and verify CPU temp/W. T5: owner checks 1.34 dashboard.
+T5: owner checks the 1.34 dashboard with live CPU temp/W; then stacked PR delivery decision.
