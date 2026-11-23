@@ -38,9 +38,9 @@ dead surfaces, give terminals and deliveries their own entries, rename the CLI c
       new start/Back target; Welcome/Connection continue to Terminales.
 - [x] T2 Drawer entries Terminales (new PTY list screen) and Entregas; Console renamed
       Procesos, opening directly on the process list (PTY launcher and Entregas card removed).
-- [ ] T3 Server `GET /api/v1/system/metrics` (behind auth): CPU %, RAM used/total, GPU via
+- [x] T3 Server `GET /api/v1/system/metrics` (behind auth): CPU %, RAM used/total, GPU via
       nvidia-smi, optional LibreHardwareMonitor source for CPU temp/W; nulls when unknown.
-- [ ] T4 Dashboard redesign on the metrics (polling while visible) + tests.
+- [x] T4 Dashboard redesign on the metrics (polling while visible) + tests.
 - [ ] T5 Bump version, build, deliver with `idupi-push`, owner check.
 
 ## Acceptance criteria
@@ -68,7 +68,10 @@ dead surfaces, give terminals and deliveries their own entries, rename the CLI c
 |------|--------|--------|
 | T1 | 4bbaed1, 4aaaf68 | Writer idu-pi work-1. 33 files, -8812/+50 (16 main + 13 test files deleted). Worker: testDebugUnitTest 250/0 + assembleDebug. Parent: leftover "Orquestador" labels reworded (4aaaf68). IduPiClient chat/orchestrator methods kept on purpose (wire tests; Console still uses connectChat/cancelCurrentTask). |
 | T2 | dd44267 | Writer idu-pi work-1. TerminalsScreen/VM (3 s visible polling, create, open, Back -> Terminales), drawer order Terminales/Entregas/Procesos/Dashboard/Proyectos/Alertas/Remoto/Ajustes, Console -> "Procesos" list-first (log stream behind app-bar toggle). Worker 257/0 (7 new); parent rerun testDebugUnitTest EXIT 0. |
+| T3 | 59f7695 | Writer idu-pi work-1. system-metrics 16/16, delivery-routes 10/10, node --check OK; wired after requireAuth (parent verified index.mjs:3168/3179). Real smoke: Ryzen 5600X 5.9 %, RAM 75 %, RTX 3060 39.7 C 13 W; CPU temp/W null + LibreHardwareMonitor hint. Live server not restarted (owner PTY alive). |
+| T4 | 92ac9ec | Writer idu-pi work-1. DashboardViewModel 2 s visible polling, 2-col cards, thresholds, hints card. testDebugUnitTest 268/0 (11 new). Note: openspec app block says strict_tdd true; tests written alongside, no RED evidence (disclosed). |
+| T5 (in progress) | 0ad6b92 | Parent: testDebugUnitTest + assembleRelease EXIT 0, APK 1.34 versionCode 35 same cert, pushed via idupi-push. Pending: server restart (owner OK) + owner check. |
 
 ## Next step
 
-T3+T4 running on idu-pi work-1 (run IDU-20261123193031-work-1-w4vo).
+T5: restart server with owner OK so /api/v1/system/metrics is live; owner checks 1.34.
