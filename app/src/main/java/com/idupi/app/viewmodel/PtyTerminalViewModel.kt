@@ -145,6 +145,11 @@ class PtyTerminalViewModel(
     /** Debounced resize; the PTY is resized once the user stops dragging/typing. */
     fun onResize(cols: Int, rows: Int) {
         if (cols <= 0 || rows <= 0) return
+        // Always remember the latest fitted size: a resize that lands while the
+        // PTY is still being created is otherwise dropped (activeId is null),
+        // and startSession() would re-apply the stale first-layout size.
+        viewportCols = cols
+        viewportRows = rows
         if (cols == pendingCols && rows == pendingRows && resizeJob != null) return
         pendingCols = cols
         pendingRows = rows

@@ -146,16 +146,37 @@
       notify("onResize", size.cols, size.rows);
     });
 
-    // Report the fitted viewport once the first layout pass has settled, so
-    // the PTY is created at the size the terminal actually renders at.
-    requestAnimationFrame(function () {
+    // Refit whenever the container itself changes size (IME, Compose layout,
+    // rotation); window "resize" alone misses some WebView layout passes.
+    var container = document.getElementById("terminal");
+    if (typeof ResizeObserver !== "undefined") {
+      new ResizeObserver(function () {
+        if (resizeTimer) clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(fit, 60);
+      }).observe(container);
+    }
+
+    // Report the fitted viewport only once the container has a real height,
+    // so the PTY is created at the size the terminal actually renders at.
+    // Before the first Compose layout pass the WebView can be ~0 px tall and
+    // xterm would fit a single row.
+    var attempts = 0;
+    function reportReady() {
+      if (readyNotified) return;
       fit();
-      if (!readyNotified) {
-        readyNotified = true;
-        notify("onReady", term.cols, term.rows);
+      attempts++;
+      if (term.rows < MIN_READY_ROWS && attempts < MAX_READY_ATTEMPTS) {
+        setTimeout(reportReady, 50);
+        return;
       }
-    });
+      readyNotified = true;
+      notify("onReady", term.cols, term.rows);
+    }
+    requestAnimationFrame(reportReady);
   }
+
+  var MIN_READY_ROWS = 5;
+  var MAX_READY_ATTEMPTS = 40; // ~2 s, then report whatever fits
 
   window.idupi = {
     write: function (b64) {

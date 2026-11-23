@@ -52,6 +52,29 @@ class PtyTerminalViewModelTest {
     }
 
     @Test
+    fun `a resize that lands while the terminal is being created is not lost`() = runTest {
+        val fake = FakeIduPiClient().apply {
+            ptyCreateResult = PtyInfo(id = "pty-3", alive = true)
+            ptyCreateDelayMs = 500
+            ptyStreamScript.addLast(PtyStreamCall(emptyList(), hang = true))
+        }
+        val viewModel = PtyTerminalViewModel(FakeClientSource(fake))
+
+        viewModel.prepare(null)
+        // First layout pass: the WebView is not laid out yet (1 row).
+        viewModel.onViewportReady(47, 1)
+        runCurrent()
+        // Real size arrives while the create request is still in flight.
+        viewModel.onResize(47, 38)
+        advanceUntilIdle()
+
+        assertEquals(47 to 1, fake.lastCreatedPtyDims)
+        assertEquals(Triple("pty-3", 47, 38), fake.ptyResizes.last())
+
+        viewModel.detach()
+    }
+
+    @Test
     fun `attaching resizes and reports the exit code of a dead terminal`() = runTest {
         val fake = FakeIduPiClient().apply {
             ptyStreamScript.addLast(PtyStreamCall(emptyList()))

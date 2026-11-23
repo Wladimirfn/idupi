@@ -98,6 +98,12 @@ fun PtyTerminalView(
                 modifiersConsumedHandler = { mainHandler.post { onModifiersConsumed() } }
             )
             WebView(context).apply {
+                // WRAP_CONTENT (the default) lets the page viewport collapse to
+                // its content height, so xterm would fit a single row.
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
                 setBackgroundColor(android.graphics.Color.parseColor("#020617"))
                 settings.javaScriptEnabled = true
                 settings.domStorageEnabled = false
