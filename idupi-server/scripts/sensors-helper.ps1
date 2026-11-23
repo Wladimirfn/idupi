@@ -47,8 +47,15 @@ $ErrorActionPreference = "Stop"
 $RtssLibDir = "C:\Program Files (x86)\RivaTuner Statistics Server\Plugins\Client\LHMDataProvider"
 $FallbackLibDir = "C:\Program Files\LibreHardwareMonitor"
 
+$Identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$Principal = New-Object System.Security.Principal.WindowsPrincipal($Identity)
+$Elevated = $Principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+
 if (-not $LibDir) {
-    if ($env:IDUPI_LHM_LIB_DIR) {
+    # Elevated, user environment variables are attacker-controlled input: a
+    # non-admin process could point the DLL load at its own code and gain admin.
+    # Only the admin-owned install folders are trusted then.
+    if ($env:IDUPI_LHM_LIB_DIR -and -not $Elevated) {
         $LibDir = $env:IDUPI_LHM_LIB_DIR
     } elseif (Test-Path -LiteralPath $RtssLibDir) {
         $LibDir = $RtssLibDir
@@ -58,16 +65,13 @@ if (-not $LibDir) {
 }
 
 if (-not $OutFile) {
-    $programData = $env:ProgramData
+    # Resolved through the shell API, not $env:ProgramData, for the same reason.
+    $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
     if (-not $programData) { $programData = "C:\ProgramData" }
     $OutFile = Join-Path $programData "IDUPI\sensors.json"
 }
 
 if ($IntervalMs -lt 500) { $IntervalMs = 500 }
-
-$Identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-$Principal = New-Object System.Security.Principal.WindowsPrincipal($Identity)
-$Elevated = $Principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
 
 $LhmPath = Join-Path $LibDir "LibreHardwareMonitorLib.dll"
 $HidPath = Join-Path $LibDir "HidSharp.dll"
