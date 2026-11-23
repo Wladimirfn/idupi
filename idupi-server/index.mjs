@@ -54,6 +54,10 @@ import { createDeliveryRoutes } from "./lib/delivery-routes.mjs";
 // from nvidia-smi, and optional CPU temperature/power from LibreHardwareMonitor.
 import { createSystemMetrics } from "./lib/system-metrics.mjs";
 import { createSystemMetricsRoutes } from "./lib/system-metrics-routes.mjs";
+// Every PC process plus end-process (app-redesign, T10): one PowerShell sample
+// per 2 s, and taskkill behind the same token as every other route.
+import { createOsProcesses } from "./lib/os-processes.mjs";
+import { createOsProcessesRoutes } from "./lib/os-processes-routes.mjs";
 // Browser view of those same PTYs (live-shared-terminals T2): loopback-only
 // static files, served before auth because they hold no secrets.
 import { createTerminalWebRoutes } from "./lib/terminal-web-routes.mjs";
@@ -1221,6 +1225,15 @@ const handleDeliveryRoute = createDeliveryRoutes(deliveryRegistry);
 // and the previous CPU delta sample are shared by every poller instead of
 // spawning nvidia-smi once per request.
 const handleSystemMetricsRoute = createSystemMetricsRoutes(createSystemMetrics());
+
+// PC processes (T10): the sampler is shared so its 2 s cache and the previous
+// CPU-time baseline live for the whole process. PTY host pids are extra IDUPI
+// roots, so those terminals and everything under them classify as "idupi".
+const osProcesses = createOsProcesses({
+    extraIdupiPids: () => ptyManager.list().map((entry) => entry.pid),
+    log: (...args) => console.log(...args),
+});
+const handleOsProcessesRoute = createOsProcessesRoutes(osProcesses);
 
 // Browser view of the shared terminals: page files live in web/terminal, and
 // the xterm assets are the SAME vendored 5.5.0 copy the Android app loads, so
@@ -3177,6 +3190,8 @@ const handleRequest = async (req, res) => {
     if (await handleDeliveryRoute(req, res, pathname)) return;
     // Dashboard metrics live in lib/system-metrics-routes.mjs; behind the same token.
     if (await handleSystemMetricsRoute(req, res, pathname)) return;
+    // PC process list and end-process live in lib/os-processes-routes.mjs.
+    if (await handleOsProcessesRoute(req, res, pathname)) return;
 
     // 0. Stream de eventos del chat (SSE). Long-lived: no responde y sigue abierto.
     if (pathname === "/api/v1/chat/stream" && req.method === "GET") {
