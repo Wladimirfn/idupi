@@ -1,0 +1,105 @@
+package com.idupi.app.data.phone.control
+
+sealed interface NodeMatch {
+    data class Found(val node: NodeSnapshot) : NodeMatch
+    data class NotFound(val reason: String) : NodeMatch
+}
+
+/**
+ * Finds the node a tap / long_press should act on (phone-agent T3).
+ *
+ * The documented rule, in order:
+ * 1. Only visible nodes are candidates.
+ * 2. A [NodeTarget.Text] query first tries exact text equality (case
+ *    sensitive). Only when nothing matches does it fall back to a
+ *    case-insensitive "contains" over text and content description.
+ *    A [NodeTarget.Id] query matches the full view resource id exactly.
+ * 3. Every candidate resolves to an actionable node: itself when clickable,
+ *    otherwise its nearest clickable ancestor, otherwise itself (the executor
+ *    can still tap its center by coordinates).
+ * 4. If the resolved actionable nodes collapse to one distinct target, that is
+ *    the match. More than one distinct target means the query is ambiguous and
+ *    nothing is tapped: a wrong tap is worse than a reported failure.
+ *
+ * Matching several visible nodes that share the same clickable row (for
+ * example a label and its icon) is therefore not ambiguous, which is what makes
+ * `tap "Enviar"` reliable on list rows.
+ */
+object NodeMatcher {
+
+    fun find(root: NodeSnapshot, target: NodeTarget): NodeMatch = find(listOf(root), target)
+
+    fun find(roots: List<NodeSnapshot>, target: NodeTarget): NodeMatch {
+        val candidates = mutableListOf<Candidate>()
+        roots.forEach { collect(it, emptyList(), candidates) }
+        val visible = candidates.filter { it.node.visible }
+        if (visible.isEmpty()) return NodeMatch.NotFound(NO_VISIBLE)
+
+        val matched = when (target) {
+            is NodeTarget.Text -> {
+                val exact = visible.filter { it.node.text == target.text }
+                if (exact.isNotEmpty()) {
+                    exact
+                } else {
+                    val needle = target.text
+                    visible.filter {
+                        it.node.text.contains(needle, ignoreCase = true) ||
+                            it.node.desc.contains(needle, ignoreCase = true)
+                    }
+                }
+            }
+            is NodeTarget.Id -> visible.filter { it.node.viewId == target.id }
+            is NodeTarget.Point -> return NodeMatch.NotFound(POINT_HAS_NO_NODE)
+        }
+
+        if (matched.isEmpty()) {
+            return NodeMatch.NotFound(
+                if (target is NodeTarget.Text) TEXT_NOT_FOUND else ID_NOT_FOUND
+            )
+        }
+
+        val targets = matched
+            .map(::actionable)
+            .distinctBy { ActionKey(it.className, it.viewId, it.bounds) }
+
+        return when (targets.size) {
+            1 -> NodeMatch.Found(targets.single())
+            else -> NodeMatch.NotFound(AMBIGUOUS)
+        }
+    }
+
+    private fun collect(
+        node: NodeSnapshot,
+        ancestors: List<NodeSnapshot>,
+        into: MutableList<Candidate>,
+    ) {
+        into += Candidate(node, ancestors)
+        node.children.forEach { child -> collect(child, ancestors + node, into) }
+    }
+
+    private fun actionable(candidate: Candidate): NodeSnapshot {
+        if (candidate.node.clickable) return candidate.node
+        for (index in candidate.ancestors.indices.reversed()) {
+            val ancestor = candidate.ancestors[index]
+            if (ancestor.clickable) return ancestor
+        }
+        return candidate.node
+    }
+
+    private data class Candidate(
+        val node: NodeSnapshot,
+        val ancestors: List<NodeSnapshot>,
+    )
+
+    private data class ActionKey(
+        val className: String,
+        val viewId: String,
+        val bounds: NodeBounds,
+    )
+
+    private const val NO_VISIBLE = "no hay nada visible"
+    private const val TEXT_NOT_FOUND = "no se encontró el texto"
+    private const val ID_NOT_FOUND = "no se encontró el id"
+    private const val AMBIGUOUS = "varios elementos coinciden"
+    private const val POINT_HAS_NO_NODE = "las coordenadas no se buscan"
+}
