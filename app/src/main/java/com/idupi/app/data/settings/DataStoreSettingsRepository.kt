@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
+import com.idupi.app.data.calendar.CalendarViewMode
 import com.idupi.app.domain.model.InboxApp
 import com.idupi.app.domain.model.InboxImportance
 import com.idupi.app.domain.model.InboxSettings
@@ -153,6 +154,15 @@ class DataStoreSettingsRepository(
         dataStore.edit { prefs -> prefs[CALENDAR_LAST_USED_ID_KEY] = calendarId }
     }
 
+    // Missing key means month: the Agenda opens as a calendar by default, and
+    // the last choice is stored so switching tabs survives a restart.
+    override val calendarViewMode: Flow<String> =
+        dataStore.data.map { prefs -> prefs[CALENDAR_VIEW_MODE_KEY] ?: DEFAULT_VIEW_MODE }
+
+    override suspend fun setCalendarViewMode(mode: String) {
+        dataStore.edit { prefs -> prefs[CALENDAR_VIEW_MODE_KEY] = mode }
+    }
+
     private inline fun <reified T : Enum<T>> enumValue(raw: String?, fallback: T): T =
         raw?.let { stored -> enumValues<T>().firstOrNull { it.name == stored } } ?: fallback
 
@@ -206,5 +216,11 @@ class DataStoreSettingsRepository(
         /** phone-calendar T3: last calendar chosen in the add-event sheet. */
         val CALENDAR_LAST_USED_ID_KEY: Preferences.Key<String> =
             stringPreferencesKey("calendar_last_used_id")
+
+        /** phone-calendar T5: last Agenda view mode (list, week or month). */
+        val CALENDAR_VIEW_MODE_KEY: Preferences.Key<String> =
+            stringPreferencesKey("calendar_view_mode")
+
+        private val DEFAULT_VIEW_MODE = CalendarViewMode.DEFAULT.storageValue
     }
 }

@@ -7,10 +7,15 @@ import com.idupi.app.domain.model.InboxEventConflict
 import com.idupi.app.domain.model.PhoneCalendarConflictRef
 import com.idupi.app.domain.model.PhoneCalendarEvent
 import com.idupi.app.domain.model.PhoneCalendarProposal
+import java.time.DayOfWeek
 import java.time.Instant
 import java.time.LocalDate
+import java.time.Month
+import java.time.YearMonth
 import java.time.ZoneId
 import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
+import java.time.format.TextStyle
 import java.util.Locale
 
 /**
@@ -27,6 +32,35 @@ private val MONTHS = arrayOf(
 /** "lun 25 nov"; deterministic, no Locale dependency. */
 fun shortDateLabel(date: LocalDate): String =
     "${WEEKDAYS[date.dayOfWeek.value - 1]} ${date.dayOfMonth} ${MONTHS[date.monthValue - 1]}"
+
+private val SPANISH_LOCALE: Locale = Locale.forLanguageTag("es-419")
+private val MONTH_TITLE_FORMAT = DateTimeFormatter.ofPattern("MMMM 'de' yyyy", SPANISH_LOCALE)
+private val DAY_MONTH_FORMAT = DateTimeFormatter.ofPattern("d 'de' MMMM", SPANISH_LOCALE)
+private val FULL_DATE_FORMAT = DateTimeFormatter.ofPattern("d 'de' MMMM 'de' yyyy", SPANISH_LOCALE)
+
+/** "Noviembre de 2026" for the month header. */
+fun calendarMonthTitle(month: YearMonth): String =
+    month.atDay(1).format(MONTH_TITLE_FORMAT)
+        .replaceFirstChar { if (it.isLowerCase()) it.titlecase(SPANISH_LOCALE) else it.toString() }
+
+/** Monday-first weekday labels: "lun", "mar", ... "dom". */
+fun weekdayShortLabels(): List<String> =
+    (1..7).map { DayOfWeek.of(it).getDisplayName(TextStyle.SHORT, SPANISH_LOCALE).lowercase(SPANISH_LOCALE) }
+
+/** Week header: "23 – 29 de noviembre de 2026", compact across months and years. */
+fun calendarWeekTitle(monday: LocalDate): String {
+    val sunday = monday.plusDays(6)
+    return when {
+        monday.year != sunday.year ->
+            "${monday.format(FULL_DATE_FORMAT)} – ${sunday.format(FULL_DATE_FORMAT)}"
+        monday.month == sunday.month ->
+            "${monday.dayOfMonth} – ${sunday.dayOfMonth} de ${monthName(sunday.month)} de ${sunday.year}"
+        else ->
+            "${monday.format(DAY_MONTH_FORMAT)} – ${sunday.format(DAY_MONTH_FORMAT)} de ${sunday.year}"
+    }
+}
+
+private fun monthName(month: Month): String = month.getDisplayName(TextStyle.FULL, SPANISH_LOCALE)
 
 /** "Hoy", "Mañana" or "lun 25 nov". */
 fun dayHeadingLabel(date: LocalDate, today: LocalDate): String = when (date) {

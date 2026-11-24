@@ -8,12 +8,17 @@ import com.idupi.app.data.IduPiClientProvider
 import com.idupi.app.data.calendar.AgendaDay
 import com.idupi.app.data.calendar.AgendaGrouping
 import com.idupi.app.data.calendar.AndroidCalendarStore
+import com.idupi.app.data.calendar.CalendarBucketing
 import com.idupi.app.data.calendar.CalendarDraftResult
 import com.idupi.app.data.calendar.CalendarEventBuilder
 import com.idupi.app.data.calendar.CalendarEventDraft
 import com.idupi.app.data.calendar.CalendarOverlap
+import com.idupi.app.data.calendar.CalendarRange
 import com.idupi.app.data.calendar.CalendarReporting
 import com.idupi.app.data.calendar.CalendarStore
+import com.idupi.app.data.calendar.CalendarViewMode
+import com.idupi.app.data.calendar.CalendarWeekBlock
+import com.idupi.app.data.calendar.CalendarWeekLayout
 import com.idupi.app.data.calendar.EventPrefill
 import com.idupi.app.data.remote.IduPiHttpException
 import com.idupi.app.data.settings.SettingsProvider
@@ -33,13 +38,26 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.time.Instant
+import java.time.LocalDate
+import java.time.YearMonth
 import java.time.ZoneId
 
-/** Agenda view state: next 7 local days plus the pending PC proposals. */
+/** Agenda view state: the list, the visible month/week grids and PC proposals. */
 data class CalendarAgendaState(
     val days: List<AgendaDay> = emptyList(),
     val proposals: List<PhoneCalendarProposal> = emptyList(),
     val conflictIds: Set<String> = emptySet(),
+    val conflictDates: Set<LocalDate> = emptySet(),
+    val viewMode: CalendarViewMode = CalendarViewMode.DEFAULT,
+    val selectedDate: LocalDate? = null,
+    val visibleMonth: YearMonth? = null,
+    val weekStart: LocalDate? = null,
+    val monthWeeks: List<List<LocalDate>> = emptyList(),
+    val weekDays: List<LocalDate> = emptyList(),
+    val weekBlocks: List<CalendarWeekBlock> = emptyList(),
+    val eventsByDay: Map<LocalDate, List<PhoneCalendarEvent>> = emptyMap(),
+    val calendars: List<PhoneCalendarRef> = emptyList(),
     val isLoading: Boolean = false,
     val hasCalendarPermission: Boolean = true,
     val decidingProposalIds: Set<String> = emptySet(),
@@ -86,13 +104,46 @@ class CalendarViewModel(
 
     private val client get() = clientSource.client
 
-    private val _agenda = MutableStateFlow(CalendarAgendaState())
+    private val _agenda = MutableStateFlow(initialAgendaState())
     val agenda: StateFlow<CalendarAgendaState> = _agenda.asStateFlow()
 
     private val _addEvent = MutableStateFlow(CalendarAddEventState())
     val addEvent: StateFlow<CalendarAddEventState> = _addEvent.asStateFlow()
 
     private var pollingJob: Job? = null
+
+    /** Set once the owner picks a mode, so the stored-mode restore cannot win a race. */
+    private var viewModeChosen = false
+
+    init {
+        // Restore the owner's last Agenda view mode. The default (month) is
+        // already in the initial state, so only a stored choice reloads.
+        viewModelScope.launch {
+            val stored = runCatching { settingsRepository.calendarViewMode.first() }
+                .getOrDefault(CalendarViewMode.DEFAULT.storageValue)
+            val mode = CalendarViewMode.fromStorage(stored)
+            if (!viewModeChosen && mode != _agenda.value.viewMode) {
+                _agenda.update { it.copy(viewMode = mode) }
+                loadLocalAgenda()
+            }
+        }
+    }
+
+    private fun initialAgendaState(): CalendarAgendaState {
+        val today = today()
+        val month = YearMonth.from(today)
+        return CalendarAgendaState(
+            viewMode = CalendarViewMode.DEFAULT,
+            selectedDate = today,
+            visibleMonth = month,
+            weekStart = CalendarRange.weekStart(today),
+            monthWeeks = CalendarRange.monthWeeks(month),
+            weekDays = CalendarRange.weekDates(today),
+        )
+    }
+
+    private fun today(): LocalDate =
+        Instant.ofEpochMilli(nowMillis()).atZone(zoneProvider()).toLocalDate()
 
     /**
      * Proposals whose event was already written on this process. A failed
@@ -140,27 +191,137 @@ class CalendarViewModel(
         }
     }
 
+    /**
+     * Reads the local provider for the range the current view needs: the next
+     * seven days in Lista, the visible week in Semana and the whole month grid
+     * in Mes. Navigating or switching modes reloads on demand; the 14-day PC
+     * report is a separate path and stays unchanged.
+     */
     private suspend fun loadLocalAgenda() {
         val hasPermission = runCatching { store.canRead() }.getOrDefault(false)
         val now = nowMillis()
-        val events = if (hasPermission) {
-            runCatching { store.readSnapshot(now)?.events.orEmpty() }.getOrDefault(emptyList())
+        val zone = zoneProvider()
+        val today = Instant.ofEpochMilli(now).atZone(zone).toLocalDate()
+        val current = _agenda.value
+        val month = current.visibleMonth ?: YearMonth.from(today)
+        val weekStart = current.weekStart ?: CalendarRange.weekStart(today)
+        val weekDates = CalendarRange.weekDates(weekStart)
+        val monthDates = CalendarRange.monthDates(month)
+        val listDates = (0 until AgendaGrouping.DEFAULT_DAYS).map { today.plusDays(it.toLong()) }
+        val visibleDates = when (current.viewMode) {
+            CalendarViewMode.MONTH -> monthDates
+            CalendarViewMode.WEEK -> weekDates
+            CalendarViewMode.LIST -> listDates
+        }
+        val window = CalendarRange.query(visibleDates, zone)
+        val events = if (hasPermission && window != null) {
+            runCatching {
+                store.eventsBetween(window.startMillis, window.endExclusiveMillis)
+            }.getOrDefault(emptyList())
         } else {
             emptyList()
         }
-        val days = AgendaGrouping.days(
-            events = events,
-            nowMillis = now,
-            zone = zoneProvider(),
-        )
-        val conflicts = CalendarOverlap.conflictingEventIds(events)
+        val calendars = if (hasPermission) {
+            runCatching { store.visibleCalendars() }.getOrDefault(emptyList())
+        } else {
+            emptyList()
+        }
+        val eventsByDay = CalendarBucketing.bucket(events, visibleDates, zone)
+        val weekBlocks = if (current.viewMode == CalendarViewMode.WEEK) {
+            CalendarWeekLayout.blocks(eventsByDay, zone)
+        } else {
+            emptyList()
+        }
+        val selectedDate = current.selectedDate
+            ?.takeIf { it in eventsByDay }
+            ?: when (current.viewMode) {
+                CalendarViewMode.MONTH -> month.atDay(1)
+                CalendarViewMode.WEEK -> weekStart
+                CalendarViewMode.LIST -> today
+            }
         _agenda.update {
             it.copy(
-                days = days,
-                conflictIds = conflicts,
+                days = AgendaGrouping.days(events = events, nowMillis = now, zone = zone),
+                conflictIds = CalendarOverlap.conflictingEventIds(events),
+                conflictDates = CalendarBucketing.conflictingDates(events, zone),
+                selectedDate = selectedDate,
+                visibleMonth = month,
+                weekStart = weekStart,
+                monthWeeks = CalendarRange.monthWeeks(month),
+                weekDays = weekDates,
+                weekBlocks = weekBlocks,
+                eventsByDay = eventsByDay,
+                calendars = calendars,
                 hasCalendarPermission = hasPermission,
             )
         }
+    }
+
+    // --- View modes and navigation (phone-calendar T5) --------------------
+
+    /** Switches the visible mode, remembers it on the phone and reloads its range. */
+    fun setViewMode(mode: CalendarViewMode) {
+        viewModeChosen = true
+        if (_agenda.value.viewMode == mode) return
+        _agenda.update { it.copy(viewMode = mode) }
+        viewModelScope.launch {
+            runCatching { settingsRepository.setCalendarViewMode(mode.storageValue) }
+            loadLocalAgenda()
+        }
+    }
+
+    fun selectDate(date: LocalDate) {
+        _agenda.update { it.copy(selectedDate = date) }
+    }
+
+    fun previousMonth() = shiftMonth(-1)
+
+    fun nextMonth() = shiftMonth(1)
+
+    fun previousWeek() = shiftWeek(-1)
+
+    fun nextWeek() = shiftWeek(1)
+
+    /** Returns every mode to the week/month that contains today. */
+    fun goToday() {
+        val today = today()
+        _agenda.update {
+            it.copy(
+                selectedDate = today,
+                visibleMonth = YearMonth.from(today),
+                weekStart = CalendarRange.weekStart(today),
+            )
+        }
+        reloadLocalAgenda()
+    }
+
+    private fun shiftMonth(delta: Long) {
+        _agenda.update { state ->
+            val month = (state.visibleMonth ?: YearMonth.from(today())).plusMonths(delta)
+            val dates = CalendarRange.monthDates(month)
+            state.copy(
+                visibleMonth = month,
+                // Keep the selection visible; a day of another month moves to
+                // the first of the new one.
+                selectedDate = state.selectedDate?.takeIf { it in dates } ?: month.atDay(1),
+            )
+        }
+        reloadLocalAgenda()
+    }
+
+    private fun shiftWeek(delta: Long) {
+        _agenda.update { state ->
+            val start = (state.weekStart ?: CalendarRange.weekStart(today())).plusWeeks(delta)
+            state.copy(
+                weekStart = start,
+                selectedDate = start,
+            )
+        }
+        reloadLocalAgenda()
+    }
+
+    private fun reloadLocalAgenda() {
+        viewModelScope.launch { loadLocalAgenda() }
     }
 
     private suspend fun loadProposals(reportErrors: Boolean) {

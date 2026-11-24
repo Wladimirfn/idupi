@@ -57,6 +57,13 @@ class AndroidCalendarStore(private val context: Context) : CalendarStore {
         }.getOrDefault(emptyList())
     }
 
+    override fun visibleCalendars(): List<PhoneCalendarRef> {
+        if (!canRead()) return emptyList()
+        return runCatching {
+            CalendarSnapshotMapping.toCalendarRefs(queryCalendars())
+        }.getOrDefault(emptyList())
+    }
+
     override fun eventsBetween(startMillis: Long, endMillis: Long): List<PhoneCalendarEvent> {
         if (!canRead()) return emptyList()
         if (endMillis <= startMillis) return emptyList()

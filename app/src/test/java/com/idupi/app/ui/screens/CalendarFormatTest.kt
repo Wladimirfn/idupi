@@ -1,5 +1,6 @@
 package com.idupi.app.ui.screens
 
+import com.idupi.app.data.calendar.CalendarPalette
 import com.idupi.app.data.calendar.CalendarReportState
 import com.idupi.app.domain.model.InboxEvent
 import com.idupi.app.domain.model.InboxEventConflict
@@ -9,6 +10,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 import java.time.LocalDate
+import java.time.YearMonth
 import java.time.ZoneOffset
 
 class CalendarFormatTest {
@@ -123,5 +125,52 @@ class CalendarFormatTest {
             "Último envío: ok hace 5 min (1 evento)",
             calendarLastReportLabel(state.copy(eventCount = 1), now),
         )
+    }
+
+    @Test
+    fun `month header uses the Spanish month name`() {
+        assertEquals("Noviembre de 2026", calendarMonthTitle(YearMonth.of(2026, 11)))
+        assertEquals("Febrero de 2026", calendarMonthTitle(YearMonth.of(2026, 2)))
+    }
+
+    @Test
+    fun `weekday labels start on Monday in Spanish`() {
+        assertEquals(
+            listOf("lun", "mar", "mié", "jue", "vie", "sáb", "dom"),
+            weekdayShortLabels(),
+        )
+    }
+
+    @Test
+    fun `week header compacts a week inside one month`() {
+        assertEquals(
+            "23 – 29 de noviembre de 2026",
+            calendarWeekTitle(LocalDate.of(2026, 11, 23)),
+        )
+    }
+
+    @Test
+    fun `week header names both months when the week crosses one`() {
+        assertEquals(
+            "30 de noviembre – 6 de diciembre de 2026",
+            calendarWeekTitle(LocalDate.of(2026, 11, 30)),
+        )
+    }
+
+    @Test
+    fun `week header names both years when the week crosses one`() {
+        assertEquals(
+            "28 de diciembre de 2026 – 3 de enero de 2027",
+            calendarWeekTitle(LocalDate.of(2026, 12, 28)),
+        )
+    }
+
+    @Test
+    fun `calendar palette parses provider colors and rejects malformed values`() {
+        assertEquals(0xFFFF8800.toInt(), CalendarPalette.argb("#FF8800"))
+        assertEquals(0xFF0A0B0C.toInt(), CalendarPalette.argb(" 0a0b0c "))
+        assertNull(CalendarPalette.argb(null))
+        assertNull(CalendarPalette.argb("#12345"))
+        assertNull(CalendarPalette.argb("#GGGGGG"))
     }
 }

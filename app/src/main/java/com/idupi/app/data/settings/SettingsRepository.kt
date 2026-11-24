@@ -1,5 +1,6 @@
 package com.idupi.app.data.settings
 
+import com.idupi.app.data.calendar.CalendarViewMode
 import com.idupi.app.domain.model.InboxSettings
 import com.idupi.app.domain.model.ThemeColors
 import com.idupi.app.domain.model.ThemeMode
@@ -49,6 +50,12 @@ interface SettingsRepository {
     /** Last calendar the owner saved an event in; empty when none. */
     val calendarLastUsedId: Flow<String>
 
+    /**
+     * Observed Agenda view mode (phone-calendar T5): `list`, `week` or `month`.
+     * Missing value means `month`, the calendar-like default.
+     */
+    val calendarViewMode: Flow<String>
+
     suspend fun setThemeMode(mode: ThemeMode)
 
     suspend fun setThemePreset(preset: ThemePreset)
@@ -85,6 +92,8 @@ interface SettingsRepository {
     suspend fun setCalendarShareEnabled(enabled: Boolean)
 
     suspend fun setCalendarLastUsedId(calendarId: String)
+
+    suspend fun setCalendarViewMode(mode: String)
 }
 
 /** In-memory [SettingsRepository] backed by [MutableStateFlow]s. */
@@ -95,6 +104,7 @@ class InMemorySettingsRepository(
     initialPhoneControlEnabled: Boolean = false,
     initialCalendarShareEnabled: Boolean = true,
     initialCalendarLastUsedId: String = "",
+    initialCalendarViewMode: String = CalendarViewMode.DEFAULT.storageValue,
 ) : SettingsRepository {
 
     private val _themeSettings = MutableStateFlow(initial)
@@ -103,6 +113,7 @@ class InMemorySettingsRepository(
     private val _phoneControlEnabled = MutableStateFlow(initialPhoneControlEnabled)
     private val _calendarShareEnabled = MutableStateFlow(initialCalendarShareEnabled)
     private val _calendarLastUsedId = MutableStateFlow(initialCalendarLastUsedId)
+    private val _calendarViewMode = MutableStateFlow(initialCalendarViewMode)
 
     override val themeSettings: Flow<ThemeSettings> = _themeSettings.asStateFlow()
 
@@ -115,6 +126,8 @@ class InMemorySettingsRepository(
     override val calendarShareEnabled: Flow<Boolean> = _calendarShareEnabled.asStateFlow()
 
     override val calendarLastUsedId: Flow<String> = _calendarLastUsedId.asStateFlow()
+
+    override val calendarViewMode: Flow<String> = _calendarViewMode.asStateFlow()
 
     override suspend fun setThemeMode(mode: ThemeMode) {
         _themeSettings.update { it.copy(mode = mode) }
@@ -172,5 +185,9 @@ class InMemorySettingsRepository(
 
     override suspend fun setCalendarLastUsedId(calendarId: String) {
         _calendarLastUsedId.value = calendarId
+    }
+
+    override suspend fun setCalendarViewMode(mode: String) {
+        _calendarViewMode.value = mode
     }
 }

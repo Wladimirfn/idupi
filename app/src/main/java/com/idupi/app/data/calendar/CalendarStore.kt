@@ -33,6 +33,12 @@ interface CalendarStore {
     /** Visible calendars the owner may write to, sorted by account then name. */
     fun writableCalendars(): List<PhoneCalendarRef>
 
+    /**
+     * Every visible calendar, for the UI's names and colors (phone-calendar
+     * T5). Sorted by name; empty without read permission.
+     */
+    fun visibleCalendars(): List<PhoneCalendarRef>
+
     /** Visible events overlapping `[startMillis, endMillis]`, for conflict checks. */
     fun eventsBetween(startMillis: Long, endMillis: Long): List<PhoneCalendarEvent>
 

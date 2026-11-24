@@ -4,6 +4,7 @@ import com.idupi.app.FakeCalendarStore
 import com.idupi.app.FakeClientSource
 import com.idupi.app.FakeIduPiClient
 import com.idupi.app.MainDispatcherRule
+import com.idupi.app.data.calendar.CalendarViewMode
 import com.idupi.app.data.calendar.EventPrefill
 import com.idupi.app.data.remote.IduPiHttpException
 import com.idupi.app.data.settings.InMemorySettingsRepository
@@ -24,6 +25,8 @@ import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import java.time.Instant
+import java.time.LocalDate
+import java.time.YearMonth
 import java.time.ZoneId
 import java.time.ZoneOffset
 
@@ -385,5 +388,159 @@ class CalendarViewModelTest {
 
         assertFalse(viewModel.addEvent.value.isOpen)
         assertEquals("", viewModel.addEvent.value.draft.title)
+    }
+
+    // --- View modes and navigation (phone-calendar T5) ---
+
+    @Test
+    fun `agenda opens in month mode on today`() = runTest {
+        val viewModel = viewModel(FakeCalendarStore())
+        advanceUntilIdle()
+
+        val state = viewModel.agenda.value
+        assertEquals(CalendarViewMode.MONTH, state.viewMode)
+        assertEquals(LocalDate.of(2026, 11, 24), state.selectedDate)
+        assertEquals(YearMonth.of(2026, 11), state.visibleMonth)
+        assertEquals(LocalDate.of(2026, 11, 23), state.weekStart)
+        assertEquals(6, state.monthWeeks.size)
+    }
+
+    @Test
+    fun `a stored view mode is restored`() = runTest {
+        val repository = InMemorySettingsRepository(initialCalendarViewMode = "week")
+        val viewModel = viewModel(FakeCalendarStore(), repository = repository)
+
+        advanceUntilIdle()
+
+        assertEquals(CalendarViewMode.WEEK, viewModel.agenda.value.viewMode)
+    }
+
+    @Test
+    fun `switching the view mode persists it and reloads that range`() = runTest {
+        val store = FakeCalendarStore()
+        val viewModel = viewModel(store)
+        advanceUntilIdle()
+
+        viewModel.setViewMode(CalendarViewMode.WEEK)
+        advanceUntilIdle()
+
+        assertEquals(CalendarViewMode.WEEK, viewModel.agenda.value.viewMode)
+        assertEquals("week", repository.calendarViewMode.first())
+        val (start, end) = store.eventWindowQueries.last()
+        assertEquals("2026-11-23T00:00:00Z", Instant.ofEpochMilli(start).toString())
+        assertEquals("2026-11-30T00:00:00Z", Instant.ofEpochMilli(end).toString())
+    }
+
+    @Test
+    fun `next month moves the grid and queries the new range`() = runTest {
+        val store = FakeCalendarStore()
+        val viewModel = viewModel(store)
+        viewModel.refresh()
+        advanceUntilIdle()
+
+        viewModel.nextMonth()
+        advanceUntilIdle()
+
+        val state = viewModel.agenda.value
+        assertEquals(YearMonth.of(2026, 12), state.visibleMonth)
+        assertEquals(5, state.monthWeeks.size)
+        assertEquals(LocalDate.of(2026, 12, 1), state.selectedDate)
+        val (start, end) = store.eventWindowQueries.last()
+        assertEquals("2026-11-30T00:00:00Z", Instant.ofEpochMilli(start).toString())
+        assertEquals("2027-01-04T00:00:00Z", Instant.ofEpochMilli(end).toString())
+    }
+
+    @Test
+    fun `previous month moves back`() = runTest {
+        val viewModel = viewModel(FakeCalendarStore())
+        viewModel.refresh()
+        advanceUntilIdle()
+
+        viewModel.previousMonth()
+        advanceUntilIdle()
+
+        assertEquals(YearMonth.of(2026, 10), viewModel.agenda.value.visibleMonth)
+    }
+
+    @Test
+    fun `week navigation moves the Monday-first anchor`() = runTest {
+        val store = FakeCalendarStore()
+        val viewModel = viewModel(store)
+        viewModel.setViewMode(CalendarViewMode.WEEK)
+        advanceUntilIdle()
+
+        viewModel.nextWeek()
+        advanceUntilIdle()
+
+        val state = viewModel.agenda.value
+        assertEquals(LocalDate.of(2026, 11, 30), state.weekStart)
+        assertEquals(LocalDate.of(2026, 11, 30), state.selectedDate)
+        assertEquals(7, state.weekDays.size)
+        val (start, end) = store.eventWindowQueries.last()
+        assertEquals("2026-11-30T00:00:00Z", Instant.ofEpochMilli(start).toString())
+        assertEquals("2026-12-07T00:00:00Z", Instant.ofEpochMilli(end).toString())
+
+        viewModel.previousWeek()
+        advanceUntilIdle()
+        assertEquals(LocalDate.of(2026, 11, 23), viewModel.agenda.value.weekStart)
+    }
+
+    @Test
+    fun `goToday returns the month and week to the current date`() = runTest {
+        val viewModel = viewModel(FakeCalendarStore())
+        viewModel.refresh()
+        advanceUntilIdle()
+        viewModel.nextMonth()
+        advanceUntilIdle()
+
+        viewModel.goToday()
+        advanceUntilIdle()
+
+        val state = viewModel.agenda.value
+        assertEquals(YearMonth.of(2026, 11), state.visibleMonth)
+        assertEquals(LocalDate.of(2026, 11, 24), state.selectedDate)
+        assertEquals(LocalDate.of(2026, 11, 23), state.weekStart)
+    }
+
+    @Test
+    fun `selecting a month day exposes that day's events`() = runTest {
+        val store = FakeCalendarStore(
+            snapshot = snapshot(
+                event("hoy", "2026-11-24T13:00:00Z", "2026-11-24T14:00:00Z"),
+                event("otro", "2026-11-26T13:00:00Z", "2026-11-26T14:00:00Z"),
+            )
+        )
+        val viewModel = viewModel(store)
+        viewModel.refresh()
+        advanceUntilIdle()
+
+        viewModel.selectDate(LocalDate.of(2026, 11, 26))
+
+        val state = viewModel.agenda.value
+        assertEquals(LocalDate.of(2026, 11, 26), state.selectedDate)
+        assertEquals(listOf("otro"), state.eventsByDay[LocalDate.of(2026, 11, 26)].orEmpty().map { it.id })
+    }
+
+    @Test
+    fun `month mode flags conflict days and week mode lays timed events out`() = runTest {
+        val store = FakeCalendarStore(
+            snapshot = snapshot(
+                event("a", "2026-11-25T13:00:00Z", "2026-11-25T14:00:00Z"),
+                event("b", "2026-11-25T13:30:00Z", "2026-11-25T14:30:00Z"),
+            )
+        )
+        val viewModel = viewModel(store)
+
+        viewModel.refresh()
+        advanceUntilIdle()
+        assertTrue(LocalDate.of(2026, 11, 25) in viewModel.agenda.value.conflictDates)
+
+        viewModel.setViewMode(CalendarViewMode.WEEK)
+        advanceUntilIdle()
+
+        val blocks = viewModel.agenda.value.weekBlocks
+        assertEquals(2, blocks.size)
+        assertTrue(blocks.all { it.columnCount == 2 })
+        assertEquals(6 * 60, blocks.minOf { it.topMinutes })
     }
 }
