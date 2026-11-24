@@ -12,6 +12,7 @@ import { homedir, networkInterfaces } from "node:os";
 import { join, basename, relative, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { REPO_ROOT, PROJECTS_JSON_FILE } from "./lib/server-paths.mjs";
 import { createAuthGuard, loadToken } from "../server-auth.mjs";
 import { TaskRegistry } from "./lib/task-registry.mjs";
 import { parseSubagentNotify, resolveNoticeCard, describeNoticeResult } from "./lib/subagent-notify.mjs";
@@ -316,7 +317,6 @@ const PI_CLI_JS = join(
     "dist",
     "cli.js"
 );
-const PROJECTS_JSON_FILE = join(process.cwd(), "idupi-server", "projects.json");
 
 console.log("=================================================");
 console.log("📱 Servidor Independiente IDUPI Server (Modo RPC)");
@@ -768,7 +768,7 @@ const defaultProjects = [
     {
         id: "idupi",
         name: "Proyecto Actual (IDUPI)",
-        path: process.cwd(),
+        path: REPO_ROOT,
         isActive: true,
         status: "Activo",
         lastActivity: "Ahora"
@@ -3875,7 +3875,7 @@ const handleRequest = async (req, res) => {
                     registeredProjects.push({
                         id: "idupi",
                         name: "Proyecto Principal",
-                        path: process.cwd(),
+                        path: REPO_ROOT,
                         isActive: true,
                         status: "Activo",
                         lastActivity: "Ahora"
