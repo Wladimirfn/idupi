@@ -55,7 +55,7 @@ provider), mail API search.
   shows them with a follow switch (presets: WhatsApp, Business, Gmail, Outlook,
   Messenger, Telegram); generic capture for any followed app; server accepts any
   package with a display label.
-- [ ] T4 Groups + unseen digest: IDUPI-side "silence but read" per
+- [x] T4 Groups + unseen digest: IDUPI-side "silence but read" per
   conversation; server digest of a conversation's open items through the
   configured agent; Alertas groups unseen items by conversation with the digest.
 - [ ] T5 Deliver: version bump, APK to the phone, server restart (check PTYs).
@@ -127,3 +127,30 @@ commits by task.
   0 failures, cert d8ba0fc9, delivered dlv-f4f867dfd334; server restarted on
   feat/inbox-management (no live PTYs). Next: T4 needs the owner decision on
   muted groups; then phase 2 calendar.
+- T4 done in e11f794 (server) + d5e29a8 (app capture) + 54a3491 (app UI):
+  silence-but-read persists `app|conversation` keys in the existing DataStore
+  (`inbox_silenced_conversations`, in-memory twin included); the listener
+  registers the reply action and session, starts the upload, then cancels the
+  notification (guarded) and the removal reason is explicitly not a dismissal.
+  Silenced uploads carry `digestOnly`; the reminder policy ignores silenced
+  chats below high importance, and the important-ready ping was already
+  high-only. The silence menu is on single and grouped cards, and Ajustes >
+  ALERTAS lists silenced chats with a remove action plus the source-app hint.
+  The server stores digest-only items as ready/low/"Silenciado" without an
+  agent run; `POST /inbox/digest` summarizes the newest 60 open items (12k text
+  cap, oldest first) with one delimited untrusted block per message through the
+  same serialized no-tools runner, caches by a sha256 of item ids + texts,
+  persists `inbox-digests.json` and prunes chats with no open items; `GET`
+  returns the current state and `POST /inbox/conversation/state` closes every
+  open item of a chat as handled|dismissed in one write, dropping its digest.
+  Alertas groups open items per conversation: one item keeps the old card, two
+  or more render one card with the digest (auto-requested from 3 messages,
+  "Resumir"/"Reintentar"), "Pendiente para ti" bullets, the suggested reply
+  with send/edit/copy, "Ver mensajes" and "Marcar todo atendido" (optimistic
+  bulk close). Pure grouping/order is unit-tested. Checks: inbox suites 19 + 9
+  + 12 + 13 + 22 pass, `node --check idupi-server/index.mjs` OK; app 643/643
+  tests and assembleRelease. Unverified on device: cancelNotification actually
+  clearing the shade on the owner's Android build, the captured reply
+  PendingIntent still firing after that cancel, real group notification shapes,
+  and digest summary quality with the live agent (tests use the injected
+  runner). Next: T5 delivery (version bump, APK, server restart).
