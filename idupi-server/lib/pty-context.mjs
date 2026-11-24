@@ -1,7 +1,7 @@
 // Live context for each interactive PTY: where it is and what runs in it.
 //
 // The PTY manager only knows the launch data (`powershell.exe -NoLogo`,
-// `C:\Users\elmas`), so two terminals look identical after `cd` + `claude` or
+// `C:\Users\owner`), so two terminals look identical after `cd` + `claude` or
 // `opencode`. This module resolves, per terminal:
 //
 //   - the live cwd, read from the PEB of the process that owns the terminal

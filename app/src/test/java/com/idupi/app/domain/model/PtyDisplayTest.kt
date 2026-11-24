@@ -24,10 +24,10 @@ class PtyDisplayTest {
     fun `project, branch and agent come from the live context`() {
         val display = ptyDisplay(
             pty(
-                cwd = "C:\\Users\\elmas",
+                cwd = "C:\\Users\\owner",
                 shell = "powershell.exe -NoLogo",
                 context = PtyContext(
-                    cwd = "C:\\Users\\elmas\\AndroidStudioProjects\\IDUPI\\app",
+                    cwd = "C:\\Users\\owner\\AndroidStudioProjects\\IDUPI\\app",
                     project = "IDUPI",
                     branch = "feat/terminal-context",
                     agent = PtyAgent(id = "claude", name = "Claude Code", pid = 777)
@@ -47,7 +47,7 @@ class PtyDisplayTest {
     @Test
     fun `without context the launch cwd folder is the title`() {
         val display = ptyDisplay(
-            pty(cwd = "C:\\Users\\elmas\\AndroidStudioProjects\\IDUPI", shell = "powershell.exe")
+            pty(cwd = "C:\\Users\\owner\\AndroidStudioProjects\\IDUPI", shell = "powershell.exe")
         )
 
         assertEquals("IDUPI", display.title)
@@ -75,7 +75,7 @@ class PtyDisplayTest {
     fun `the live cwd wins over the launch cwd`() {
         val display = ptyDisplay(
             pty(
-                cwd = "C:\\Users\\elmas",
+                cwd = "C:\\Users\\owner",
                 context = PtyContext(cwd = "C:\\work\\other-project")
             )
         )
@@ -86,7 +86,7 @@ class PtyDisplayTest {
 
     @Test
     fun `a long path is compacted from the start`() {
-        val path = "C:\\Users\\elmas\\AndroidStudioProjects\\IDUPI\\app\\src\\main\\java"
+        val path = "C:\\Users\\owner\\AndroidStudioProjects\\IDUPI\\app\\src\\main\\java"
 
         val compact = compactPath(path)
 

@@ -111,7 +111,7 @@ test("walks the tree, skips console hosts and picks the agent the user launched"
         row(810, 800, "node.exe", "node C:\\npm\\node_modules\\@openai\\codex\\bin\\codex.js"),
         row(820, 810, "conhost.exe"),
     ];
-    const readCwds = cwdReader({ 800: "C:\\work\\alpha", 700: "C:\\Users\\elmas" });
+    const readCwds = cwdReader({ 800: "C:\\work\\alpha", 700: "C:\\Users\\owner" });
     const provider = createPtyContext({
         sampleProcesses: sample(rows),
         readCwds,
@@ -119,7 +119,7 @@ test("walks the tree, skips console hosts and picks the agent the user launched"
         now: () => 1_000,
     });
 
-    const context = (await provider.get([{ id: "pty-1", pid: 500, cwd: "C:\\Users\\elmas" }]))
+    const context = (await provider.get([{ id: "pty-1", pid: 500, cwd: "C:\\Users\\owner" }]))
         .get("pty-1");
 
     assert.equal(context.cwd, "C:\\work\\alpha");
@@ -137,18 +137,18 @@ test("no agent: the shell pid provides the cwd, never conhost", async () => {
         row(520, 500, "powershell.exe"),
         row(530, 520, "node.exe", "node C:\\tools\\dev.js"),
     ];
-    const readCwds = cwdReader({ 520: "C:\\Users\\elmas" });
+    const readCwds = cwdReader({ 520: "C:\\Users\\owner" });
     const provider = createPtyContext({
         sampleProcesses: sample(rows),
         readCwds,
-        execFile: gitFake({ toplevel: () => "C:\\users\\elmas" }),
+        execFile: gitFake({ toplevel: () => "C:\\users\\owner" }),
         now: () => 1_000,
     });
 
     const context = (await provider.get([{ id: "pty-1", pid: 500, cwd: "C:\\launch" }])).get("pty-1");
 
     assert.deepEqual(context.agent, null);
-    assert.equal(context.cwd, "C:\\Users\\elmas");
+    assert.equal(context.cwd, "C:\\Users\\owner");
     assert.deepEqual(readCwds.calls[0], [520]);
 });
 
@@ -337,7 +337,7 @@ test("GET /api/v1/pty adds context and keeps every existing field", async (t) =>
         pid: 500,
         cols: 80,
         rows: 24,
-        cwd: "C:\\Users\\elmas",
+        cwd: "C:\\Users\\owner",
         shell: "powershell.exe -NoLogo",
         createdAt: "2026-01-01T00:00:00.000Z",
         alive: true,

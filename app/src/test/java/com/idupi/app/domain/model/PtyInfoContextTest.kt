@@ -30,10 +30,10 @@ class PtyInfoContextTest {
         val payload = """
             {"terminals":[{
               "id":"pty-1","pid":42,"cols":100,"rows":30,
-              "cwd":"C:\\Users\\elmas","shell":"powershell.exe -NoLogo",
+              "cwd":"C:\\Users\\owner","shell":"powershell.exe -NoLogo",
               "createdAt":"2026-11-23T10:00:00Z","alive":true,
               "context":{
-                "cwd":"C:\\Users\\elmas\\AndroidStudioProjects\\IDUPI",
+                "cwd":"C:\\Users\\owner\\AndroidStudioProjects\\IDUPI",
                 "project":"IDUPI",
                 "branch":"feat/terminal-context",
                 "detached":false,
@@ -45,10 +45,10 @@ class PtyInfoContextTest {
         val info = json.decodeFromString<TestPtyList>(payload).terminals.single()
 
         assertEquals("pty-1", info.id)
-        assertEquals("C:\\Users\\elmas", info.cwd)
+        assertEquals("C:\\Users\\owner", info.cwd)
         val context = info.context
         assertNotNull(context)
-        assertEquals("C:\\Users\\elmas\\AndroidStudioProjects\\IDUPI", context?.cwd)
+        assertEquals("C:\\Users\\owner\\AndroidStudioProjects\\IDUPI", context?.cwd)
         assertEquals("IDUPI", context?.project)
         assertEquals("feat/terminal-context", context?.branch)
         assertFalse(context?.detached ?: true)
@@ -61,7 +61,7 @@ class PtyInfoContextTest {
     fun `an older item without context decodes with null context`() {
         val payload = """
             {"id":"pty-2","pid":7,"cols":80,"rows":24,
-             "cwd":"C:\\Users\\elmas","shell":"pwsh.exe","alive":true}
+             "cwd":"C:\\Users\\owner","shell":"pwsh.exe","alive":true}
         """.trimIndent()
 
         val info = json.decodeFromString<PtyInfo>(payload)

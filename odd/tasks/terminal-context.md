@@ -7,13 +7,13 @@ Branch: `feat/terminal-context` (from `main`)
 
 Each interactive terminal (PTY) must show WHERE it is and WHAT runs in it: project name, git
 branch and the running agent (Claude Code, OpenCode, Codex, ...), instead of the static launch
-data (`powershell.exe -NoLogo`, `C:\Users\elmas`) that makes two terminals indistinguishable.
+data (`powershell.exe -NoLogo`, `C:\Users\owner`) that makes two terminals indistinguishable.
 
 ## Problem (verified 2026-11-24)
 
 - `PtyManager.#info` reports the launch `cwd`, `shell` and the host `pid`
   (`idupi-screen.exe pty`); after `cd` + `claude`/`opencode` nothing changes.
-- Owner example: two PTYs both shown as `powershell.exe -NoLogo · C:\Users\elmas`, one running
+- Owner example: two PTYs both shown as `powershell.exe -NoLogo · C:\Users\owner`, one running
   OpenCode and one Claude Code in different projects.
 
 ## Design
