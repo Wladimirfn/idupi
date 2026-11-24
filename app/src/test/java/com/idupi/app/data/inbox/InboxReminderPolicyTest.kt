@@ -34,6 +34,7 @@ class InboxReminderPolicyTest {
         postedAt: String = minutesAgo(60),
         conversation: String = "Ana",
         suggestedReply: String = "AI generated reply",
+        updatedAt: String = "",
     ) = InboxItem(
         id = id,
         app = app,
@@ -45,7 +46,8 @@ class InboxReminderPolicyTest {
         status = status,
         importance = importance,
         suggestedReply = suggestedReply,
-        state = state
+        state = state,
+        updatedAt = updatedAt
     )
 
     private fun settings(
@@ -372,6 +374,55 @@ class InboxReminderPolicyTest {
         val replies = actions.filterIsInstance<InboxReminderPolicy.Action.AutoReply>()
         assertEquals(1, replies.size)
         assertEquals("newer", replies.single().itemId)
+    }
+
+    @Test
+    fun `a recent auto-reply in the conversation blocks another one`() {
+        val actions = decide(
+            items = listOf(
+                item(id = "answered", state = InboxItemState.AUTO_REPLIED,
+                    receivedAt = minutesAgo(90), updatedAt = minutesAgo(50)),
+                item(id = "burst", receivedAt = minutesAgo(45))
+            ),
+            settings = settings(autoReply = true),
+            liveActions = setOf(conversationKey())
+        )
+
+        assertTrue(actions.none { it is InboxReminderPolicy.Action.AutoReply })
+    }
+
+    @Test
+    fun `an auto-reply older than the cooldown allows a new one`() {
+        val cooldownMinutes = InboxReminderPolicy.AUTO_REPLY_COOLDOWN_MILLIS / minute
+        val actions = decide(
+            items = listOf(
+                item(id = "answered", state = InboxItemState.AUTO_REPLIED,
+                    receivedAt = minutesAgo(cooldownMinutes + 60),
+                    updatedAt = minutesAgo(cooldownMinutes + 1)),
+                item(id = "new", receivedAt = minutesAgo(45))
+            ),
+            settings = settings(autoReply = true),
+            liveActions = setOf(conversationKey())
+        )
+
+        val replies = actions.filterIsInstance<InboxReminderPolicy.Action.AutoReply>()
+        assertEquals(listOf("new"), replies.map { it.itemId })
+    }
+
+    @Test
+    fun `a recent auto-reply only blocks its own conversation`() {
+        val actions = decide(
+            items = listOf(
+                item(id = "answered", conversation = "Ana", state = InboxItemState.AUTO_REPLIED,
+                    receivedAt = minutesAgo(90), updatedAt = minutesAgo(50)),
+                item(id = "beto", conversation = "Beto", receivedAt = minutesAgo(45))
+            ),
+            settings = settings(autoReply = true),
+            liveActions = setOf(conversationKey(conversation = "Ana"), conversationKey(conversation = "Beto"))
+        )
+
+        val replies = actions.filterIsInstance<InboxReminderPolicy.Action.AutoReply>()
+        assertEquals(listOf("beto"), replies.map { it.itemId })
     }
 
     @Test

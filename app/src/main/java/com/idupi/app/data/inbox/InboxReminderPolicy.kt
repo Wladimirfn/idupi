@@ -22,6 +22,13 @@ import java.time.Instant
  */
 object InboxReminderPolicy {
 
+    /**
+     * A conversation that received a template auto-reply is not auto-answered
+     * again for this long. The per-tick rule alone let a burst of messages
+     * from one sender trigger the template once per tick, minutes apart.
+     */
+    const val AUTO_REPLY_COOLDOWN_MILLIS: Long = 6 * 60 * 60_000L
+
     /** Process-local per-item progress, owned by the caller across ticks. */
     data class ItemState(
         val lastRemindedAtMillis: Long? = null,
@@ -49,8 +56,9 @@ object InboxReminderPolicy {
      *   reminded too): enabled, WhatsApp/Business only, importance passes the
      *   gate, the delay elapsed since it was received, not done yet, a
      *   non-blank template, and a live reply action for its conversation. At
-     *   most one auto-reply per conversation per tick, so two open messages
-     *   never produce the same template twice.
+     *   most one auto-reply per conversation per tick, and none while any item
+     *   of that conversation was marked `auto_replied` within
+     *   [AUTO_REPLY_COOLDOWN_MILLIS] (server state, so it survives restarts).
      * - Remind: when `now - max(receivedAt, lastRemindedAt)` reached the
      *   configured interval. An item that just received an auto-reply is not
      *   reminded in the same tick.
@@ -73,7 +81,13 @@ object InboxReminderPolicy {
         val autoReplyTemplate = settings.autoReplyTemplate
 
         val actions = mutableListOf<Action>()
-        val repliedConversations = mutableSetOf<String>()
+        val repliedConversations = items
+            .filter { it.state == InboxItemState.AUTO_REPLIED }
+            .filter { item ->
+                val repliedAt = parseInstantMillis(item.updatedAt) ?: receivedAtMillis(item)
+                repliedAt != null && nowMillis - repliedAt < AUTO_REPLY_COOLDOWN_MILLIS
+            }
+            .mapTo(mutableSetOf()) { inboxConversationKey(it.app, it.conversation) }
 
         for (item in items) {
             if (!isEligible(item, settings)) continue
