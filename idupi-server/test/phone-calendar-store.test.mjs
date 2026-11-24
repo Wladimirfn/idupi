@@ -89,6 +89,17 @@ test("normalizeSnapshot rejects bad types, bad ISO times and oversized lists", (
         () => normalizeSnapshot(snapshot({ calendars: [{ ...CALENDAR, writable: "yes" }] })),
         /writable must be a boolean/,
     );
+
+    // The Android client omits false booleans (kotlinx encodeDefaults = false).
+    const { writable: _w, ...calendarWithoutWritable } = CALENDAR;
+    const { allDay: _a, ...eventWithoutAllDay } = event();
+    const omitted = normalizeSnapshot(snapshot({
+        calendars: [calendarWithoutWritable],
+        events: [eventWithoutAllDay],
+    }));
+    assert.equal(omitted.calendars[0].writable, false);
+    assert.equal(omitted.events[0].allDay, false);
+
     assert.throws(
         () => normalizeSnapshot(snapshot({ tzOffsetMinutes: 9000 })),
         /tzOffsetMinutes/,

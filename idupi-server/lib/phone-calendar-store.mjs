@@ -93,6 +93,16 @@ function requireText(value, field, maxChars) {
     return text;
 }
 
+/**
+ * Booleans whose default is false. The Android client serializes with
+ * kotlinx.serialization defaults (encodeDefaults = false), so a false value is
+ * omitted from the JSON; absent means false, any other non-boolean is refused.
+ */
+function optionalBoolean(value, field) {
+    if (value === undefined || value === null) return false;
+    return requireBoolean(value, field);
+}
+
 function requireBoolean(value, field) {
     if (typeof value !== "boolean") {
         throw typedError("INVALID_SNAPSHOT", `${field} must be a boolean`);
@@ -134,7 +144,7 @@ function normalizeCalendar(raw, index) {
         color: raw.color === undefined || raw.color === null
             ? null
             : singleLine(raw.color, MAX_COLOR_CHARS),
-        writable: requireBoolean(raw.writable, `${field}.writable`),
+        writable: optionalBoolean(raw.writable, `${field}.writable`),
     };
 }
 
@@ -152,7 +162,7 @@ function normalizeEvent(raw, index) {
         title: singleLine(raw.title, MAX_EVENT_TITLE_CHARS),
         start: new Date(startMs).toISOString(),
         end: new Date(endMs).toISOString(),
-        allDay: requireBoolean(raw.allDay, `${field}.allDay`),
+        allDay: optionalBoolean(raw.allDay, `${field}.allDay`),
         location: requireOptionalText(raw.location, `${field}.location`, MAX_EVENT_LOCATION_CHARS),
         description: requireOptionalText(
             raw.description,
