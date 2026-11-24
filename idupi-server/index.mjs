@@ -22,7 +22,6 @@ import { describeRateLimit } from "./lib/rate-limit-notice.mjs";
 import { CHAT_EVENTS, publish as publishChatEvent, subscribe as subscribeChatStream } from "./chat-events.mjs";
 import { profileFilePath as resolveProfileFile, profilesDir as sddProfilesDir } from "./lib/orchestrator/profile-path.mjs";
 import {
-    escapeSqlValue,
     validateNumeric,
     encodeCursor,
     decodeCursor,
@@ -33,6 +32,10 @@ import {
     buildPiIndex,
     resolveOpenCodeExePath
 } from "./lib/sessions.mjs";
+// OpenCode v2 CLI adapter (session-listing v2 remediation): `session list`
+// for listing/count/latest-session and one cached `models` call for the
+// catalog. Replaces the removed `opencode db <sql>` path.
+import { createOpenCodeCli } from "./lib/opencode-cli.mjs";
 
 import {
     ActivityRegistry,
@@ -395,9 +398,10 @@ loadDefaultModel();
 function getAvailableModels() {
     if (currentStatus.activeEngine === "opencode") {
         try {
-            const opencodeExe = resolveOpenCodeExePath();
-            const raw = execFileSync(opencodeExe, ["models"], { encoding: "utf8", timeout: 5000, maxBuffer: EXEC_MAX_BUFFER });
-            const lines = raw.split("\n").map(l => l.trim()).filter(l => l.length > 0 && !l.startsWith("Notice:") && !l.startsWith("Error:"));
+            // Shared 60 s cache with getModelsForProvider: OpenCode v2's
+            // `models` prints the full `provider/model` catalog and takes no
+            // provider argument, so one call serves both views.
+            const lines = openCodeCli.listAllModels();
             const realModels = [];
             for (const line of lines) {
                 if (line.includes("/")) {
@@ -1489,7 +1493,8 @@ function buildOpenCodeSessionItem(row, projName) {
         title: titleText.length > 40 ? titleText.slice(0, 37) + "..." : titleText,
         project: projName,
         date: formattedDate,
-        // Exact via SQL COUNT -- free, no extra I/O (design decision #8).
+        // Exact only when the read-only `session_message` count is known;
+        // null (never a fabricated zero) when the v2 store is unreadable.
         messageCount: typeof row.msgCount === "number" ? row.msgCount : null,
         isFavorite: false,
         preview: "Sesión registrada en tu PC por OpenCode Engine.",
@@ -1498,100 +1503,41 @@ function buildOpenCodeSessionItem(row, projName) {
     };
 }
 
-/**
- * Runs `opencode db <sql> --format json` via the resolved native executable
- * -- `execFile(resolvedExe, argv, {timeout})`, never `execSync`, never a
- * shell string. This is the fix for both the SQL-construction surface (argv
- * array, no shell interpolation of the invocation itself) and the
- * concurrent-SSE-stall defect (`execFile` never blocks the event loop) --
- * see design.md's "OpenCode Invocation -- Verified Resolution".
- */
-function execOpenCodeDb(sql) {
-    return new Promise((resolve, reject) => {
-        let exePath;
-        try {
-            exePath = resolveOpenCodeExePath();
-        } catch (err) {
-            reject(err);
-            return;
-        }
-        execFile(
-            exePath,
-            ["db", sql, "--format", "json"],
-            { timeout: 4000, encoding: "utf8" },
-            (err, stdout) => {
-                if (err) { reject(err); return; }
-                try {
-                    resolve(JSON.parse(stdout));
-                } catch (parseErr) {
-                    // Guard del scan: `opencode db` puede devolver JSON vacío o
-                    // incompleto cuando el CLI está ocupado o imprime un aviso en
-                    // stdout ("Unexpected end of JSON input" observado en el log
-                    // real). Un scan de sesiones no debe fallar (502) por una
-                    // respuesta ruidosa: se registra el aviso estructurado y se
-                    // degrada a resultado vacío -- las queries de acá siempre
-                    // devuelven arrays, así que [] es un resultado legítimo.
-                    console.warn(`[OpenCode DB JSON Parse Warning] ${parseErr.message} — sql="${String(sql).slice(0, 90)}" salida="${String(stdout).slice(0, 140)}"`);
-                    resolve([]);
-                }
-            }
-        );
-    });
-}
+// OpenCode v2 (verified v2.4.1) removed `opencode db <sql>`, so the session
+// listing no longer runs SQL against the store. The CLI adapter owns the
+// bounded `session list` calls (async execFile with cwd = the project
+// directory) and the optional read-only `session_message` counts. Only the
+// original-case absolute path can be used as a cwd, while the listing passes
+// the normalized comparison path -- the registry keeps the original.
+const openCodeCli = createOpenCodeCli();
 
-/**
- * Builds the cursor predicate fragment for the OpenCode SQL WHERE clause.
- * Every interpolated value goes through PR1's `escapeSqlValue`/
- * `validateNumeric` first, per the SQL Safety Contract -- no other path may
- * construct this SQL string.
- */
-function buildOpenCodeCursorClause(subCursor) {
-    if (!subCursor) return "";
-    const ts = validateNumeric(subCursor.ts);
-    const id = escapeSqlValue(String(subCursor.id));
-    return ` AND (s.time_updated < ${ts} OR (s.time_updated = ${ts} AND s.id < '${id}'))`;
-}
-
-/**
- * The two kinds of row a session list should not open with.
- *
- * `parent_id` is OpenCode's own marker: NULL for a session the user started,
- * set for one a subagent ran under. Measured on this project's real store, 99
- * of 108 sessions were children -- the list was 92% delegated work nobody
- * opened by hand. The second clause drops a session with a single exchange: a
- * one-shot run, a test, an abandoned start.
- *
- * It belongs in SQL, not in a filter over the fetched page: dropping rows after
- * the LIMIT returns short pages and makes the cursor skip ahead. The listing
- * and the count share this one clause so they cannot disagree -- a count that
- * ignored it would report 108 beside a list of 9.
- *
- * No value is interpolated here, so nothing needs escaping; every other
- * interpolation in these queries still goes through escapeSqlValue /
- * validateNumeric per the SQL Safety Contract.
- */
-function buildOpenCodeNoiseClause(includeAll) {
-    return includeAll
-        ? ""
-        : " AND s.parent_id IS NULL AND (SELECT COUNT(*) FROM message m2 WHERE m2.session_id = s.id) > 2";
+function resolveOpenCodeProjectDir(normProjPath) {
+    const match = registeredProjects.find(
+        (p) => normalizePathForCompare(p.path) === normProjPath
+    );
+    return match ? match.path : null;
 }
 
 async function fetchOpenCodePage(normProjPath, subCursor, limit, includeAll = false) {
-    const escapedDir = escapeSqlValue(normProjPath);
-    const validLimit = validateNumeric(limit, { integer: true, min: 1, max: 200 });
-    const cursorClause = buildOpenCodeCursorClause(subCursor);
-    const noiseClause = buildOpenCodeNoiseClause(includeAll);
-    const sql = `SELECT s.id, s.directory, s.title, s.time_updated, (SELECT COUNT(*) FROM message m WHERE m.session_id = s.id) as msg_count FROM session s WHERE REPLACE(LOWER(s.directory), '\\', '/') = '${escapedDir}'${noiseClause}${cursorClause} ORDER BY s.time_updated DESC, s.id DESC LIMIT ${validLimit}`;
-    const rows = await execOpenCodeDb(sql);
-    return rows.map(r => ({ ts: r.time_updated, id: r.id, title: r.title, msgCount: r.msg_count }));
+    const projectDir = resolveOpenCodeProjectDir(normProjPath);
+    if (!projectDir) return [];
+    return openCodeCli.fetchPage({
+        projectDir,
+        normProjectPath: normProjPath,
+        subCursor,
+        limit,
+        includeAll
+    });
 }
 
 async function countOpenCodeSessions(normProjPath, includeAll = false) {
-    const escapedDir = escapeSqlValue(normProjPath);
-    const noiseClause = buildOpenCodeNoiseClause(includeAll);
-    const sql = `SELECT COUNT(*) as cnt FROM session s WHERE REPLACE(LOWER(s.directory), '\\', '/') = '${escapedDir}'${noiseClause}`;
-    const rows = await execOpenCodeDb(sql);
-    return (rows && rows[0] && typeof rows[0].cnt === "number") ? rows[0].cnt : 0;
+    const projectDir = resolveOpenCodeProjectDir(normProjPath);
+    if (!projectDir) return 0;
+    return openCodeCli.countSessions({
+        projectDir,
+        normProjectPath: normProjPath,
+        includeAll
+    });
 }
 
 const ENGINE_LABELS = { "claude": "Claude", "pi-cli": "Pi", "opencode": "OpenCode" };
@@ -1727,7 +1673,9 @@ export {
     toSessionItem,
     buildPiClaudeSessionItem,
     buildOpenCodeSessionItem,
-    execOpenCodeDb,
+    fetchOpenCodePage,
+    countOpenCodeSessions,
+    openCodeCli,
     describeToolInput,
     describeSubagentName,
     isSubagentTool,
@@ -4128,21 +4076,17 @@ function getCustomSddProfiles() {
     return list;
 }
 
-const providerModelsCache = new Map();
-
 function getModelsForProvider(providerId) {
     // Fail-fast on invalid input: the caller maps this throw to 400.
     // (Exe failures below stay 200-empty + console.error: a sick CLI is
     // not a bad request.)
     assertSafeCliId(providerId, "providerId");
-    if (providerModelsCache.has(providerId)) {
-        return providerModelsCache.get(providerId);
-    }
     try {
-        const opencodeExe = resolveOpenCodeExePath();
-        const raw = execFileSync(opencodeExe, ["models", providerId], { encoding: "utf8", timeout: 4000, maxBuffer: EXEC_MAX_BUFFER });
-        const lines = raw.split("\n").map(l => l.trim()).filter(l => l && !l.startsWith("Error") && !l.startsWith("opencode models"));
-        const models = lines.map(line => {
+        // OpenCode v2's `models` takes no positional provider (it errors on
+        // one). The adapter filters the shared, cached full catalog by the
+        // `<provider>/` prefix, so the response contract is unchanged.
+        const lines = openCodeCli.modelsForProvider(providerId);
+        return lines.map(line => {
             const parts = line.split("/");
             const id = parts.length > 1 ? parts.slice(1).join("/") : line;
             return {
@@ -4152,10 +4096,6 @@ function getModelsForProvider(providerId) {
                 provider: parts[0] || providerId
             };
         });
-        if (models.length > 0) {
-            providerModelsCache.set(providerId, models);
-            return models;
-        }
     } catch(e) {
         console.error(`[OpenCode Models] provider '${providerId}': ${e.message}`);
     }
@@ -5440,14 +5380,15 @@ async function runOpenCodeCli(projPath, sessionId, message, openCodeModel = null
                         const autoApprove = parseOpenCodeAutoApproveHeader(req.headers);
                         agentOutput = await runOpenCodeCli(activeProj.path, activeOpenCodeSessionId, userMessage, activeOpenCodeModel, autoApprove);
                         if (!activeOpenCodeSessionId) {
-                            try {
-                                const rawDb = execSync('opencode db "SELECT id FROM session ORDER BY time_updated DESC LIMIT 1" --format json', { encoding: "utf8", maxBuffer: EXEC_MAX_BUFFER });
-                                const latestSes = JSON.parse(rawDb)[0];
-                                if (latestSes && latestSes.id) {
-                                    activeOpenCodeSessionId = latestSes.id;
-                                    console.log(`[OpenCode Session] Sesión fijada tras primer mensaje: ${activeOpenCodeSessionId}`);
-                                }
-                            } catch (e) {}
+                            // OpenCode v2 has no `db` subcommand: the newest
+                            // session for this project is the first row of a
+                            // fresh one-row `session list` (never cached, so
+                            // it sees the session the message just created).
+                            const latestSessionId = await openCodeCli.findLatestSession(activeProj.path);
+                            if (latestSessionId) {
+                                activeOpenCodeSessionId = latestSessionId;
+                                console.log(`[OpenCode Session] Sesión fijada tras primer mensaje: ${activeOpenCodeSessionId}`);
+                            }
                         }
                     } else {
                         agentOutput = await piRpc.sendPrompt(userMessage);

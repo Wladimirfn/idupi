@@ -76,14 +76,34 @@ test("model/switch no longer logs a doubled provider prefix", () => {
     assert.match(body, /displayModelId/, "el log imprime el id normalizado (sin prefijo duplicado)");
 });
 
-test("execOpenCodeDb degrades a broken JSON reply to an empty result with a warning instead of failing the scan", () => {
-    const at = source.indexOf("function execOpenCodeDb");
-    assert.notEqual(at, -1, "no se encontró execOpenCodeDb");
-    const fn = source.slice(at, at + 2200);
-    assert.match(fn, /OpenCode DB JSON Parse Warning/,
-        "un JSON roto/vacío registra un aviso estructurado (log + continue)");
-    assert.match(fn, /resolve\(\[\]\)/,
-        "la respuesta degradada resuelve a lista vacía en vez de rechazar y 502 el scan");
+test("provider models use the v2 catalog prefix, never a provider positional argument", () => {
+    const at = source.indexOf("function getModelsForProvider");
+    assert.notEqual(at, -1, "no se encontró getModelsForProvider");
+    const fn = source.slice(at, at + 1600);
+    assert.match(fn, /openCodeCli\.modelsForProvider\(providerId\)/,
+        "v2 `opencode models` no acepta proveedor posicional: el filtro es por prefijo en el adaptador");
+    assert.ok(!/\["models",\s*providerId\]/.test(source),
+        "`opencode models <provider>` falla con 'Unexpected positional argument' en v2");
+    assert.match(fn, /fullId: line/,
+        "el contrato {id, fullId, name, provider} que consume la app se mantiene");
+    assert.match(fn, /assertSafeCliId\(providerId, "providerId"\)/,
+        "un providerId inválido sigue fallando rápido (400), no como CLI enfermo");
+});
+
+test("the engine-wide catalog and the provider lists share one cached `models` call", () => {
+    const engineAt = source.indexOf("function getAvailableModels");
+    assert.notEqual(engineAt, -1);
+    const engineFn = source.slice(engineAt, engineAt + 1800);
+    assert.match(engineFn, /openCodeCli\.listAllModels\(\)/,
+        "el catálogo del motor sale del adaptador cacheado");
+    assert.ok(!/\["models"\]/.test(engineFn),
+        "no debe quedar una invocación directa sin caché");
+});
+
+test("the removed OpenCode v2 `db` subcommand is no longer referenced", () => {
+    assert.ok(!/execOpenCodeDb/.test(source), "el helper SQL de v1 tiene que estar eliminado");
+    assert.ok(!/\["db",\s*sql/.test(source), "`opencode db <sql>` ya no existe en v2");
+    assert.ok(!/opencode db "SELECT/.test(source), "la búsqueda de última sesión no puede usar `db`");
 });
 
 // --- 2. Resume classification ----------------------------------------------
@@ -102,7 +122,7 @@ test("resume never classifies by activeEngine alone", () => {
 
 test("resume classifies OpenCode by id shape and guards the engine fallback with the store UUID shape", () => {
     const body = resumeRoute();
-    assert.match(body, /sessionId\.startsWith\("ses_"\)/, "los ids de OpenCode son siempre ses_ (verificado con `opencode db`)");
+    assert.match(body, /sessionId\.startsWith\("ses_"\)/, "los ids de OpenCode son siempre ses_ (verificado con `session list`)");
     assert.match(body, /looksLikeStoreUuid/, "el fallback al motor activo debe excluir ids con forma de id de tienda (UUID)");
     assert.match(body, /!sessionPath/, "el id debe buscarse primero en la tienda de sesiones de Pi");
 });

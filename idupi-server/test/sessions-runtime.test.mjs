@@ -17,22 +17,21 @@
 // Deterministic by construction: TTL uses a controllable clock; route proofs
 // use injected synthetic per-engine streams (the real k-way merge + cursor
 // encode/decode inside fetchSessionsPage is exercised); the SSE proof uses the
-// REAL execOpenCodeDb path against the real OpenCode CLI plus the real
-// chat-events SSE subscribe/publish. No sleeps; a fake clock/real-CLI-delay
-// proves timing behavior.
+// REAL OpenCode v2 CLI adapter (`session list`) plus the real chat-events SSE
+// subscribe/publish. No sleeps; a fake clock/real-CLI-delay proves timing
+// behavior.
 // ============================================================================
 
 process.env.IDUPI_NO_LISTEN = "1";
 
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { readFileSync, writeFileSync, mkdtempSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import os from "node:os";
 
 import { subscribe, publish, CHAT_EVENTS } from "../chat-events.mjs";
-import { escapeSqlValue, resolveOpenCodeExePath } from "../lib/sessions.mjs";
+import { createOpenCodeCli } from "../lib/opencode-cli.mjs";
 
 // Dynamic import AFTER setting IDUPI_NO_LISTEN so the server does not bind.
 const index = await import("../index.mjs");
@@ -43,8 +42,7 @@ const {
     fetchSessionsPage,
     toSessionItem,
     buildPiClaudeSessionItem,
-    buildOpenCodeSessionItem,
-    execOpenCodeDb
+    buildOpenCodeSessionItem
 } = index;
 
 // A small, valid JSONL file so buildPiClaudeSessionItem's hydration succeeds
@@ -263,13 +261,19 @@ test("delayed OpenCode sessions query does not stall an active SSE event flow",
     const t0 = performance.now();
     subscribe(req, res); // SSE connected immediately (": connected" written synchronously)
 
-    // REAL OpenCode sessions query via the production execOpenCodeDb shape
-    // (execFile(resolveOpenCodeExePath(), ["db", <sql>, "--format", "json"])).
+    // REAL OpenCode v2 session listing through the production adapter
+    // (`session list --format json` via async execFile). includeAll avoids the
+    // SQLite counts read so the proof stays a pure CLI call.
     const projects = JSON.parse(readFileSync(join(process.cwd(), "idupi-server", "projects.json"), "utf8"));
     const firstProj = projects[0];
-    const norm = (firstProj.path || "").toLowerCase().replace(/\\/g, "/").replace(/\/+$/g, "");
-    const sql = `SELECT COUNT(*) as cnt FROM session s WHERE REPLACE(LOWER(s.directory), '\\', '/') = '${escapeSqlValue(norm)}'`;
-    const queryDone = execOpenCodeDb(sql).then(r => JSON.stringify(r));
+    const cli = createOpenCodeCli();
+    const queryDone = cli.fetchPage({
+        projectDir: firstProj.path,
+        normProjectPath: firstProj.path,
+        subCursor: null,
+        limit: 5,
+        includeAll: true
+    }).then(r => JSON.stringify(r));
 
     // Immediately publish a chat event — simulating the active SSE flow.
     publish(CHAT_EVENTS.TEXT_DELTA, { text: "stream-alive" });
@@ -286,7 +290,7 @@ test("delayed OpenCode sessions query does not stall an active SSE event flow",
     assert.ok(tSse < tQuery, "SSE event arrived before the OpenCode query resolved");
     assert.ok(tImmediate < tQuery, "event loop turned freely while OpenCode query was in flight (non-blocking)");
     assert.ok(tQuery - t0 > 100, `OpenCode query was genuinely in-flight (${Math.round(tQuery - t0)} ms)`);
-    assert.ok(JSON.parse(stdout), "OpenCode query completed with real data");
+    assert.ok(Array.isArray(JSON.parse(stdout)), "OpenCode listing completed with a real JSON array");
 
     // Clean up the SSE subscriber so the heartbeat interval is released.
     if (reqHandlers.close) reqHandlers.close();
