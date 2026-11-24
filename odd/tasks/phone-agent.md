@@ -145,3 +145,6 @@ stacked PRs (same as #18 → #19 → #20).
   package visibility and IME submit; no instrumentation here. Live end-to-end
   against the PC and the APK delivery belong to T4; the server was not restarted.
   Next: T4 version bump, APK delivery and live e2e.
+- T4 (partial): version 42 / 1.41-phone-agent; app 563 tests / 0 failures,
+  release APK cert d8ba0fc9, delivered to the phone. Server restart pending the
+  owner's OK (a live PTY was open), then live e2e with idupi-phone.
