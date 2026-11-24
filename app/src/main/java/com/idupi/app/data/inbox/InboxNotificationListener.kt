@@ -7,8 +7,12 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.idupi.app.data.IduPiClientProvider
 import com.idupi.app.data.settings.SettingsProvider
+import com.idupi.app.domain.model.InboxImportance
+import com.idupi.app.domain.model.InboxItem
 import com.idupi.app.domain.model.InboxItemState
+import com.idupi.app.domain.model.InboxItemStatus
 import com.idupi.app.domain.model.InboxMessageRequest
+import com.idupi.app.domain.model.InboxSettings
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -17,6 +21,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 
@@ -42,6 +47,13 @@ import java.util.concurrent.ConcurrentHashMap
  * Privacy: message text, sender and conversation only leave the phone to the
  * owner's server. This class logs app ids, counts and exception classes -- never
  * message content.
+ *
+ * While the listener is connected a coroutine ticks every
+ * [REMINDER_TICK_MS]: it fetches the recent items, asks
+ * [InboxReminderPolicy] what to do and executes it (reminder notification or
+ * template auto-reply). The loop starts on [onListenerConnected] and stops on
+ * [onListenerDisconnected]/[onDestroy], so losing notification access also
+ * stops the reminders.
  */
 class InboxNotificationListener : NotificationListenerService() {
 
@@ -55,6 +67,30 @@ class InboxNotificationListener : NotificationListenerService() {
 
     /** Set once the saved connection profile has been applied to the client. */
     private var clientConfigured = false
+
+    /** Reminder/auto-reply loop, alive only while the listener is connected. */
+    private var reminderJob: Job? = null
+
+    /** Per-item progress the policy needs across ticks; process-local on purpose. */
+    private val reminderStates = ConcurrentHashMap<String, ReminderState>()
+
+    /** Last analysis status seen per item, for the one-shot "important" ping. */
+    private val observedStatuses = ConcurrentHashMap<String, String>()
+
+    /** Item ids already announced as analyzed and important. */
+    private val notifiedReady = ConcurrentHashMap.newKeySet<String>()
+
+    private val notifier by lazy { InboxNotifier(this) }
+
+    override fun onListenerConnected() {
+        super.onListenerConnected()
+        startReminderLoop()
+    }
+
+    override fun onListenerDisconnected() {
+        stopReminderLoop()
+        super.onListenerDisconnected()
+    }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?, rankingMap: RankingMap?) {
         val posted = sbn ?: return
@@ -91,6 +127,7 @@ class InboxNotificationListener : NotificationListenerService() {
     }
 
     override fun onDestroy() {
+        stopReminderLoop()
         pendingHandled.values.forEach { it.cancel() }
         pendingHandled.clear()
         scope.cancel()
@@ -106,6 +143,141 @@ class InboxNotificationListener : NotificationListenerService() {
         registerReplyAction(sbn, captured)
         InboxSession.remember(captured)
         scope.launch { upload(captured) }
+    }
+
+    // --- Reminders and template auto-reply (phone-inbox T4) ---
+
+    private fun startReminderLoop() {
+        if (reminderJob?.isActive == true) return
+        reminderJob = scope.launch {
+            while (isActive) {
+                delay(REMINDER_TICK_MS)
+                try {
+                    runReminderTick()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // The server may be off; the next tick retries. No content logged.
+                    Log.w(TAG, "inbox reminder tick failed: ${e.javaClass.simpleName}")
+                }
+            }
+        }
+    }
+
+    private fun stopReminderLoop() {
+        reminderJob?.cancel()
+        reminderJob = null
+    }
+
+    /**
+     * One policy pass: read the items, announce freshly analyzed important
+     * messages once, then apply the reminder/auto-reply decisions.
+     */
+    private suspend fun runReminderTick() {
+        if (!ensureClientConfigured()) return
+        val settings = SettingsProvider.repository.inboxSettings.first()
+        val items = IduPiClientProvider.client.getInboxItems(LIST_LIMIT)
+        val now = System.currentTimeMillis()
+
+        pruneReminderState(items)
+        notifyNewlyReady(items)
+        executeActions(items, settings, now)
+    }
+
+    private suspend fun executeActions(
+        items: List<InboxItem>,
+        settings: InboxSettings,
+        nowMillis: Long
+    ) {
+        val itemsById = items.associateBy { it.id }
+        val actions = InboxReminderPolicy.decide(
+            items = items,
+            settings = settings,
+            nowMillis = nowMillis,
+            stateFor = { id ->
+                reminderStates[id]?.toPolicyState() ?: InboxReminderPolicy.ItemState()
+            },
+            hasLiveReplyAction = ReplyActionRegistry::has
+        )
+
+        for (action in actions) {
+            when (action) {
+                is InboxReminderPolicy.Action.Remind -> {
+                    val item = itemsById[action.itemId] ?: continue
+                    notifier.showReminder(item)
+                    // Recorded even if the post was ignored (no notification
+                    // permission): otherwise every 60 s tick would retry it.
+                    reminderState(action.itemId).lastRemindedAtMillis = nowMillis
+                }
+                is InboxReminderPolicy.Action.AutoReply -> {
+                    val item = itemsById[action.itemId] ?: continue
+                    sendAutoReply(item, action.text)
+                }
+            }
+        }
+    }
+
+    /**
+     * Sends the owner's fixed template through the notification's own reply
+     * action. On success the server item becomes `auto_replied`; on failure the
+     * item keeps being reminded (the registry already dropped a dead action, so
+     * the next ticks simply stop trying to send).
+     */
+    private suspend fun sendAutoReply(item: InboxItem, text: String) {
+        val conversationKey = inboxConversationKey(item.app, item.conversation)
+        if (!ReplyActionRegistry.send(this, conversationKey, text)) {
+            Log.i(TAG, "auto-reply not delivered (${item.app})")
+            return
+        }
+        reminderState(item.id).autoReplyDone = true
+        try {
+            IduPiClientProvider.client.setInboxItemState(item.id, InboxItemState.AUTO_REPLIED)
+            Log.i(TAG, "auto-replied ${item.app} item")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "auto-reply sent but state update failed: ${e.javaClass.simpleName}")
+        }
+    }
+
+    /**
+     * Announces an important item once, when its analysis finishes.
+     *
+     * Items that were already `ready` before this listener process started are
+     * not announced: only a status transition seen here, or an item this
+     * process captured (it has an [InboxSession] entry), is "newly analyzed".
+     */
+    private fun notifyNewlyReady(items: List<InboxItem>) {
+        val capturedItemIds = InboxSession.all().mapNotNull { it.itemId }.toSet()
+        for (item in items) {
+            val previousStatus = observedStatuses.put(item.id, item.status)
+            if (item.status != InboxItemStatus.READY) continue
+            if (item.importance != InboxImportance.HIGH) continue
+            if (item.state != InboxItemState.OPEN) continue
+            if (!notifiedReady.add(item.id)) continue
+            val isNewHere = previousStatus != null || item.id in capturedItemIds
+            if (!isNewHere) continue
+            notifier.showImportantReady(item)
+        }
+    }
+
+    /** Keeps the process-local maps bounded by the items still on the server list. */
+    private fun pruneReminderState(items: List<InboxItem>) {
+        val ids = items.mapTo(mutableSetOf()) { it.id }
+        reminderStates.keys.retainAll(ids)
+        observedStatuses.keys.retainAll(ids)
+        notifiedReady.retainAll(ids)
+    }
+
+    private fun reminderState(itemId: String): ReminderState =
+        reminderStates.getOrPut(itemId) { ReminderState() }
+
+    private class ReminderState(
+        var lastRemindedAtMillis: Long? = null,
+        var autoReplyDone: Boolean = false,
+    ) {
+        fun toPolicyState(): InboxReminderPolicy.ItemState =
+            InboxReminderPolicy.ItemState(lastRemindedAtMillis, autoReplyDone)
     }
 
     /**
@@ -234,5 +406,8 @@ class InboxNotificationListener : NotificationListenerService() {
 
         /** Recent items inspected when resolving a conversation's open ones. */
         private const val LIST_LIMIT = 50
+
+        /** How often the reminder/auto-reply policy runs while connected. */
+        private const val REMINDER_TICK_MS = 60_000L
     }
 }
