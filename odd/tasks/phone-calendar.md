@@ -49,7 +49,7 @@ attendees, Outlook/Google cloud APIs.
 
 ## Tasks
 
-- [ ] T1 Server: `POST /api/v1/phone/calendar` snapshot (events next 14 days:
+- [x] T1 Server: `POST /api/v1/phone/calendar` snapshot (events next 14 days:
   id, calendarName, accountType, title, start, end, allDay, location), `GET`
   agenda + deterministic conflicts; inbox analysis JSON gains optional
   `event {title,start,end,allDay,location}` (agent extracts, server validates
@@ -87,3 +87,15 @@ commits by task.
 ## Progress
 
 - Branch created from feat/inbox-management aedb3b8.
+- T1 done (2026-11-24): calendar snapshot store + routes with strict
+  validation, deterministic conflicts and free slots, inbox event extraction
+  with snapshot conflict warnings, proposals queue with 7-day expiry,
+  `idupi-phone calendar` CLI, docs and tests.
+  Commits: `5f9eb28` (store+routes, 1852 insertions incl. tests and index
+  wiring), `a478946` (inbox extraction, +361/-12), `e0a37d0` (CLI+docs,
+  +788/-138). Verification: all 67 `idupi-server/test/*.test.mjs` files pass
+  (0 FAIL) and `node --check idupi-server/index.mjs` passes.
+  Deviation: `idupi-server/docs/README.md` had a committed duplicated,
+  truncated copy of the whole document (the inbox line was cut mid-row); the
+  copy was removed while adding the calendar rows. No `app/` files touched, no
+  push, no server restart.
