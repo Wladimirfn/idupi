@@ -62,6 +62,10 @@ attendees, Outlook/Google cloud APIs.
 - [x] T3 App write + approve: alert card event chip + "Agregar al calendario"
   confirm sheet (editable fields, calendar picker, conflict warning) writing
   via CalendarContract with WRITE_CALENDAR; PC proposals approval list; tests.
+- [ ] T5 UI polish (owner feedback 2026-11-24): Ajustes > ALERTAS "Apps a
+  seguir" collapsed by default (followed apps + "Ver todas las apps (N)"
+  expander with search), and Agenda view modes Lista / Semana / Mes like a
+  calendar (day selection, conflict marks, proposals kept on top).
 - [ ] T4 Deliver: version bump, APK to the phone, server restart (check PTYs),
   live check.
 
