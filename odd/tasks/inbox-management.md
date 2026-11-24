@@ -51,7 +51,7 @@ provider), mail API search.
 - [x] T2 Alertas cleanup: closed items (replied, auto_replied, handled,
   dismissed) leave the Alertas list; server prunes closed items after 24 h;
   remove the "Alerta de prueba" action and its code.
-- [ ] T3 Installed apps + follow list: phone lists launchable apps; Ajustes
+- [x] T3 Installed apps + follow list: phone lists launchable apps; Ajustes
   shows them with a follow switch (presets: WhatsApp, Business, Gmail, Outlook,
   Messenger, Telegram); generic capture for any followed app; server accepts any
   package with a display label.
@@ -93,3 +93,31 @@ commits by task.
   state labels and the "Alerta de prueba" action are gone; `inbox-store` prunes
   closed items older than 24 h on load, write and list with an injectable clock.
   Checks: inbox suites 18 + 11 + 15 pass; app 596/596 tests and assembleRelease.
+- T3 done in 9defd78 (server) + 1ad81aa (app): `InboxApp` keeps the four
+  original ids and adds Messenger, Telegram, Instagram and Signal (id, package,
+  label); `InboxSettings.enabledApps` became `followedApps` (preset ids or
+  package names) with the four originals plus Messenger and Telegram as the
+  default, persisted in the same DataStore key (`inbox_enabled_apps`), so a set
+  saved by an older build stays valid. Ajustes > ALERTAS replaces "Apps
+  monitoreadas" with "Apps a seguir": installed presets on top, "Otras apps"
+  with a search field, both through `InstalledApps` (pure dedupe, own-package
+  exclusion, preset-first label sort; unit-tested) and `AndroidInstalledApps`
+  (MAIN/LAUNCHER query through the existing `<queries>` block, no
+  QUERY_ALL_PACKAGES). `NotificationParser` captures any followed package: the
+  preset mail apps keep `mail()`, everything else uses `messaging()`
+  (MessagingStyle first, then title/bigText/text); it skips call, progress,
+  transport, service and system categories, generalizes the aggregation-row
+  filter to every messaging app and the capture carries the PackageManager
+  `appLabel`. The listener observes the persisted follow list, caches labels and
+  still re-checks the follow set before upload; the reply registry already
+  serves any app, so "Enviar sugerencia" works for non-WhatsApp items while
+  auto-reply stays WhatsApp/Business-only. Wire: `InboxMessageRequest.appLabel`
+  is optional (omitted when empty); the server accepts `app` matching
+  `^[a-z0-9_.]{1,120}$`, trims and clips `appLabel` to 60, stores and returns
+  it, and the agent prompt shows the label with the app id as fallback inside
+  the untrusted block. Alertas cards and reminders show label > preset label >
+  id/package. Checks: inbox suites 19 + 13 + 18 pass; app 616/616 tests and
+  assembleRelease. Unverified on device: real Telegram/Messenger/category
+  notification shapes, PackageManager label and visibility behavior on the
+  owner's Android build, and the DataStore upgrade over a set saved by an older
+  build.
