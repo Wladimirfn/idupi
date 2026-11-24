@@ -119,6 +119,29 @@ to the API.
 | GET | `/api/v1/commands` | Bearer | Available commands |
 | GET | `/api/v1/alerts` | Bearer | Supervisor alerts |
 
+### Phone inbox
+
+Source: [`lib/inbox-routes.mjs`](../lib/inbox-routes.mjs), store in
+[`lib/inbox-store.mjs`](../lib/inbox-store.mjs), agent runner in
+[`lib/inbox-agent.mjs`](../lib/inbox-agent.mjs).
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| POST | `/api/v1/inbox/messages` | Bearer | Accept a captured notification (`app`, `packageName`, `sender`, `conversation`, `text`, `postedAt`, `notificationKey`); `202` with the stored item, `200` when the same `notificationKey` + `text` already exists |
+| GET | `/api/v1/inbox?limit=50` | Bearer | Newest-first items; `limit` is 1..200 |
+| POST | `/api/v1/inbox/{id}/state` | Bearer | Set `state` to `open`, `handled`, `replied`, `auto_replied` or `dismissed` |
+| POST | `/api/v1/inbox/{id}/retry` | Bearer | Re-queue the analysis; `202` with the item as `analyzing` |
+| GET | `/api/v1/inbox/config` | Bearer | `{agent, model, effort, agents, efforts}` |
+| PUT | `/api/v1/inbox/config` | Bearer | Validate and persist `{agent, model, effort}` |
+| GET | `/api/v1/inbox/models?agent=opencode` | Bearer | Cached OpenCode `provider/model` list; other agents return `[]` |
+
+Items and the agent config are persisted in `idupi-server/data/` (gitignored):
+`inbox.json` keeps the newest 500 items, `inbox-config.json` keeps
+`{agent, model, effort}`. Analysis runs one agent process at a time, with the
+message treated as untrusted data and every agent invoked without a shell from
+an empty temp directory. Auto-reply is a phone-side policy; this server only
+stores state.
+
 ### Remote screen
 
 Source: [`lib/screen-routes.mjs`](../lib/screen-routes.mjs).

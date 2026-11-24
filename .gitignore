@@ -52,3 +52,5 @@ idupi-server/drivers/
 idupi-server/logs/
 # APK snapshots registered by idupi-push (lib/delivery-registry.mjs)
 idupi-server/deliveries/
+# Phone inbox runtime data: notification items and the agent config
+idupi-server/data/
