@@ -442,3 +442,84 @@ test("writes prune expired closed items; open items survive any age", async (t) 
     assert.equal(store.get(dismissed.id), null);
     assert.notEqual(store.get(open.id), null);
 });
+
+// --- inbox-management T4: digest-only items and conversation helpers --------
+
+test("a digestOnly item is stored ready, low and categorized Silenciado", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: tickingClock() });
+
+    const { item } = store.add(message({ digestOnly: true }));
+
+    assert.equal(item.status, "ready");
+    assert.equal(item.importance, "low");
+    assert.equal(item.category, "Silenciado");
+    assert.equal(item.summary, "");
+    assert.equal(item.suggestedReply, "");
+    assert.equal(item.error, null);
+    assert.equal(item.state, "open");
+
+    const plain = store.add(message({ notificationKey: "plain" })).item;
+    assert.equal(plain.status, "analyzing");
+    assert.equal(plain.importance, null);
+    assert.equal(plain.category, "");
+});
+
+test("openByConversation returns only that chat, oldest first, newest tail bounded", async (t) => {
+    const dir = await makeDir(t);
+    let tick = 0;
+    const store = createInboxStore({
+        dataDir: dir,
+        log: silentLog,
+        now: () => new Date(Date.UTC(2026, 10, 24, 10, 0, tick++)),
+    });
+
+    const first = store.add(message({ text: "uno", notificationKey: "k1" })).item;
+    const other = store.add(message({ conversation: "Otro", text: "otro", notificationKey: "k2" })).item;
+    const second = store.add(message({ text: "dos", notificationKey: "k3" })).item;
+    const third = store.add(message({ text: "tres", notificationKey: "k4" })).item;
+    store.update(second.id, { state: "handled" });
+
+    const open = store.openByConversation("whatsapp", "Equipo");
+    assert.deepEqual(open.map((item) => item.id), [first.id, third.id]);
+
+    const tail = store.openByConversation("whatsapp", "Equipo", 1);
+    assert.deepEqual(tail.map((item) => item.id), [third.id]);
+
+    assert.deepEqual(store.openByConversation("telegram", "Equipo"), []);
+    assert.notEqual(other.id, first.id);
+});
+
+test("closeConversation closes every open item of one chat in one call", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: tickingClock() });
+
+    const a = store.add(message({ text: "a", notificationKey: "a" })).item;
+    const b = store.add(message({ text: "b", notificationKey: "b" })).item;
+    const other = store.add(message({ conversation: "Otro", text: "c", notificationKey: "c" })).item;
+
+    const closed = store.closeConversation("whatsapp", "Equipo", "handled", "2026-11-24T13:00:00.000Z");
+
+    assert.deepEqual(closed.map((item) => item.id).sort(), [a.id, b.id].sort());
+    assert.ok(closed.every((item) => item.state === "handled"));
+    assert.equal(store.get(a.id).state, "handled");
+    assert.equal(store.get(other.id).state, "open");
+
+    assert.deepEqual(store.closeConversation("whatsapp", "Equipo", "dismissed"), []);
+    assert.throws(
+        () => store.closeConversation("whatsapp", "Equipo", "open"),
+        /invalid state/,
+    );
+});
+
+test("openConversationKeys lists only conversations with an open item", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: tickingClock() });
+
+    store.add(message({ text: "a", notificationKey: "a" }));
+    const done = store.add(message({ conversation: "Otro", text: "b", notificationKey: "b" })).item;
+    store.update(done.id, { state: "handled" });
+
+    const keys = [...store.openConversationKeys()];
+    assert.deepEqual(keys, ["whatsapp\u0000Equipo"]);
+});

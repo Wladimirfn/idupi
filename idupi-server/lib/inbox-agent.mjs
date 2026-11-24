@@ -165,7 +165,7 @@ export function buildAgentArgv({ agent, model, effort, prompt } = {}) {
  * Removes delimiter-shaped text from untrusted content so a message cannot
  * close the untrusted block early and promote its own text to instructions.
  */
-function sanitizeUntrusted(value) {
+export function sanitizeUntrusted(value) {
     return String(value ?? "").replace(/<\/?untrusted_(?:message|context)>/gi, "[tag removed]");
 }
 
@@ -285,7 +285,7 @@ function scanTopLevelObjects(text) {
  * fences or both. The LAST parseable object wins, which is the final answer
  * when a model shows an example first.
  */
-function extractJsonObject(raw) {
+export function extractJsonObject(raw) {
     const text = String(raw ?? "").trim();
     if (text.length === 0) throw new Error("agent returned no output");
 
@@ -305,7 +305,7 @@ function extractJsonObject(raw) {
 }
 
 /** The assistant text of one agent run, per that CLI's output format. */
-function extractAssistantText(agent, stdout) {
+export function extractAssistantText(agent, stdout) {
     const raw = String(stdout ?? "");
 
     if (agent === "opencode") {

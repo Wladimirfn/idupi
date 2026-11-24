@@ -18,6 +18,14 @@ import {
     MAX_APP_LABEL_CHARS,
     isValidAppId,
 } from "./inbox-store.mjs";
+import {
+    buildDigestPrompt,
+    digestInputHash,
+    digestKey,
+    emptyDigest,
+    parseDigestResult,
+    selectDigestItems,
+} from "./inbox-digest.mjs";
 
 const PREFIX = "/api/v1/inbox";
 // One notification is a few hundred bytes; 64 KiB covers long mail bodies and
@@ -26,6 +34,7 @@ const DEFAULT_MAX_JSON_BYTES = 64 * 1024;
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
 const MAX_ERROR_CHARS = 300;
+const MAX_CONVERSATION_CHARS = 200;
 const RELATED_CONTEXT_LIMIT = 5;
 // App-facing counts: the first argument of str.slice is a JS index.
 const MAX_TEXT_CHARS = DEFAULT_MAX_TEXT_CHARS;
@@ -113,6 +122,48 @@ function optionalString(value, field) {
     return value;
 }
 
+/** Required, trimmed conversation name for the digest and bulk-state routes. */
+function requiredConversation(body) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+        throw typedError("INVALID_MESSAGE", "body must be a JSON object");
+    }
+    const raw = typeof body.conversation === "string" ? body.conversation.trim() : "";
+    if (raw.length === 0) {
+        throw typedError("INVALID_CONVERSATION", "conversation is required");
+    }
+    return raw.slice(0, MAX_CONVERSATION_CHARS);
+}
+
+/** App id shared by the digest and bulk-state routes. */
+function requiredApp(body) {
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+        throw typedError("INVALID_MESSAGE", "body must be a JSON object");
+    }
+    const app = typeof body.app === "string" ? body.app : "";
+    if (!isValidAppId(app)) {
+        throw typedError(
+            "INVALID_APP",
+            "app must be an id or package name (letters, digits, _ and ., at most 120)",
+        );
+    }
+    return app;
+}
+
+/** Wire shape of a digest record; the cache hash stays server-side. */
+function publicDigest(record) {
+    return {
+        app: record.app,
+        conversation: record.conversation,
+        itemCount: record.itemCount,
+        summary: record.summary,
+        pendingForOwner: record.pendingForOwner,
+        suggestedReply: record.suggestedReply,
+        status: record.status,
+        error: record.error,
+        updatedAt: record.updatedAt,
+    };
+}
+
 function isoFrom(value) {
     const date = value instanceof Date ? value : new Date(value);
     return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
@@ -131,6 +182,7 @@ function isoFrom(value) {
 export function createInboxRoutes({
     store,
     runner,
+    digestStore = null,
     now = () => new Date(),
     openCodeModels = () => [],
     maxJsonBytes = DEFAULT_MAX_JSON_BYTES,
@@ -139,6 +191,9 @@ export function createInboxRoutes({
     // failures and stores them on the item, and a persistence failure must not
     // become an unhandled rejection (Node exits on those by default).
     let queueTail = Promise.resolve();
+
+    /** Conversation keys with a digest queued or running; avoids a second run. */
+    const digestJobs = new Set();
 
     function enqueueAnalysis(id) {
         queueTail = queueTail
@@ -233,6 +288,12 @@ export function createInboxRoutes({
                 return;
             }
         }
+        // inbox-management T4: a silenced conversation uploads with
+        // digestOnly so the per-message agent never runs for it.
+        if (body.digestOnly !== undefined && typeof body.digestOnly !== "boolean") {
+            sendError(res, 400, "digestOnly must be a boolean", "INVALID_MESSAGE");
+            return;
+        }
 
         let input;
         try {
@@ -247,6 +308,7 @@ export function createInboxRoutes({
                 text,
                 postedAt: body.postedAt ?? null,
                 notificationKey,
+                digestOnly: body.digestOnly === true,
             };
         } catch (err) {
             sendError(res, 400, (err && err.message) || "invalid message", "INVALID_MESSAGE");
@@ -262,12 +324,232 @@ export function createInboxRoutes({
         }
 
         if (stored.created) {
-            enqueueAnalysis(stored.item.id);
+            // A digest-only item is already "ready"; the per-message agent is
+            // skipped on purpose (conversation digest runs only when asked).
+            if (input.digestOnly !== true) enqueueAnalysis(stored.item.id);
             sendJson(res, 202, { item: stored.item });
             return;
         }
         // Dedup: same notificationKey and same text already exists.
         sendJson(res, 200, { item: stored.item });
+    }
+
+    // --- Conversation digest (inbox-management T4) ---
+
+    /** Sends one JSON body back, mapping transport/shape errors to 4xx. */
+    async function readDigestBody(req, res) {
+        try {
+            const body = await readJsonBody(req, maxJsonBytes);
+            if (!body || typeof body !== "object" || Array.isArray(body)) {
+                sendError(res, 400, "body must be a JSON object", "INVALID_MESSAGE");
+                return null;
+            }
+            return body;
+        } catch (err) {
+            if (err && err.code === "TOO_LARGE") {
+                sendError(res, 413, err.message, "TOO_LARGE");
+            } else {
+                sendError(res, 400, (err && err.message) || "invalid body", "BAD_REQUEST");
+            }
+            return null;
+        }
+    }
+
+    async function runDigest(app, conversation, inputHash, items) {
+        const key = digestKey(app, conversation);
+        try {
+            const config = store.getConfig();
+            const prompt = buildDigestPrompt({ app, conversation, items });
+            try {
+                if (typeof runner?.runPrompt !== "function") {
+                    throw new Error("agent runner cannot run digests");
+                }
+                const stdout = await runner.runPrompt(config, prompt);
+                const parsed = parseDigestResult(config.agent, stdout);
+                digestStore.set(app, conversation, {
+                    itemCount: items.length,
+                    summary: parsed.summary,
+                    pendingForOwner: parsed.pendingForOwner,
+                    suggestedReply: parsed.suggestedReply,
+                    status: "ready",
+                    error: null,
+                    updatedAt: stamp(),
+                    inputHash,
+                });
+            } catch (err) {
+                digestStore.set(app, conversation, {
+                    itemCount: items.length,
+                    summary: "",
+                    pendingForOwner: [],
+                    suggestedReply: "",
+                    status: "failed",
+                    error: shortError(err),
+                    updatedAt: stamp(),
+                    inputHash,
+                });
+            }
+        } catch {
+            // A persistence failure must not stall the serial queue.
+        } finally {
+            digestJobs.delete(key);
+        }
+    }
+
+    function enqueueDigest(app, conversation, inputHash, items) {
+        queueTail = queueTail
+            .then(
+                () => runDigest(app, conversation, inputHash, items),
+                () => runDigest(app, conversation, inputHash, items),
+            )
+            .catch(() => {});
+    }
+
+    async function postDigest(req, res) {
+        if (!digestStore) {
+            sendError(res, 503, "digest is not configured", "DIGEST_UNAVAILABLE");
+            return;
+        }
+        const body = await readDigestBody(req, res);
+        if (!body) return;
+
+        let app;
+        let conversation;
+        try {
+            app = requiredApp(body);
+            conversation = requiredConversation(body);
+        } catch (err) {
+            sendError(res, 400, err.message, err.code || "INVALID_MESSAGE");
+            return;
+        }
+
+        const items = store.openByConversation(app, conversation);
+        if (items.length === 0) {
+            try {
+                digestStore.remove(app, conversation);
+            } catch (err) {
+                sendError(res, 500, shortError(err), "INTERNAL");
+                return;
+            }
+            sendJson(res, 200, { digest: emptyDigest(app, conversation) });
+            return;
+        }
+
+        const selected = selectDigestItems(items);
+        const inputHash = digestInputHash(selected);
+        const key = digestKey(app, conversation);
+
+        let cached = null;
+        try {
+            cached = digestStore.get(app, conversation);
+        } catch {
+            cached = null;
+        }
+        if (cached && cached.inputHash === inputHash && cached.status === "ready") {
+            sendJson(res, 200, { digest: publicDigest(cached) });
+            return;
+        }
+        if (cached && cached.inputHash === inputHash && cached.status === "analyzing") {
+            sendJson(res, 202, { digest: publicDigest(cached) });
+            return;
+        }
+        // A job for this exact snapshot is already queued behind the analysis
+        // queue: report analyzing instead of stacking a second run.
+        if (cached && cached.inputHash === inputHash && digestJobs.has(key)) {
+            sendJson(res, 202, { digest: publicDigest(cached) });
+            return;
+        }
+
+        const analyzing = {
+            app,
+            conversation,
+            itemCount: selected.length,
+            summary: "",
+            pendingForOwner: [],
+            suggestedReply: "",
+            status: "analyzing",
+            error: null,
+            updatedAt: stamp(),
+            inputHash,
+        };
+        try {
+            digestStore.set(app, conversation, analyzing);
+        } catch (err) {
+            sendError(res, 500, shortError(err), "INTERNAL");
+            return;
+        }
+        digestJobs.add(key);
+        enqueueDigest(app, conversation, inputHash, selected);
+        sendJson(res, 202, { digest: publicDigest(analyzing) });
+    }
+
+    function getDigest(req, res) {
+        if (!digestStore) {
+            sendError(res, 503, "digest is not configured", "DIGEST_UNAVAILABLE");
+            return;
+        }
+        const rawApp = queryValue(req, "app") ?? "";
+        if (!isValidAppId(rawApp)) {
+            sendError(res, 400, "app must be an id or package name", "INVALID_APP");
+            return;
+        }
+        const conversation = (queryValue(req, "conversation") ?? "").trim()
+            .slice(0, MAX_CONVERSATION_CHARS);
+        if (conversation.length === 0) {
+            sendError(res, 400, "conversation is required", "INVALID_CONVERSATION");
+            return;
+        }
+
+        let stored = null;
+        try {
+            stored = digestStore.get(rawApp, conversation);
+        } catch {
+            stored = null;
+        }
+        if (stored) {
+            sendJson(res, 200, { digest: publicDigest(stored) });
+            return;
+        }
+        const openCount = store.openByConversation(rawApp, conversation).length;
+        sendJson(res, 200, { digest: emptyDigest(rawApp, conversation, openCount) });
+    }
+
+    async function postConversationState(req, res) {
+        const body = await readDigestBody(req, res);
+        if (!body) return;
+
+        let app;
+        let conversation;
+        try {
+            app = requiredApp(body);
+            conversation = requiredConversation(body);
+        } catch (err) {
+            sendError(res, 400, err.message, err.code || "INVALID_MESSAGE");
+            return;
+        }
+        const state = body.state;
+        if (state !== "handled" && state !== "dismissed") {
+            sendError(res, 400, "state must be handled or dismissed", "INVALID_STATE");
+            return;
+        }
+
+        let closed;
+        try {
+            closed = store.closeConversation(app, conversation, state, stamp());
+        } catch (err) {
+            sendError(res, 400, (err && err.message) || "invalid state", "INVALID_STATE");
+            return;
+        }
+        // Closing every open item leaves nothing to summarize: the cached
+        // digest (and any prompt text it may hold) is dropped.
+        if (digestStore) {
+            try {
+                digestStore.remove(app, conversation);
+            } catch {
+                // The state change already happened; a stale digest is pruned
+                // on the next request or restart.
+            }
+        }
+        sendJson(res, 200, { closed: closed.length, items: closed });
     }
 
     function listMessages(req, res) {
@@ -406,6 +688,17 @@ export function createInboxRoutes({
         sendJson(res, 200, { models });
     }
 
+    // A restart keeps the digest file but the inbox may have changed while the
+    // server was off (closed items, pruned items). Drop records that no longer
+    // have an open conversation.
+    if (digestStore) {
+        try {
+            digestStore.pruneExcept(store.openConversationKeys());
+        } catch {
+            // A corrupt digest file is already ignored by the store.
+        }
+    }
+
     return async function handleInboxRoute(req, res, pathname) {
         if (pathname !== PREFIX && !pathname.startsWith(PREFIX + "/")) return false;
         const parts = pathname.slice(PREFIX.length).split("/").filter(Boolean);
@@ -452,6 +745,30 @@ export function createInboxRoutes({
                 return true;
             }
             await listModels(req, res);
+            return true;
+        }
+
+        // GET/POST /inbox/digest (inbox-management T4)
+        if (parts.length === 1 && parts[0] === "digest") {
+            if (req.method === "POST") {
+                await postDigest(req, res);
+                return true;
+            }
+            if (req.method === "GET" || req.method === "HEAD") {
+                getDigest(req, res);
+                return true;
+            }
+            methodNotAllowed(res, "GET, HEAD, POST");
+            return true;
+        }
+
+        // POST /inbox/conversation/state: close every open item of one chat.
+        if (parts.length === 2 && parts[0] === "conversation" && parts[1] === "state") {
+            if (req.method !== "POST") {
+                methodNotAllowed(res, "POST");
+                return true;
+            }
+            await postConversationState(req, res);
             return true;
         }
 

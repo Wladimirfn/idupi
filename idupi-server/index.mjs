@@ -71,6 +71,7 @@ import { createOsProcessesRoutes } from "./lib/os-processes-routes.mjs";
 // analysis and the phone-facing routes. The agent runs with tools denied and a
 // throwaway cwd; see lib/inbox-agent.mjs for the per-CLI argv contract.
 import { createInboxAgentRunner } from "./lib/inbox-agent.mjs";
+import { createInboxDigestStore } from "./lib/inbox-digest.mjs";
 import { createInboxStore } from "./lib/inbox-store.mjs";
 import { createInboxRoutes } from "./lib/inbox-routes.mjs";
 // Phone agent (phone-agent, T1): status ingest plus the PC-to-phone command
@@ -1306,11 +1307,15 @@ const handleOsProcessesRoute = createOsProcessesRoutes(osProcesses);
 const inboxStore = createInboxStore({
     dataDir: fileURLToPath(new URL("./data", import.meta.url)),
 });
+const inboxDigestStore = createInboxDigestStore({
+    dataDir: fileURLToPath(new URL("./data", import.meta.url)),
+});
 const inboxRunner = createInboxAgentRunner({
     resolveCommand: resolveInboxAgentCommand,
 });
 const handleInboxRoute = createInboxRoutes({
     store: inboxStore,
+    digestStore: inboxDigestStore,
     runner: inboxRunner,
     openCodeModels: () => openCodeCli.listAllModels(),
 });

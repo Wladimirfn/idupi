@@ -260,20 +260,26 @@ Source: [`lib/inbox-routes.mjs`](../lib/inbox-routes.mjs), store in
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| POST | `/api/v1/inbox/messages` | Bearer | Accept a captured notification (`app`, `appLabel`, `packageName`, `sender`, `conversation`, `text`, `postedAt`, `notificationKey`); `app` is any followed app: ; `appLabel` is the optional PackageManager display name (trimmed, clipped to 60 chars); `202` with the stored item, `200` when the same `notificationKey` + `text` already exists |
+| POST | `/api/v1/inbox/messages` | Bearer | Accept a captured notification (`app`, `appLabel`, `packageName`, `sender`, `conversation`, `text`, `postedAt`, `notificationKey`, optional `digestOnly`); `app` is any followed app (preset id or a package name matching `^[A-Za-z0-9_.]{1,120}$`); `appLabel` is the optional PackageManager display name (trimmed, clipped to 60 chars); `digestOnly: true` stores the item as `ready` / `low` / category `Silenciado` without running the per-message agent; `202` with the stored item, `200` when the same `notificationKey` + `text` already exists |
 | GET | `/api/v1/inbox?limit=50` | Bearer | Newest-first items; `limit` is 1..200 |
 | POST | `/api/v1/inbox/{id}/state` | Bearer | Set `state` to `open`, `handled`, `replied`, `auto_replied` or `dismissed` |
 | POST | `/api/v1/inbox/{id}/retry` | Bearer | Re-queue the analysis; `202` with the item as `analyzing` |
+| POST | `/api/v1/inbox/digest` | Bearer | Summarize a conversation's open items (newest 60, ~12k chars of text) through the configured agent; `202` while `analyzing`, `200` with the cached digest when the included ids + texts did not change |
+| GET | `/api/v1/inbox/digest?app=&conversation=` | Bearer | Current digest state `{app, conversation, itemCount, summary, pendingForOwner, suggestedReply, status, error, updatedAt}` |
+| POST | `/api/v1/inbox/conversation/state` | Bearer | Close every open item of one `{app, conversation}` as `handled` or `dismissed` in one call |
 | GET | `/api/v1/inbox/config` | Bearer | `{agent, model, effort, agents, efforts}` |
 | PUT | `/api/v1/inbox/config` | Bearer | Validate and persist `{agent, model, effort}` |
 | GET | `/api/v1/inbox/models?agent=opencode` | Bearer | Cached OpenCode `provider/model` list; other agents return `[]` |
 
 Items and the agent config are persisted in `idupi-server/data/` (gitignored):
 `inbox.json` keeps the newest 500 items, `inbox-config.json` keeps
-`{agent, model, effort}`. Analysis runs one agent process at a time, with the
-message treated as untrusted data and every agent invoked without a shell from
-an empty temp directory. Auto-reply is a phone-side policy; this server only
-stores state.
+`{agent, model, effort}` and `inbox-digests.json` keeps one digest per
+conversation (pruned when the conversation has no open items). Analysis runs one
+agent process at a time, with the message treated as untrusted data and every
+agent invoked without a shell from an empty temp directory; the digest reuses
+the same runner, queue, no-tools hardening and per-message delimited blocks, and
+is keyed by a hash of the included item ids + texts. Auto-reply is a phone-side
+policy; this server only stores state.
 
 ### Phone agent
 
@@ -383,7 +389,7 @@ is unreachable.
 | `.idupi-token` | Access token (repo root) |
 | `idupi-server/projects.json` | Registered projects and active project |
 | `idupi-server/deliveries/` | Delivery index and APK snapshots (newest 10) |
-| `idupi-server/data/` | Phone inbox items/config and `phone-status.json` (gitignored) |
+| `idupi-server/data/` | Phone inbox items/config, conversation digests and `phone-status.json` (gitignored) |
 | `idupi-server/logs/` | Server stdout/stderr from `start-server.ps1` |
 | `%ProgramData%\IDUPI\` | Sensor helper, LibreHardwareMonitor DLLs and `sensors.json` |
 

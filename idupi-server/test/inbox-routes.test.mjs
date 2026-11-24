@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createInboxStore } from "../lib/inbox-store.mjs";
+import { createInboxDigestStore } from "../lib/inbox-digest.mjs";
 import { createInboxRoutes } from "../lib/inbox-routes.mjs";
 
 const silentLog = { log() {}, info() {}, warn() {}, error() {} };
@@ -24,6 +25,12 @@ const RESULT = {
     category: "Trabajo",
     summary: "Ana pregunta si llegaste.",
     suggestedReply: "Sí, ya estoy.",
+};
+
+const DIGEST_RESULT = {
+    summary: "Acordaron la reunión del martes; Ana lleva el informe.",
+    pendingForOwner: ["¿Puedes enviar el informe el lunes?"],
+    suggestedReply: "Sí, lo envío el lunes.",
 };
 
 function message(overrides = {}) {
@@ -54,9 +61,18 @@ async function startHarness(t, { runner = null, openCodeModels = () => [] } = {}
     const dir = await mkdtemp(join(tmpdir(), "idupi-inbox-routes-"));
     t.after(() => rm(dir, { recursive: true, force: true }));
     const store = createInboxStore({ dataDir: dir, log: silentLog });
-    const fakeRunner = runner || { run: async () => ({ ...RESULT }) };
+    const digestStore = createInboxDigestStore({
+        dataDir: dir,
+        log: silentLog,
+        now: () => new Date("2026-11-24T12:00:00.000Z"),
+    });
+    const fakeRunner = runner || {
+        run: async () => ({ ...RESULT }),
+        runPrompt: async () => JSON.stringify(DIGEST_RESULT),
+    };
     const handle = createInboxRoutes({
         store,
+        digestStore,
         runner: fakeRunner,
         now: () => new Date("2026-11-24T12:00:00.000Z"),
         openCodeModels,
@@ -79,7 +95,7 @@ async function startHarness(t, { runner = null, openCodeModels = () => [] } = {}
         server.closeAllConnections?.();
         await new Promise((resolve) => server.close(resolve));
     });
-    return { base, store, runner: fakeRunner };
+    return { base, store, digestStore, runner: fakeRunner };
 }
 
 function postJson(base, path, body) {

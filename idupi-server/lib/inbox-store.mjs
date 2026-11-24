@@ -43,6 +43,13 @@ export const CLOSED_STATES = ["handled", "replied", "auto_replied", "dismissed"]
 export const DEFAULT_MAX_ITEMS = 500;
 export const DEFAULT_MAX_TEXT_CHARS = 4000;
 
+/**
+ * Category stored on a digest-only item (inbox-management T4): the phone
+ * silenced the conversation, so the message is captured for the conversation
+ * digest instead of being classified on its own.
+ */
+export const DIGEST_ONLY_CATEGORY = "Silenciado";
+
 /** Closed items older than this are pruned; open items are never pruned. */
 export const DEFAULT_PRUNE_AFTER_MS = 24 * 60 * 60 * 1000;
 
@@ -315,6 +322,10 @@ export function createInboxStore({
         }
 
         const receivedAt = clock();
+        // A silenced conversation is summarized per conversation on demand, so
+        // its items skip the per-message agent entirely (inbox-management T4):
+        // they are stored already "ready" and the digest route does the work.
+        const digestOnly = input.digestOnly === true;
         const item = {
             id: `inb-${randomBytes(6).toString("hex")}`,
             app,
@@ -326,9 +337,9 @@ export function createInboxStore({
             postedAt: toIso(input.postedAt, receivedAt),
             receivedAt,
             notificationKey,
-            status: "analyzing",
-            importance: null,
-            category: "",
+            status: digestOnly ? "ready" : "analyzing",
+            importance: digestOnly ? "low" : null,
+            category: digestOnly ? DIGEST_ONLY_CATEGORY : "",
             summary: "",
             suggestedReply: "",
             error: null,
@@ -389,6 +400,54 @@ export function createInboxStore({
             .sort((a, b) => Date.parse(b.receivedAt) - Date.parse(a.receivedAt))
             .slice(0, safeLimit)
             .map((candidate) => clone(candidate));
+    }
+
+    /**
+     * Open items of one app + conversation, oldest first. `limit` keeps the
+     * NEWEST ones (the tail), which is what a conversation digest summarizes.
+     */
+    function openByConversation(app, conversation, limit = 200) {
+        const safeLimit = Number.isInteger(limit) && limit > 0 ? limit : 200;
+        return items
+            .filter((item) => (
+                item.state === "open" &&
+                item.app === app &&
+                item.conversation === conversation
+            ))
+            .sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt))
+            .slice(-safeLimit)
+            .map((item) => clone(item));
+    }
+
+    /**
+     * Closes every open item of one conversation in a single write
+     * (inbox-management T4). Returns the updated items so the phone can count
+     * what left the list.
+     */
+    function closeConversation(app, conversation, state, updatedAt) {
+        if (!CLOSED_STATES.includes(state)) throw new Error("invalid state");
+        const stamp = toIso(updatedAt, clock());
+        const closed = [];
+        for (const item of items) {
+            if (item.state !== "open" || item.app !== app || item.conversation !== conversation) {
+                continue;
+            }
+            item.state = state;
+            item.updatedAt = stamp;
+            closed.push(clone(item));
+        }
+        if (closed.length > 0) persistItems();
+        return closed;
+    }
+
+    /** Digest keys (`app\u0000conversation`) that still have an open item. */
+    function openConversationKeys() {
+        const keys = new Set();
+        for (const item of items) {
+            if (item.state !== "open") continue;
+            keys.add(`${item.app}\u0000${item.conversation}`);
+        }
+        return keys;
     }
 
     /**
@@ -453,6 +512,9 @@ export function createInboxStore({
         get,
         list,
         related,
+        openByConversation,
+        closeConversation,
+        openConversationKeys,
         update,
         getConfig,
         setConfig,
