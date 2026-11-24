@@ -50,6 +50,10 @@ import { handleScreenRoute, shutdownScreen } from "./lib/screen-routes.mjs";
 // authenticated choke point as every other route.
 import { PtyManager } from "./lib/pty-manager.mjs";
 import { createPtyRoutes } from "./lib/pty-routes.mjs";
+// Live PTY context (cwd, project, branch, running agent) for the terminal
+// list: process tree + PEB cwd through the helper + git, sampled lazily and
+// never fatal to the route.
+import { createPtyContext } from "./lib/pty-context.mjs";
 // PC -> phone APK deliveries (T1): register() snapshots each APK into
 // idupi-server/deliveries/, so a rebuild cannot change bytes mid-download.
 import { createDeliveryRegistry } from "./lib/delivery-registry.mjs";
@@ -1255,7 +1259,13 @@ const terminalMgr = new TerminalManager();
 // Interactive PTY terminals: the manager owns every ConPTY host; the route
 // handler is created once so each request does not rebuild the closure.
 const ptyManager = new PtyManager();
-const handlePtyRoute = createPtyRoutes(ptyManager);
+// Context sampling is lazy (nothing runs until a terminal exists) and cached
+// for a few seconds; see lib/pty-context.mjs. The log surfaces degraded
+// samples without failing the terminal list.
+const ptyContext = createPtyContext({
+    log: (...args) => console.log(...args),
+});
+const handlePtyRoute = createPtyRoutes(ptyManager, { context: ptyContext });
 
 // PC -> phone APK deliveries: the snapshot store lives next to this file and
 // travels with the server checkout. The registry loads its index synchronously

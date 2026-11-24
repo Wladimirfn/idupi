@@ -76,13 +76,39 @@ function readJsonBody(req, maxBytes = MAX_BODY_BYTES) {
 }
 
 /**
+ * Resolves the live context (cwd, project, branch, running agent) of every
+ * listed terminal. It is informational: a sampler failure must never turn a
+ * working terminal list into an error, so every item keeps the field and it
+ * stays null when unknown. Existing item fields are untouched.
+ */
+async function attachContext(terminals, context) {
+    let contexts = null;
+    if (context && typeof context.get === "function") {
+        try {
+            contexts = await context.get(terminals);
+        } catch {
+            contexts = null;
+        }
+    }
+    for (const item of terminals) {
+        const value = contexts && typeof contexts.get === "function"
+            ? contexts.get(item.id)
+            : null;
+        item.context = value ?? null;
+    }
+}
+
+/**
  * @param {import("./pty-manager.mjs").PtyManager} manager
- * @param {{ maxBufferedBytes?: number }} [options]
+ * @param {{
+ *   maxBufferedBytes?: number,
+ *   context?: { get: (terminals: Array<object>) => Promise<Map<string, object>> } | null,
+ * }} [options]
  * @returns {(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse, pathname: string) => Promise<boolean>}
  */
 export function createPtyRoutes(
     manager,
-    { maxBufferedBytes = DEFAULT_MAX_BUFFERED_BYTES } = {},
+    { maxBufferedBytes = DEFAULT_MAX_BUFFERED_BYTES, context = null } = {},
 ) {
     return async function handlePtyRoute(req, res, pathname) {
         if (pathname !== PREFIX && !pathname.startsWith(PREFIX + "/")) {
@@ -96,7 +122,9 @@ export function createPtyRoutes(
         // Collection: create and list.
         if (!id) {
             if (req.method === "GET") {
-                sendJson(res, 200, { terminals: manager.list() });
+                const terminals = manager.list();
+                await attachContext(terminals, context);
+                sendJson(res, 200, { terminals });
                 return true;
             }
             if (req.method === "POST") {
