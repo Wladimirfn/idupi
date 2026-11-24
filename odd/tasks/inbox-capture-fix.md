@@ -51,7 +51,7 @@ Out: server changes, mail API search.
 
 ## Tasks
 
-- [ ] T1 App capture reliability: active-notification scan on connect and on
+- [x] T1 App capture reliability: active-notification scan on connect and on
   demand; persistent retry queue (bounded, 24 h TTL) drained on connect, on
   every 60 s tick and after a successful upload; `requestRebind` from the app
   when access is granted but the listener has not connected recently;
@@ -81,3 +81,26 @@ Forecast ~400-600 authored lines; one PR stacked on #21.
 ## Progress
 
 - Branch created from feat/phone-agent 076136a.
+- T1 done in two app work units on `fix/inbox-capture`:
+  - `4c884f9` `fix(app): capture active notifications and retry failed inbox
+    uploads`: activeNotifications scan on connect and on demand (same parser +
+    reply action + InboxSession path as live posts), persistent bounded retry
+    queue (200 entries, 24 h TTL, dedupe on notificationKey+text, app-private
+    JSON under filesDir), drain on connect/tick/after a successful upload,
+    `requestInboxListenerRebind` + MainActivity resume hook, process-wide
+    `InboxCaptureDiagnostics`, and pure tests for queue, scan selection and
+    diagnostics.
+  - `bba54bf` `feat(app): show inbox capture status in Ajustes`: "Estado de
+    captura" card (Escuchando, última notificación leída, último envío,
+    pendientes), "Reconectar" and "Leer notificaciones ahora" actions,
+    ViewModel actions plus fake-gateway tests.
+- Checks: `./gradlew.bat :app:testDebugUnitTest :app:assembleRelease -q`
+  passed. 594 unit tests in 69 suites, 0 failures / 0 errors / 0 skipped;
+  release APK assembled (signed, version 42 unchanged). New tests: 13 queue,
+  4 active scan, 6 diagnostics, 7 ViewModel capture actions/states, 1 relative
+  time.
+- Not verified on a device: real `activeNotifications` content after connect and
+  reply-action registration from a scan; the system actually honouring
+  `requestRebind` after an APK update; OEM battery-kill recovery while the
+  permission still reads granted; queue drain across a real PC outage and a
+  process restart. T2's phone install and owner confirmation cover these.
