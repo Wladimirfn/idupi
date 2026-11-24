@@ -62,7 +62,7 @@ attendees, Outlook/Google cloud APIs.
 - [x] T3 App write + approve: alert card event chip + "Agregar al calendario"
   confirm sheet (editable fields, calendar picker, conflict warning) writing
   via CalendarContract with WRITE_CALENDAR; PC proposals approval list; tests.
-- [ ] T5 UI polish (owner feedback 2026-11-24): Ajustes > ALERTAS "Apps a
+- [x] T5 UI polish (owner feedback 2026-11-24): Ajustes > ALERTAS "Apps a
   seguir" collapsed by default (followed apps + "Ver todas las apps (N)"
   expander with search), and Agenda view modes Lista / Semana / Mes like a
   calendar (day selection, conflict marks, proposals kept on top).
@@ -154,3 +154,35 @@ commits by task.
   server (tests added). Delivered 47 / 1.46-calendar (dlv-f10ed1372cb3), app
   726 tests / 0 failures; server restarted. T4 done pending the owner trying
   an event from an alert.
+- T5 done (2026-11-24): Ajustes > ALERTAS "Apps a seguir" is collapsed by
+  default: "Siguiendo N apps", only the followed apps with their switches, and
+  "Ver todas las apps (N)" opens an AnimatedVisibility panel with the search
+  field and the full installed list (presets first) in a bounded LazyColumn
+  (420 dp), turning into "Ocultar lista". The collapsed subset is a pure
+  `InstalledApps` rule (preset-first order, unknown ids dropped) and the
+  expanded state lives in `InboxSettingsViewModel`; both are unit-tested.
+  Agenda gained Lista | Semana | Mes (default Mes, last choice persisted in
+  the settings DataStore): Mes is a Monday-first month grid with
+  previous/next/"Hoy", Spanish month and weekday labels, up to three
+  calendar-color dots plus "+N", today and conflict marks, and the selected
+  day's events below; Semana is a Monday-first 07:00–22:00 time grid with an
+  all-day strip, overlap columns, conflict borders and an event detail dialog
+  (title, date, time, calendar, location); Lista keeps the grouped list.
+  Pending PC proposals stay on top in every mode. Local reads now query the
+  visible week/month on demand through `CalendarStore.eventsBetween`; the
+  14-day PC report path is unchanged. Pure helpers with tests: `CalendarRange`
+  (week/month grid, padded to 5–6 rows, provider query window),
+  `CalendarBucketing` (multi-day, all-day UTC boundaries, conflict days),
+  `CalendarWeekLayout` (minutes, clipping, overlap columns),
+  `CalendarPalette`, Spanish formatting and `CalendarViewMode`; ViewModel
+  tests cover mode switching, restore, navigation and go-today.
+  Commits: `ae38efb` (6 files, +154/-30) and `78bbdf5` (20 files,
+  +1,917/-93 incl. tests). Verification:
+  `./gradlew.bat :app:testDebugUnitTest :app:assembleRelease -q` exits 0;
+  767 tests in 84 files, 0 failures, release APK built.
+  Not verified on a device: real provider calendar colors and names, the
+  month/week rendering on a 412 dp phone (narrow week columns), the inline
+  LazyColumn inside the Ajustes scroll, tap/selection behaviour, dark/light
+  themes, and provider Instances across month navigation (JVM tests use a
+  fake store). No `idupi-server/` changes, no push, no version bump, no
+  install.
