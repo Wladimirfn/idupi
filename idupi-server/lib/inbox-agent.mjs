@@ -164,9 +164,11 @@ export function buildAgentArgv({ agent, model, effort, prompt } = {}) {
 /**
  * Removes delimiter-shaped text from untrusted content so a message cannot
  * close the untrusted block early and promote its own text to instructions.
+ * Covers spacing and attribute variants (`</untrusted_message >`,
+ * `<untrusted_message index="2">`) because the digest uses attributed tags.
  */
 export function sanitizeUntrusted(value) {
-    return String(value ?? "").replace(/<\/?untrusted_(?:message|context)>/gi, "[tag removed]");
+    return String(value ?? "").replace(/<\s*\/?\s*untrusted_[a-z_]*\b[^>]*>/gi, "[tag removed]");
 }
 
 function formatUntrustedItem(item) {
