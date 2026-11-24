@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">IDUPI</string>
+    <string name="accessibility_service_label">IDUPI — Control desde la PC</string>
+    <string name="accessibility_service_description">Permite que el asistente de la PC lea la pantalla y la controle (tocar, escribir, desplazar y abrir apps) solo mientras «Control desde la PC» está activado en IDUPI.</string>
 </resources>

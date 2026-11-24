@@ -96,4 +96,16 @@ class InMemorySettingsRepositoryTest {
 
         assertEquals("high", repo.inboxSettings.first().remindMinImportance)
     }
+
+    @Test
+    fun `phone control is off by default and toggles independently`() = runTest {
+        val repo = InMemorySettingsRepository()
+
+        assertEquals(false, repo.phoneControlEnabled.first())
+
+        repo.setPhoneControlEnabled(true)
+
+        assertEquals(true, repo.phoneControlEnabled.first())
+        assertEquals(true, repo.phoneStatusEnabled.first())
+    }
 }

@@ -4,6 +4,7 @@ import com.idupi.app.data.phone.PhoneStatus
 import com.idupi.app.domain.model.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 
 @Serializable
 data class SessionHistoryItem(
@@ -140,6 +141,23 @@ interface IduPiClient {
     // as the phone's latest state and its history; the body field names are the
     // contract in idupi-server/docs/phone.md ("Status snapshot contract").
     suspend fun postPhoneStatus(status: PhoneStatus)
+
+    /**
+     * Phone long-poll for the next PC command (phone-agent T3).
+     *
+     * @return the raw JSON of the `command` object, or null when the server
+     *   answers 204. Parsing/validation belongs to `CommandParser`, and the raw
+     *   form keeps a rejected command's id available for the failure result.
+     */
+    suspend fun getNextPhoneCommand(waitSeconds: Int): String?
+
+    /** Posts the execution result for one command; the server marks it done/failed. */
+    suspend fun postPhoneCommandResult(
+        commandId: String,
+        ok: Boolean,
+        result: JsonElement? = null,
+        error: String? = null
+    )
 
     // Remote screen module (docs/remote-screen-module.md)
     suspend fun getScreenMonitors(): List<ScreenMonitor>

@@ -121,6 +121,15 @@ class DataStoreSettingsRepository(
         dataStore.edit { prefs -> prefs[PHONE_STATUS_ENABLED_KEY] = enabled }
     }
 
+    // Missing key means OFF: command execution is opt-in twice (system grant
+    // plus this switch), so a fresh or upgraded install never executes a tap.
+    override val phoneControlEnabled: Flow<Boolean> =
+        dataStore.data.map { prefs -> prefs[PHONE_CONTROL_ENABLED_KEY] ?: false }
+
+    override suspend fun setPhoneControlEnabled(enabled: Boolean) {
+        dataStore.edit { prefs -> prefs[PHONE_CONTROL_ENABLED_KEY] = enabled }
+    }
+
     private inline fun <reified T : Enum<T>> enumValue(raw: String?, fallback: T): T =
         raw?.let { stored -> enumValues<T>().firstOrNull { it.name == stored } } ?: fallback
 
@@ -149,5 +158,9 @@ class DataStoreSettingsRepository(
         /** phone-agent T2: periodic status reporting to the PC; default ON. */
         val PHONE_STATUS_ENABLED_KEY: Preferences.Key<Boolean> =
             booleanPreferencesKey("phone_status_enabled")
+
+        /** phone-agent T3: execute PC commands through accessibility; default OFF. */
+        val PHONE_CONTROL_ENABLED_KEY: Preferences.Key<Boolean> =
+            booleanPreferencesKey("phone_control_enabled")
     }
 }

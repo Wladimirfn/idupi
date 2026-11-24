@@ -4,6 +4,8 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.idupi.app.data.phone.PhoneStatusReporting
+import com.idupi.app.data.phone.control.PhoneCommandLog
+import com.idupi.app.data.phone.control.PhoneCommandLogEntry
 import com.idupi.app.data.settings.SettingsProvider
 import com.idupi.app.data.settings.SettingsRepository
 import kotlinx.coroutines.CancellationException
@@ -22,23 +24,31 @@ data class PhoneAgentReportState(
 )
 
 /**
- * Ajustes > Asistente del teléfono (phone-agent T2): the persisted
- * "send status to the PC" switch and the manual report feedback.
+ * Ajustes > Asistente del teléfono (phone-agent T2/T3): the persisted
+ * "send status to the PC" switch, the "control from the PC" master switch, the
+ * manual report feedback and the recent command log.
  *
- * T3 extends this same section with the control settings; the usage-access
- * check stays in the screen because it is a platform permission that must be
- * re-read on resume, not durable state.
+ * The accessibility and READ_PHONE_STATE grants are platform state, not durable
+ * settings, so the screen re-reads them on resume instead of this ViewModel.
  *
  * [reportNow] is injectable so JVM tests drive a real [com.idupi.app.data.phone.PhoneStatusReporter]
- * over [com.idupi.app.FakeIduPiClient] instead of the Android collectors.
+ * over [com.idupi.app.FakeIduPiClient] instead of the Android collectors;
+ * [commandLog] is injectable for the same reason.
  */
 class PhoneAgentSettingsViewModel(
     private val settingsRepository: SettingsRepository = SettingsProvider.repository,
+    commandLog: StateFlow<List<PhoneCommandLogEntry>> = PhoneCommandLog.entries,
     private val reportNow: suspend () -> Boolean = { PhoneStatusReporting.reportNow() },
 ) : ViewModel() {
 
     val phoneStatusEnabled: StateFlow<Boolean> = settingsRepository.phoneStatusEnabled
         .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    val phoneControlEnabled: StateFlow<Boolean> = settingsRepository.phoneControlEnabled
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /** Newest first, capped by [PhoneCommandLog]. Payload-free by construction. */
+    val recentCommands: StateFlow<List<PhoneCommandLogEntry>> = commandLog
 
     private val _reportState = MutableStateFlow(PhoneAgentReportState())
     val reportState: StateFlow<PhoneAgentReportState> = _reportState.asStateFlow()
@@ -46,6 +56,12 @@ class PhoneAgentSettingsViewModel(
     fun setPhoneStatusEnabled(enabled: Boolean) {
         viewModelScope.launch {
             settingsRepository.setPhoneStatusEnabled(enabled)
+        }
+    }
+
+    fun setPhoneControlEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.setPhoneControlEnabled(enabled)
         }
     }
 

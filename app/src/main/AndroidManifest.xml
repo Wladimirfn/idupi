@@ -10,6 +10,19 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Phone control (phone-agent T3): the signal collector fills
+         signal.networkType (4G/5G) only when this runtime permission is granted;
+         Ajustes requests it. -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+
+    <!-- Phone control enumerates launchable apps to resolve `open <label>`.
+         Without this package-visibility declaration Android 11+ hides them. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
 
     <!-- Phone status reporting (phone-agent T2): usage minutes per app and the
          foreground app come from UsageStatsManager. This is a special access
@@ -63,6 +76,24 @@
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
+        </service>
+
+        <!-- Phone command execution (phone-agent T3). The system binds this
+             service across UIDs after the owner grants accessibility, so it is
+             exported but protected by the platform's
+             BIND_ACCESSIBILITY_SERVICE permission. The meta-data points to the
+             capability/config XML. -->
+        <service
+            android:name="com.idupi.app.data.phone.control.IdupiAccessibilityService"
+            android:exported="true"
+            android:label="@string/accessibility_service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/idupi_accessibility_service" />
         </service>
 
         <!-- PackageInstaller session verdicts for PC-pushed APKs. The system

@@ -34,6 +34,7 @@ import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.serialization.json.JsonElement
 /**
  * In-memory [IduPiClient] test double. Every suspend method returns a sensible
  * empty/default value unless a `*ToReturn` field is set, and throws [failWith]
@@ -602,6 +603,43 @@ class FakeIduPiClient : IduPiClient {
         postedPhoneStatuses += status
     }
 
+    // --- Phone control (phone-agent T3) ---
+
+    /**
+     * Scripted long-poll answers, FIFO: each value is one raw `command` JSON,
+     * or null for a 204. When empty the fake answers null. Tests push an
+     * `IOException` through [failNextPhoneCommandWith] to drive backoff.
+     */
+    val nextPhoneCommands: ArrayDeque<String?> = ArrayDeque()
+
+    /** Every result post, in order. */
+    val postedPhoneCommandResults = mutableListOf<PostedPhoneCommandResult>()
+
+    var getNextPhoneCommandCalls: Int = 0
+    var lastNextPhoneCommandWait: Int? = null
+    var failNextPhoneCommandWith: Exception? = null
+
+    override suspend fun getNextPhoneCommand(waitSeconds: Int): String? {
+        maybeFail()
+        getNextPhoneCommandCalls++
+        lastNextPhoneCommandWait = waitSeconds
+        failNextPhoneCommandWith?.let { error ->
+            failNextPhoneCommandWith = null
+            throw error
+        }
+        return if (nextPhoneCommands.isNotEmpty()) nextPhoneCommands.removeFirst() else null
+    }
+
+    override suspend fun postPhoneCommandResult(
+        commandId: String,
+        ok: Boolean,
+        result: JsonElement?,
+        error: String?,
+    ) {
+        maybeFail()
+        postedPhoneCommandResults += PostedPhoneCommandResult(commandId, ok, result, error)
+    }
+
     // --- Remote screen module ---
 
     var screenMonitorsToReturn: List<ScreenMonitor> = listOf(
@@ -690,6 +728,14 @@ typealias SessionHandler = suspend (engine: String, cursor: String?, limit: Int)
 
 /** A queued [getSessionCounts] responder, for controlling counts timing deterministically. */
 typealias CountsHandler = suspend () -> SessionCountsResponse
+
+/** One recorded phone command result post (phone-agent T3). */
+data class PostedPhoneCommandResult(
+    val commandId: String,
+    val ok: Boolean,
+    val result: JsonElement?,
+    val error: String?,
+)
 
 /** Test-only [IduPiClientSource] that always exposes the given [fake]. */
 class FakeClientSource(val fake: FakeIduPiClient) : IduPiClientSource {

@@ -5,8 +5,10 @@ import com.idupi.app.FakeIduPiClient
 import com.idupi.app.MainDispatcherRule
 import com.idupi.app.data.phone.PhoneStatus
 import com.idupi.app.data.phone.PhoneStatusReporter
+import com.idupi.app.data.phone.control.PhoneCommandLogEntry
 import com.idupi.app.data.settings.InMemorySettingsRepository
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -156,5 +158,54 @@ class PhoneAgentSettingsViewModelTest {
         assertNull(viewModel.reportState.value.message)
         assertNull(viewModel.reportState.value.success)
         assertFalse(viewModel.reportState.value.isSending)
+    }
+
+    @Test
+    fun `control from the PC is off by default`() = runTest {
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        assertFalse(viewModel.phoneControlEnabled.value)
+        assertFalse(repository.phoneControlEnabled.first())
+    }
+
+    @Test
+    fun `turning control on persists without touching status reporting`() = runTest {
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        viewModel.setPhoneControlEnabled(true)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.phoneControlEnabled.value)
+        assertTrue(repository.phoneControlEnabled.first())
+        assertTrue(viewModel.phoneStatusEnabled.value)
+    }
+
+    @Test
+    fun `the view model follows an external control change`() = runTest {
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        repository.setPhoneControlEnabled(true)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.phoneControlEnabled.value)
+    }
+
+    @Test
+    fun `recent commands are exposed to the UI`() = runTest {
+        val log = MutableStateFlow<List<PhoneCommandLogEntry>>(emptyList())
+        val viewModel = PhoneAgentSettingsViewModel(repository, commandLog = log) { true }
+        val entry = PhoneCommandLogEntry(
+            atMillis = 1L,
+            type = "screen",
+            target = "pantalla",
+            ok = true,
+        )
+
+        log.value = listOf(entry)
+
+        assertEquals(listOf(entry), viewModel.recentCommands.value)
     }
 }
