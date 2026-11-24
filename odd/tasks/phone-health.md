@@ -132,3 +132,14 @@ then the owner wants the whole chain merged to main.
   - Still to verify live (T5/owner): real pair/connect through
     `idupi-phone health adb`, a hidden-display read with the phone locked, and
     a stored real "Hoy" sample; Honor prefix on a real Honor device.
+- Live (parent, phone locked, screen OFF): first server refresh failed
+  (app_not_visible: with the phone locked scrcpy --start-app leaves the
+  launcher on the sleeping display) and left a temp .mkv (Windows lock).
+  de353da relaunches the resolved launcher with `am start --display N` after
+  waking the display, retries the unlink, and keeps the collector reason in the
+  job. 0d8c77f pairs Huawei values by column (two-column cards leaked heart
+  rate into weight), reads off-screen cards ([0,0][0,0]) in document order,
+  uses a 1080x4200 display so Sleep/SpO2 are laid out, 3 attempts; realistic
+  synthetic fixture. Live refresh: 17 metrics (steps, sleep, HR, resting HR,
+  exercise, water, weight, SpO2, stress, wake/bed goals, workout), no temp
+  files left. Server suite green per file.
