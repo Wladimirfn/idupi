@@ -49,15 +49,6 @@ class InboxFormatTest {
     }
 
     @Test
-    fun `closed item labels`() {
-        assertEquals("Atendida", inboxItemStateLabel(InboxItemState.HANDLED))
-        assertEquals("Respondida", inboxItemStateLabel(InboxItemState.REPLIED))
-        assertEquals("Respondida automáticamente", inboxItemStateLabel(InboxItemState.AUTO_REPLIED))
-        assertEquals("Descartada", inboxItemStateLabel(InboxItemState.DISMISSED))
-        assertNull(inboxItemStateLabel(InboxItemState.OPEN))
-    }
-
-    @Test
     fun `relative time formats minutes hours and days`() {
         assertEquals("ahora", relativeTimeLabel(item(receivedAt = minutesAgo(0)), now))
         assertEquals("hace 5 min", relativeTimeLabel(item(receivedAt = minutesAgo(5)), now))

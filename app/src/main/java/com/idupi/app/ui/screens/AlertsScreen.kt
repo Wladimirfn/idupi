@@ -24,7 +24,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -121,13 +120,6 @@ fun AlertsScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { viewModel.triggerTestNotification(context) }) {
-                        Icon(
-                            Icons.Default.NotificationsActive,
-                            contentDescription = "Probar Notificación",
-                            tint = PrimaryIndigo
-                        )
-                    }
                     IconButton(onClick = { viewModel.refresh() }) {
                         Icon(Icons.Default.Refresh, contentDescription = "Actualizar", tint = TextPrimary)
                     }
@@ -355,9 +347,6 @@ private fun InboxItemCard(
                     overflow = TextOverflow.Ellipsis
                 )
                 ImportanceChip(item.importance)
-                inboxItemStateLabel(item.state)?.let { stateLabel ->
-                    Text(stateLabel, style = AppTypography.labelSmall, color = StatusConnected)
-                }
             }
 
             when {
@@ -524,7 +513,6 @@ private fun ImportanceChip(importance: String?) {
 
 private fun emptyMessage(filter: InboxFilter): String = when (filter) {
     InboxFilter.PENDING -> "No hay alertas pendientes"
-    InboxFilter.ALL -> "No hay alertas"
     InboxFilter.IMPORTANT -> "No hay alertas importantes"
 }
 

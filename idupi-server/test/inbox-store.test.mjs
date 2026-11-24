@@ -10,11 +10,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+    CLOSED_STATES,
     DEFAULT_AGENT,
     DEFAULT_EFFORT,
     DEFAULT_MAX_ITEMS,
     DEFAULT_MAX_TEXT_CHARS,
     DEFAULT_MODEL,
+    DEFAULT_PRUNE_AFTER_MS,
     ITEM_ID_PATTERN,
     createInboxStore,
 } from "../lib/inbox-store.mjs";
@@ -280,4 +282,114 @@ test("list is newest first and honours the limit", async (t) => {
 
     assert.deepEqual(store.list().map((item) => item.id), [second.id, first.id]);
     assert.deepEqual(store.list({ limit: 1 }).map((item) => item.id), [second.id]);
+});
+
+// --- pruning closed items --------------------------------------------------
+
+const HOUR_MS = 60 * 60 * 1000;
+const NOW_MS = Date.UTC(2026, 10, 24, 12, 0, 0);
+
+function storedItem(id, state, updatedAt, overrides = {}) {
+    return {
+        id,
+        app: "whatsapp",
+        packageName: "com.whatsapp",
+        sender: "Ana",
+        conversation: "Equipo",
+        text: `text-${id}`,
+        postedAt: updatedAt,
+        receivedAt: updatedAt,
+        notificationKey: `key-${id}`,
+        status: "ready",
+        importance: "medium",
+        category: "Trabajo",
+        summary: "resumen",
+        suggestedReply: "",
+        error: null,
+        state,
+        updatedAt,
+        ...overrides,
+    };
+}
+
+async function writeItemsFile(dir, items) {
+    await writeFile(join(dir, "inbox.json"), JSON.stringify({ version: 1, items }), "utf8");
+}
+
+test("closed items older than 24 h are pruned on load; open items are never pruned", async (t) => {
+    const dir = await makeDir(t);
+    const stamp = (offsetMs) => new Date(NOW_MS + offsetMs).toISOString();
+
+    await writeItemsFile(dir, [
+        storedItem("inb-000000000001", "handled", stamp(-25 * HOUR_MS)),
+        storedItem("inb-000000000002", "replied", stamp(-48 * HOUR_MS)),
+        storedItem("inb-000000000003", "auto_replied", stamp(-30 * HOUR_MS)),
+        storedItem("inb-000000000004", "dismissed", stamp(-23 * HOUR_MS)),
+        storedItem("inb-000000000005", "open", stamp(-100 * HOUR_MS)),
+    ]);
+
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: () => new Date(NOW_MS) });
+    const ids = store.list().map((item) => item.id).sort();
+
+    assert.deepEqual(ids, ["inb-000000000004", "inb-000000000005"]);
+    assert.deepEqual(DEFAULT_PRUNE_AFTER_MS, 24 * HOUR_MS);
+    assert.deepEqual(CLOSED_STATES, ["handled", "replied", "auto_replied", "dismissed"]);
+
+    const onDisk = JSON.parse(await readFile(join(dir, "inbox.json"), "utf8"));
+    assert.deepEqual(onDisk.items.map((item) => item.id).sort(), [
+        "inb-000000000004",
+        "inb-000000000005",
+    ]);
+});
+
+test("exactly 24 h old is kept; older than 24 h is pruned", async (t) => {
+    const dir = await makeDir(t);
+    const stamp = (offsetMs) => new Date(NOW_MS + offsetMs).toISOString();
+
+    await writeItemsFile(dir, [
+        storedItem("inb-000000000001", "handled", stamp(-24 * HOUR_MS)),
+        storedItem("inb-000000000002", "handled", stamp(-24 * HOUR_MS - 1)),
+    ]);
+
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: () => new Date(NOW_MS) });
+
+    assert.deepEqual(store.list().map((item) => item.id), ["inb-000000000001"]);
+});
+
+test("list prunes expired closed items and persists the smaller file", async (t) => {
+    const dir = await makeDir(t);
+    let nowMs = NOW_MS;
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: () => new Date(nowMs) });
+
+    const open = store.add(message({ notificationKey: "open", text: "open" })).item;
+    const handled = store.add(message({ notificationKey: "handled", text: "handled" })).item;
+    store.update(handled.id, { state: "handled" });
+
+    nowMs += 24 * HOUR_MS + 1;
+
+    assert.deepEqual(store.list().map((item) => item.id), [open.id]);
+    assert.equal(store.get(handled.id), null);
+
+    const reloaded = createInboxStore({
+        dataDir: dir,
+        log: silentLog,
+        now: () => new Date(nowMs),
+    });
+    assert.deepEqual(reloaded.list().map((item) => item.id), [open.id]);
+});
+
+test("writes prune expired closed items; open items survive any age", async (t) => {
+    const dir = await makeDir(t);
+    let nowMs = NOW_MS;
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: () => new Date(nowMs) });
+
+    const open = store.add(message({ notificationKey: "open", text: "open" })).item;
+    const dismissed = store.add(message({ notificationKey: "dismissed", text: "dismissed" })).item;
+    store.update(dismissed.id, { state: "dismissed" });
+
+    nowMs += 30 * HOUR_MS;
+    store.add(message({ notificationKey: "later", text: "later" }));
+
+    assert.equal(store.get(dismissed.id), null);
+    assert.notEqual(store.get(open.id), null);
 });

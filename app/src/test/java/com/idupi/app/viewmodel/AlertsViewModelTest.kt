@@ -113,13 +113,27 @@ class AlertsViewModelTest {
 
         assertEquals(InboxFilter.PENDING, viewModel.filter.value)
         assertEquals(listOf("open"), viewModel.visibleItems.map { it.id })
-
-        viewModel.setFilter(InboxFilter.ALL)
-        assertEquals(listOf("open", "handled"), viewModel.visibleItems.map { it.id })
     }
 
     @Test
-    fun `important filter shows high items in any state`() = runTest {
+    fun `closed items never reach the visible list`() = runTest {
+        fake.inboxItemsToReturn = listOf(
+            sampleItem(id = "open"),
+            sampleItem(id = "replied", state = InboxItemState.REPLIED),
+            sampleItem(id = "auto", state = InboxItemState.AUTO_REPLIED),
+            sampleItem(id = "handled", state = InboxItemState.HANDLED),
+            sampleItem(id = "dismissed", state = InboxItemState.DISMISSED)
+        )
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        assertEquals(listOf("open"), viewModel.items.value.map { it.id })
+        viewModel.setFilter(InboxFilter.IMPORTANT)
+        assertEquals(listOf("open"), viewModel.visibleItems.map { it.id })
+    }
+
+    @Test
+    fun `important filter shows open high items only`() = runTest {
         fake.inboxItemsToReturn = listOf(
             sampleItem(id = "high-open"),
             sampleItem(id = "high-handled", state = InboxItemState.HANDLED),
@@ -130,7 +144,7 @@ class AlertsViewModelTest {
 
         viewModel.setFilter(InboxFilter.IMPORTANT)
 
-        assertEquals(listOf("high-open", "high-handled"), viewModel.visibleItems.map { it.id })
+        assertEquals(listOf("high-open"), viewModel.visibleItems.map { it.id })
     }
 
     @Test
@@ -148,47 +162,54 @@ class AlertsViewModelTest {
     }
 
     @Test
-    fun `markHandled sends handled and updates the item locally`() = runTest {
+    fun `markHandled removes the card immediately and sends handled`() = runTest {
         fake.inboxItemsToReturn = listOf(sampleItem())
         val viewModel = viewModel()
         advanceUntilIdle()
 
         viewModel.markHandled(viewModel.items.value.single())
+
+        // Optimistic removal happens before the request leaves the dispatcher.
+        assertTrue(viewModel.items.value.isEmpty())
         advanceUntilIdle()
 
         assertEquals(listOf("i1" to InboxItemState.HANDLED), fake.inboxStateChanges)
-        assertEquals(InboxItemState.HANDLED, viewModel.items.value.single().state)
+        assertTrue(viewModel.items.value.isEmpty())
     }
 
     @Test
-    fun `dismiss sends dismissed`() = runTest {
+    fun `dismiss removes the card immediately and sends dismissed`() = runTest {
         fake.inboxItemsToReturn = listOf(sampleItem())
         val viewModel = viewModel()
         advanceUntilIdle()
 
         viewModel.dismiss(viewModel.items.value.single())
+        assertTrue(viewModel.items.value.isEmpty())
         advanceUntilIdle()
 
         assertEquals(listOf("i1" to InboxItemState.DISMISSED), fake.inboxStateChanges)
-        assertEquals(InboxItemState.DISMISSED, viewModel.items.value.single().state)
+        assertTrue(viewModel.items.value.isEmpty())
     }
 
     @Test
-    fun `a failed state change reports an error`() = runTest {
+    fun `a failed state change restores the card and reports an error`() = runTest {
         fake.inboxItemsToReturn = listOf(sampleItem())
         val viewModel = viewModel()
         advanceUntilIdle()
 
         fake.failWith = RuntimeException("state rejected")
         viewModel.markHandled(viewModel.items.value.single())
+        assertTrue(viewModel.items.value.isEmpty())
         advanceUntilIdle()
 
+        assertEquals(listOf("i1"), viewModel.items.value.map { it.id })
+        assertEquals(InboxItemState.OPEN, viewModel.items.value.single().state)
         assertNotNull(viewModel.errorMessage.value)
         assertTrue(viewModel.errorMessage.value!!.contains("state rejected"))
     }
 
     @Test
-    fun `sendSuggestion uses the live action and marks the item replied`() = runTest {
+    fun `sendSuggestion uses the live action, removes the card and marks it replied`() = runTest {
         fake.inboxItemsToReturn = listOf(sampleItem())
         val sent = mutableListOf<Pair<String, String>>()
         val viewModel = viewModel(
@@ -198,11 +219,12 @@ class AlertsViewModelTest {
         advanceUntilIdle()
 
         viewModel.sendSuggestion(viewModel.items.value.single())
+        assertTrue(viewModel.items.value.isEmpty())
         advanceUntilIdle()
 
         assertEquals(listOf("whatsapp|Ana" to "Ahí lo veo"), sent)
         assertEquals(listOf("i1" to InboxItemState.REPLIED), fake.inboxStateChanges)
-        assertEquals(InboxItemState.REPLIED, viewModel.items.value.single().state)
+        assertTrue(viewModel.items.value.isEmpty())
     }
 
     @Test
@@ -253,7 +275,7 @@ class AlertsViewModelTest {
     }
 
     @Test
-    fun `a failed delivery reports an error and does not mark the item replied`() = runTest {
+    fun `a failed delivery restores the card and reports an error`() = runTest {
         fake.inboxItemsToReturn = listOf(sampleItem())
         val viewModel = viewModel(sendReply = { _, _ -> false })
         advanceUntilIdle()
@@ -264,6 +286,22 @@ class AlertsViewModelTest {
         assertNotNull(viewModel.errorMessage.value)
         assertTrue(fake.inboxStateChanges.isEmpty())
         assertEquals(InboxItemState.OPEN, viewModel.items.value.single().state)
+    }
+
+    @Test
+    fun `a sent reply whose state update fails restores the card and explains`() = runTest {
+        fake.inboxItemsToReturn = listOf(sampleItem())
+        val viewModel = viewModel(sendReply = { _, _ -> true })
+        advanceUntilIdle()
+
+        fake.failWith = RuntimeException("state rejected")
+        viewModel.sendSuggestion(viewModel.items.value.single())
+        assertTrue(viewModel.items.value.isEmpty())
+        advanceUntilIdle()
+
+        assertEquals(listOf("i1"), viewModel.items.value.map { it.id })
+        assertNotNull(viewModel.errorMessage.value)
+        assertTrue(viewModel.errorMessage.value!!.contains("no se pudo actualizar"))
     }
 
     @Test

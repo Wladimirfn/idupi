@@ -22,8 +22,14 @@ export const INBOX_STATUSES = ["analyzing", "ready", "failed"];
 export const INBOX_IMPORTANCES = ["high", "medium", "low"];
 export const INBOX_STATES = ["open", "handled", "replied", "auto_replied", "dismissed"];
 
+/** States that make an item closed for the owner's working list. */
+export const CLOSED_STATES = ["handled", "replied", "auto_replied", "dismissed"];
+
 export const DEFAULT_MAX_ITEMS = 500;
 export const DEFAULT_MAX_TEXT_CHARS = 4000;
+
+/** Closed items older than this are pruned; open items are never pruned. */
+export const DEFAULT_PRUNE_AFTER_MS = 24 * 60 * 60 * 1000;
 
 export const DEFAULT_AGENT = "opencode";
 export const DEFAULT_EFFORT = "max";
@@ -82,6 +88,7 @@ function isValidItem(candidate) {
  *   now?: (() => Date | number | string) | Date | number | string,
  *   maxItems?: number,
  *   maxTextChars?: number,
+ *   pruneAfterMs?: number,
  *   log?: { warn?: Function, info?: Function },
  * }} options
  */
@@ -90,6 +97,7 @@ export function createInboxStore({
     now = () => new Date(),
     maxItems = DEFAULT_MAX_ITEMS,
     maxTextChars = DEFAULT_MAX_TEXT_CHARS,
+    pruneAfterMs = DEFAULT_PRUNE_AFTER_MS,
     log = console,
 } = {}) {
     if (typeof dataDir !== "string" || dataDir.length === 0) {
@@ -100,6 +108,9 @@ export function createInboxStore({
     const maxText = Number.isInteger(maxTextChars) && maxTextChars > 0
         ? maxTextChars
         : DEFAULT_MAX_TEXT_CHARS;
+    const pruneAfter = Number.isFinite(pruneAfterMs) && pruneAfterMs >= 0
+        ? pruneAfterMs
+        : DEFAULT_PRUNE_AFTER_MS;
 
     const itemsFile = join(dataDir, ITEMS_FILE);
     const configFile = join(dataDir, CONFIG_FILE);
@@ -132,8 +143,29 @@ export function createInboxStore({
         }
     }
 
-    function persistItems() {
+    function persistItems({ prune = true } = {}) {
+        if (prune) pruneClosed();
         atomicWrite(itemsFile, JSON.stringify({ version: 1, items }, null, 2) + "\n");
+    }
+
+    /**
+     * Drops closed items whose updatedAt is older than `pruneAfter`. Open items
+     * are kept forever by this rule; returns whether anything was removed.
+     */
+    function pruneClosed() {
+        const cutoff = Date.parse(clock()) - pruneAfter;
+        if (!Number.isFinite(cutoff)) return false;
+        let changed = false;
+        for (let index = items.length - 1; index >= 0; index -= 1) {
+            const item = items[index];
+            if (!CLOSED_STATES.includes(item.state)) continue;
+            const updatedAt = Date.parse(item.updatedAt);
+            if (Number.isFinite(updatedAt) && updatedAt < cutoff) {
+                items.splice(index, 1);
+                changed = true;
+            }
+        }
+        return changed;
     }
 
     function persistConfig() {
@@ -203,6 +235,15 @@ export function createInboxStore({
                 persistItems();
             } catch (err) {
                 log?.warn?.(`[inbox] no se pudo limpiar inbox.json: ${err.message}`);
+            }
+        }
+
+        // The file may be valid yet still hold closed items past the window.
+        if (pruneClosed()) {
+            try {
+                persistItems({ prune: false });
+            } catch (err) {
+                log?.warn?.(`[inbox] no se pudo podar inbox.json: ${err.message}`);
             }
         }
     }
@@ -293,6 +334,13 @@ export function createInboxStore({
 
     /** Newest first, insertion order as the tie-breaker. */
     function list({ limit = 50 } = {}) {
+        if (pruneClosed()) {
+            try {
+                persistItems({ prune: false });
+            } catch (err) {
+                log?.warn?.(`[inbox] no se pudo podar inbox.json: ${err.message}`);
+            }
+        }
         const safeLimit = Number.isInteger(limit) && limit > 0 ? limit : 50;
         return items
             .map((item, index) => ({ item, index }))

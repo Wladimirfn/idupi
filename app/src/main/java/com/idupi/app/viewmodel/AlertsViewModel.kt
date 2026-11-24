@@ -1,6 +1,5 @@
 package com.idupi.app.viewmodel
 
-import android.content.Context
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -8,14 +7,10 @@ import com.idupi.app.IduPiApp
 import com.idupi.app.data.IduPiClientProvider
 import com.idupi.app.data.inbox.ReplyActionRegistry
 import com.idupi.app.data.inbox.inboxConversationKey
-import com.idupi.app.data.notification.SupervisorNotificationManager
-import com.idupi.app.domain.model.AlertCategory
-import com.idupi.app.domain.model.AlertSeverity
 import com.idupi.app.domain.model.InboxImportance
 import com.idupi.app.domain.model.InboxItem
 import com.idupi.app.domain.model.InboxItemState
 import com.idupi.app.domain.model.InboxItemStatus
-import com.idupi.app.domain.model.SupervisorAlert
 import com.idupi.app.domain.repository.IduPiClientSource
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -26,10 +21,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
-/** The three Alertas views; Pendientes is the daily working list. */
+/** The two Alertas views; closed items never appear in either. */
 enum class InboxFilter(val label: String) {
     PENDING("Pendientes"),
-    ALL("Todas"),
     IMPORTANT("Importantes"),
 }
 
@@ -42,6 +36,11 @@ enum class InboxFilter(val label: String) {
  * suggested or edited reply goes through the notification's live RemoteInput
  * action ([ReplyActionRegistry]), never through the PC: the owner's phone is
  * the only device that can answer WhatsApp.
+ *
+ * Closed items (replied, auto-replied, handled, dismissed) are dropped as soon
+ * as they are observed. Atendida, Descartar and sending a reply remove the card
+ * optimistically and put it back, with an inline error, only when the call
+ * that failed is the live reply or the server state update.
  */
 class AlertsViewModel(
     private val clientSource: IduPiClientSource = IduPiClientProvider,
@@ -151,6 +150,7 @@ class AlertsViewModel(
                 "La notificación original ya no está disponible. Responde desde la app."
             return
         }
+        val index = removeOptimistically(item)
         viewModelScope.launch {
             val sent = try {
                 sendReply(conversationKey, text)
@@ -161,16 +161,17 @@ class AlertsViewModel(
                 false
             }
             if (!sent) {
+                if (index >= 0) restore(item, index)
                 _errorMessage.value =
                     "No se pudo enviar la respuesta. Responde desde la app original."
                 return@launch
             }
             try {
                 client.setInboxItemState(item.id, InboxItemState.REPLIED)
-                publish(_items.value.map { if (it.id == item.id) it.copy(state = InboxItemState.REPLIED) else it })
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                if (index >= 0) restore(item, index)
                 _errorMessage.value =
                     "La respuesta se envió, pero no se pudo actualizar el estado: ${e.localizedMessage}"
             }
@@ -199,20 +200,6 @@ class AlertsViewModel(
         }
     }
 
-    fun triggerTestNotification(context: Context) {
-        val testAlert = SupervisorAlert(
-            id = "test-${System.currentTimeMillis()}",
-            title = "Alerta de prueba",
-            description = "El sistema de notificaciones de IDUPI funciona correctamente. Recibirás alertas en tiempo real.",
-            severity = AlertSeverity.WARNING,
-            category = AlertCategory.GOVERNANCE_GATE,
-            timestamp = "Ahora",
-            isRead = false,
-            actionRequired = null
-        )
-        SupervisorNotificationManager(context).showNotification(testAlert)
-    }
-
     private fun load(reportErrors: Boolean, showLoading: Boolean) {
         viewModelScope.launch {
             if (showLoading) _isLoading.value = true
@@ -233,22 +220,48 @@ class AlertsViewModel(
     }
 
     private fun changeState(item: InboxItem, state: String, failureMessage: String) {
+        val index = removeOptimistically(item)
         viewModelScope.launch {
             try {
                 client.setInboxItemState(item.id, state)
-                publish(_items.value.map { if (it.id == item.id) it.copy(state = state) else it })
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.w(TAG, "Failed to set inbox item ${item.id} to $state", e)
+                if (index >= 0) restore(item, index)
                 _errorMessage.value = "$failureMessage: ${e.localizedMessage}"
             }
         }
     }
 
+    /**
+     * Drops the item from the visible list right away and returns its previous
+     * position, or -1 when it was not there. A failed call passes that
+     * position to [restore].
+     */
+    private fun removeOptimistically(item: InboxItem): Int {
+        val current = _items.value
+        val index = current.indexOfFirst { it.id == item.id }
+        if (index < 0) return -1
+        publish(current.filterNot { it.id == item.id })
+        return index
+    }
+
+    /** Puts an optimistically removed item back at its previous position. */
+    private fun restore(item: InboxItem, index: Int) {
+        val current = _items.value
+        if (current.any { it.id == item.id }) return
+        publish(
+            current.toMutableList().apply {
+                add(index.coerceIn(0, size), item)
+            }
+        )
+    }
+
+    /** Closed items leave Alertas; they are never part of the working list. */
     private fun publish(items: List<InboxItem>) {
-        _items.value = items
-        _unreadCount.value = items.count {
+        _items.value = items.filter { it.state == InboxItemState.OPEN }
+        _unreadCount.value = _items.value.count {
             it.state == InboxItemState.OPEN && it.importance == InboxImportance.HIGH
         }
     }
@@ -265,10 +278,9 @@ class AlertsViewModel(
             inboxConversationKey(item.app, item.conversation)
 
         fun filterItems(items: List<InboxItem>, filter: InboxFilter): List<InboxItem> =
-            when (filter) {
-                InboxFilter.PENDING -> items.filter { it.state == InboxItemState.OPEN }
-                InboxFilter.ALL -> items
-                InboxFilter.IMPORTANT -> items.filter { it.importance == InboxImportance.HIGH }
+            items.filter { item ->
+                item.state == InboxItemState.OPEN &&
+                    (filter == InboxFilter.PENDING || item.importance == InboxImportance.HIGH)
             }
     }
 }

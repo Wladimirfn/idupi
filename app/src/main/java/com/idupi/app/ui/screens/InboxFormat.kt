@@ -3,7 +3,6 @@ package com.idupi.app.ui.screens
 import com.idupi.app.domain.model.InboxApp
 import com.idupi.app.domain.model.InboxImportance
 import com.idupi.app.domain.model.InboxItem
-import com.idupi.app.domain.model.InboxItemState
 import com.idupi.app.domain.model.InboxItemStatus
 import java.time.Duration
 import java.time.Instant
@@ -27,15 +26,6 @@ fun importanceLabel(importance: String?): String? = when (importance) {
     InboxImportance.HIGH -> "Alta"
     InboxImportance.MEDIUM -> "Media"
     InboxImportance.LOW -> "Baja"
-    else -> null
-}
-
-/** Label for a closed item; null for `open`. */
-fun inboxItemStateLabel(state: String): String? = when (state) {
-    InboxItemState.HANDLED -> "Atendida"
-    InboxItemState.REPLIED -> "Respondida"
-    InboxItemState.AUTO_REPLIED -> "Respondida automáticamente"
-    InboxItemState.DISMISSED -> "Descartada"
     else -> null
 }
 
