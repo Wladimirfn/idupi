@@ -72,9 +72,9 @@ Los logs quedan en `idupi-server/logs/`. Para detener y relanzar el servidor: `s
 
 Descarga el APK publicado en **[GitHub Releases](https://github.com/Wladimirfn/idupi/releases/latest)** e instálalo en el teléfono. Si prefieres compilarlo, consulta [Compilar desde el código](#compilar-desde-el-código).
 
-<!-- El QR todavía apunta a la descarga de la versión 1.25. Regenerar docs/assets/qr-download.png cuando se publique una release nueva. -->
+<!-- El QR apunta a releases/latest/download/IDUPI-ap.apk: sirve para cada release mientras el APK se publique con ese nombre. -->
 <p align="center">
-  <a href="https://github.com/Wladimirfn/idupi/releases/download/v1.25/IDUPI-ap.apk">
+  <a href="https://github.com/Wladimirfn/idupi/releases/latest/download/IDUPI-ap.apk">
     <img src="docs/assets/qr-download.png" width="200" alt="QR Download APK" />
   </a>
   <br/>
