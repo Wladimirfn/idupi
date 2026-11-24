@@ -39,7 +39,7 @@ data (`powershell.exe -NoLogo`, `C:\Users\elmas`) that makes two terminals indis
 - [x] T1 Go `proc-cwd` subcommand + Go test (own process cwd round-trip).
 - [x] T2 Server PTY context (process tree, agent detection, cwd via helper, git project/branch,
       cache) + tests with injected sampler/execFile.
-- [ ] T3 App: model + Terminales cards + terminal header; tests.
+- [x] T3 App: model + Terminales cards + terminal header; tests.
 - [ ] T4 Build APK, deliver, PR.
 
 ## Checks
@@ -59,7 +59,8 @@ data (`powershell.exe -NoLogo`, `C:\Users\elmas`) that makes two terminals indis
 |------|--------|--------|
 | T1 | bfd17de | Writer idu-pi work-1: `proc-cwd` via PEB (x64; WOW64/failure -> null; 64 pid / 32 KiB caps). go test ok (5 new); go build ok; `go vet` red only on 7 pre-existing unsafe.Pointer warnings in audio/clipboard (untouched). Smoke: own pid -> repo dir, bogus pid -> null. |
 | T2 | 7a1fdc1, (outermost fix) | Writer work-1: `lib/pty-context.mjs` (one CIM sample, BFS, shared agent matcher from os-processes, git toplevel/branch with caches), `context` on GET /api/v1/pty items. Parent: live smoke showed a Claude terminal labelled OpenCode (Claude's nested idu-pi worker) -> switched to the outermost agent + test of that case; 41/41. Note: PowerShell `cd` does not change the shell PEB cwd, so shell-only terminals show the launch dir until an agent runs. |
+| T3 | 739de6b | Writer idu-pi work-1: PtyContext model, pure PtyDisplay fallbacks, Terminales cards (project title, agent pill, branch chip, leading-ellipsis cwd), terminal header project / branch · agent with 5 s refresh; 22 new tests; testDebugUnitTest 321/0. Parent: assembleRelease 1.38 versionCode 39 same cert. Pending: server restart (owner PTYs open) + live check. |
 
 ## Next step
 
-T3 app via idu-pi work-1; server restart only when the owner's PTYs can be closed.
+T4: owner OK to restart the server (closes 2 live PTYs), live check, PR.
