@@ -33,6 +33,13 @@ class PtyTerminalWebController {
 
     fun setFontSize(px: Int) = evaluate("window.idupi.setFontSize($px)")
 
+    /**
+     * 0 fits the grid to the screen width; 20..300 pins a minimum column count
+     * (wide mode), so agent TUIs keep their 80-column layout on a phone and
+     * the page pans horizontally instead of reflowing.
+     */
+    fun setMinCols(cols: Int) = evaluate("window.idupi.setMinCols($cols)")
+
     fun setModifiers(ctrl: Boolean, alt: Boolean) =
         evaluate("window.idupi.setModifiers($ctrl, $alt)")
 
