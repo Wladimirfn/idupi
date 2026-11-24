@@ -46,7 +46,7 @@ server wrapper, acting on lock screen / unlocking.
 
 ## Tasks
 
-- [ ] T1 Server + CLI: `lib/phone-store.mjs`, `lib/phone-routes.mjs`
+- [x] T1 Server + CLI: `lib/phone-store.mjs`, `lib/phone-routes.mjs`
   (status POST/GET, commands POST, phone long-poll `next`, result POST, PC
   result wait), `bin/idupi-phone.mjs` + `.cmd`, `docs/phone.md`, tests.
 - [ ] T2 App status: pure mappers + Android collectors (battery, signal,
@@ -82,3 +82,13 @@ stacked PRs (same as #18 → #19 → #20).
 
 - Baseline: 1.40-alertas-inbox (versionCode 41) installed on the phone;
   listener access granted by the owner.
+- T1 done (commits 561d807, a2c8735, 46dc2ed): status ingest + sampled history
+  in `data/phone-status.json`, in-memory command queue with 60 s expiry, phone
+  long-poll with supersede/disconnect cleanup, PC wait, validated per-type
+  args, `idupi-phone` CLI and `docs/phone.md`.
+  Verification: phone-store 15/15, phone-routes 14/14, idupi-phone-cli 11/11;
+  whole server suite 62/62 files green (180 s cap per file);
+  `node --check idupi-server/index.mjs` OK. CLI smoke-tested end to end
+  against an isolated server on port 18788 (status/screen/tap/open/log and a
+  failed tap exiting 1); the live server on 8788 was not restarted.
+  Next: T2 app status collectors and reporter.
