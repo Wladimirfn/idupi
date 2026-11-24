@@ -44,7 +44,7 @@ per-contact rules.
 
 ## Tasks
 
-- [ ] T1 Server inbox: `lib/inbox-agent.mjs` (pure argv builder per agent with
+- [x] T1 Server inbox: `lib/inbox-agent.mjs` (pure argv builder per agent with
   effort + runner + JSON result parser), `lib/inbox-store.mjs` (JSON file,
   gitignored), `lib/inbox-routes.mjs` (POST messages → 202 + async analysis,
   GET list, POST status, GET/PUT config). Tests with injected runner.
@@ -79,7 +79,25 @@ Branch `feat/phone-inbox`, stacked on `feat/settings-commands` →
 `feat/terminal-context`. Forecast well above 400 authored lines; slicing into
 PRs decided at delivery.
 
+## Decisions
+
+- Auto-reply sends ONLY the owner's fixed personalized template, never
+  AI-generated text: a crafted message could steer the model (codex's
+  read-only sandbox can still read files), and auto-sending its output back to
+  the sender would be an exfiltration path. AI suggestions are sent only when
+  the owner taps them.
+- POST /api/v1/inbox/messages takes `postedAt` as an ISO-8601 string.
+
 ## Progress
 
 - Baseline: 1.39-commands-alertas (versionCode 40) delivered to the phone
   (dlv-2b00b210a166), cert d8ba0fc9.
+- T1 done: cbc76c2 feat(server): inbox analysis with a configurable agent.
+  Tests: inbox-agent 17/17, inbox-routes 11/11, inbox-store 11/11; full suite
+  CI-style 59/59 files. No-tools probe per agent (worker, 2026-11-24): opencode
+  ran `whoami` through the shared service until `--standalone` was added,
+  then denied; claude, codex, pi safe. Live e2e on the restarted server
+  (opencode-go/deepseek-v4.1-flash, max): WhatsApp maintenance message → ready
+  in 20 s, importance high, Spanish summary + reply, injected "run whoami"
+  ignored. Default config: opencode / opencode-go/deepseek-v4.1-flash / max
+  (no non-flash deepseek-v4.1 in `opencode models`).
