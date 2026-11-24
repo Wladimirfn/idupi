@@ -1,10 +1,20 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.kotlin.serialization)
 }
 
-
+// Release signing secrets never live in this file. They come from
+// keystore.properties at the repo root (git-ignored; see
+// keystore.properties.example) or, for CI, from environment variables.
+val keystoreProps = Properties().apply {
+    val f = rootProject.file("keystore.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+fun signingValue(key: String, env: String): String? =
+    keystoreProps.getProperty(key)?.takeIf { it.isNotBlank() } ?: System.getenv(env)?.takeIf { it.isNotBlank() }
 
 android {
     namespace = "com.idupi.app"
@@ -22,18 +32,18 @@ android {
         // "which APK am I running" is answerable from the system settings.
         // Same-versionCode installs get silently skipped by some phone
         // installers -- that is how a stale build masqueraded as the new one.
-        versionCode = 27
-        versionName = "1.26-selection-fix"
+        versionCode = 31
+        versionName = "1.30-terminal-input"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     signingConfigs {
         create("release") {
-            storeFile = file("idupi-release.keystore")
-storePassword = "***REMOVED***"
-            keyAlias = "idupi"
-            keyPassword = "***REMOVED***"
+            storeFile = file(signingValue("storeFile", "IDUPI_KEYSTORE_FILE") ?: "idupi-release.keystore")
+            storePassword = signingValue("storePassword", "IDUPI_KEYSTORE_PASSWORD")
+            keyAlias = signingValue("keyAlias", "IDUPI_KEY_ALIAS") ?: "idupi"
+            keyPassword = signingValue("keyPassword", "IDUPI_KEY_PASSWORD")
         }
     }
     buildTypes {

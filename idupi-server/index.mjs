@@ -6,7 +6,7 @@
 
 import http from "node:http";
 import { spawn, execSync, execFile, execFileSync } from "node:child_process";
-import { readdirSync, statSync, readFileSync, writeFileSync, existsSync, rmSync, openSync, readSync, closeSync } from "node:fs";
+import { readdirSync, statSync, readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, unlinkSync, openSync, readSync, closeSync } from "node:fs";
 import { homedir, networkInterfaces } from "node:os";
 import { join, basename, relative, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -18,6 +18,7 @@ import { planAssistantMessage } from "./lib/claude-stream.mjs";
 import { MessageBoundary } from "./lib/message-boundary.mjs";
 import { describeRateLimit } from "./lib/rate-limit-notice.mjs";
 import { CHAT_EVENTS, publish as publishChatEvent, subscribe as subscribeChatStream } from "./chat-events.mjs";
+import { profileFilePath as resolveProfileFile, profilesDir as sddProfilesDir } from "./lib/orchestrator/profile-path.mjs";
 import {
     escapeSqlValue,
     validateNumeric,
@@ -40,7 +41,13 @@ import {
 // Remote screen module (docs/remote-screen-module.md): routes live in their
 // own module so this monolith stops growing.
 import { handleScreenRoute, shutdownScreen } from "./lib/screen-routes.mjs";
-import { resolveProjectFilePath } from "./lib/project-files.mjs";
+// Interactive PTY terminals (T2): one ConPTY host per terminal, same
+// authenticated choke point as every other route.
+import { PtyManager } from "./lib/pty-manager.mjs";
+import { createPtyRoutes } from "./lib/pty-routes.mjs";
+import { resolveProjectFilePath, getProjectFilesTree } from "./lib/project-files.mjs";
+import { guardChildStreams } from "./lib/child-guards.mjs";
+import { checkBodyLimits } from "./lib/request-limits.mjs";
 import { isProtectedSystemPath } from "./lib/system-paths.mjs";
 import { claudeArgs, openCodeArgs, normalizeOpenCodeModel } from "./lib/agent-cmdline.mjs";
 // OpenCode serve sidecar (opencode-serve-sidecar, PR 2): persistent
@@ -782,6 +789,34 @@ function resolveProject(projId) {
 }
 
 // Gestor Multiterminal Real con Inspección de Procesos en Ejecución en tu PC (Bun, Claude, Codex, Kimi, Node, Python, PowerShell, CMD)
+// Kills a spawned shell AND its descendants. child.kill() only signals the
+// cmd.exe wrapper created by `shell: true`, leaving the PowerShell child
+// running (observed PIDs outliving their terminal). taskkill /T walks the
+// tree; argv keeps it shell-free.
+function killProcessTree(child) {
+    if (!child || child.killed) return;
+    if (process.platform === "win32" && child.pid) {
+        // The direct kill MUST wait for taskkill to finish: killing the cmd.exe
+        // root first would leave taskkill /T nothing to walk from, orphaning
+        // the PowerShell child again. The kill afterwards only marks
+        // child.killed (and is the fallback when taskkill itself fails).
+        const killRoot = () => {
+            try {
+                child.kill();
+            } catch {
+                /* already gone */
+            }
+        };
+        try {
+            execFile("taskkill", ["/PID", String(child.pid), "/T", "/F"], killRoot);
+        } catch {
+            killRoot();
+        }
+        return;
+    }
+    child.kill("SIGTERM");
+}
+
 class TerminalManager {
     constructor() {
         this.terminals = new Map();
@@ -1039,6 +1074,11 @@ class TerminalManager {
                 termObj.status = "closed";
                 termObj.logs.push(`[Proceso cerrado con código ${code}]`);
             });
+            guardChildStreams(child, `Terminal ${id}`);
+            child.on("error", (err) => {
+                termObj.status = "closed";
+                termObj.logs.push(`[Error del proceso: ${err.code || err.message}]`);
+            });
 
             this.terminals.set(id, termObj);
             console.log(`[Terminal Manager] Nueva terminal '${name}' creada con PID ${child.pid}`);
@@ -1050,20 +1090,28 @@ class TerminalManager {
     }
 
     async execCommand(termId, command) {
-        const term = this.terminals.get(termId || "pi-cli");
-        if (term) {
-            term.logs.push(`$ ${command}`);
-            if (term.id === "pi-cli") {
-                const out = await piRpc.sendPrompt(command);
-                term.logs.push(out);
-                return out;
-            }
-            if (term.child && term.child.stdin && !term.child.killed) {
-                term.child.stdin.write(command + "\n");
-                // Esperar 600ms para capturar la salida inmediata de stdout/stderr
-                await new Promise(resolve => setTimeout(resolve, 600));
-                return `Comando enviado a ${term.name}`;
-            }
+        // Only an explicit `pi-cli` id rides the Pi RPC chat. A missing or
+        // unknown terminal used to fall through to it and answer as if a shell
+        // had run, hiding the real "terminal not found" error from the app.
+        if (termId === "pi-cli") {
+            const piTerm = this.terminals.get("pi-cli");
+            if (piTerm) piTerm.logs.push(`$ ${command}`);
+            const out = await piRpc.sendPrompt(command);
+            if (piTerm) piTerm.logs.push(out);
+            return out;
+        }
+
+        const term = termId ? this.terminals.get(termId) : null;
+        if (!term) {
+            // The route turns this into a 404 instead of inventing output.
+            return { error: "terminal not found" };
+        }
+        term.logs.push(`$ ${command}`);
+        if (term.child && term.child.stdin && !term.child.killed) {
+            term.child.stdin.write(command + "\n");
+            // Esperar 600ms para capturar la salida inmediata de stdout/stderr
+            await new Promise(resolve => setTimeout(resolve, 600));
+            return `Comando enviado a ${term.name}`;
         }
 
         const activeProj = resolveProject(activeProjectId);
@@ -1077,8 +1125,12 @@ class TerminalManager {
             });
 
             let output = "";
+            guardChildStreams(execProc, "Terminal exec");
             execProc.stdout.on("data", d => { output += d.toString(); });
             execProc.stderr.on("data", d => { output += d.toString(); });
+            execProc.on("error", (err) => {
+                resolve(`Error al ejecutar el comando: ${err.code || err.message}`);
+            });
             execProc.on("close", () => {
                 resolve(output || "Comando ejecutado.");
             });
@@ -1107,7 +1159,7 @@ class TerminalManager {
             }
 
             if (term.child && !term.child.killed) {
-                term.child.kill("SIGTERM");
+                killProcessTree(term.child);
                 term.logs.push("[System] Proceso de terminal finalizado. Reiniciando...");
                 const newTerm = this.spawnNewTerminal(term.name);
                 return `Terminal '${term.name}' reiniciada exitosamente.`;
@@ -1130,7 +1182,7 @@ class TerminalManager {
 
         const term = this.terminals.get(termId);
         if (term && term.id !== "pi-cli") {
-            if (term.child && !term.child.killed) term.child.kill("SIGTERM");
+            if (term.child && !term.child.killed) killProcessTree(term.child);
             this.terminals.delete(termId);
             return true;
         }
@@ -1139,6 +1191,11 @@ class TerminalManager {
 }
 
 const terminalMgr = new TerminalManager();
+
+// Interactive PTY terminals: the manager owns every ConPTY host; the route
+// handler is created once so each request does not rebuild the closure.
+const ptyManager = new PtyManager();
+const handlePtyRoute = createPtyRoutes(ptyManager);
 
 // Mapa global en memoria para resolver sessionId -> filePath en <1ms
 const sessionFilePathMap = new Map();
@@ -1952,54 +2009,6 @@ function browseFileSystem(targetPath) {
     };
 }
 
-const filesTreeCache = new Map();
-
-function getProjectFilesTree(dirPath, relativeTo = dirPath) {
-    const EXCLUDED = ["node_modules", ".git", "build", ".gradle", ".idea", "bin", "obj", ".codegraph", ".system_generated"];
-    const results = [];
-
-    try {
-        const stat = statSync(dirPath);
-        const cached = filesTreeCache.get(dirPath);
-        if (cached && cached.mtime >= stat.mtimeMs) {
-            return cached.tree;
-        }
-
-        const items = readdirSync(dirPath);
-        for (const item of items) {
-            if (EXCLUDED.includes(item)) continue;
-            const fullPath = join(dirPath, item);
-            const relPath = relative(relativeTo, fullPath).replace(/\\/g, "/");
-            try {
-                const itemStat = statSync(fullPath);
-                if (itemStat.isDirectory()) {
-                    results.push({
-                        name: item,
-                        path: relPath,
-                        isDirectory: true,
-                        children: getProjectFilesTree(fullPath, relativeTo),
-                        status: "Synced"
-                    });
-                } else {
-                    results.push({
-                        name: item,
-                        path: relPath,
-                        isDirectory: false,
-                        children: [],
-                        status: "Synced"
-                    });
-                }
-            } catch (e) {}
-        }
-
-        filesTreeCache.set(dirPath, { mtime: stat.mtimeMs, tree: results });
-    } catch (e) {
-        console.error(`[Explorer Error] No se pudo leer ${dirPath}:`, e.message);
-    }
-
-    return results;
-}
-
 // Gestor de Proceso Pi CLI RPC Persistente con Cambio de Modelo por Parámetros CLI (--provider y --model)
 // Shared by runClaudeCli, runOpenCodeCli and PiRpcManager.sendPrompt -- if the
 // underlying agent CLI (or an MCP server it spawns) never closes/replies, the
@@ -2228,6 +2237,23 @@ class PiRpcManager {
             env: process.env,
             shell: false,
             windowsHide: true
+        });
+
+        guardChildStreams(this.child, "IDUPI Pi RPC");
+        // A spawn failure (ENOENT/EACCES) has no other listener: without this
+        // Node throws it and the whole server dies. 'close' may not follow an
+        // 'error', so the pending prompt is settled here too.
+        const spawnedChild = this.child;
+        spawnedChild.on("error", (err) => {
+            console.error(`[IDUPI Pi RPC] Error del proceso: ${err.code || err.message}`);
+            if (this.child === spawnedChild) this.child = null;
+            if (this.pendingReject) {
+                clearTimeout(this.pendingTimeoutTimer);
+                this.pendingTimeoutTimer = null;
+                this.pendingReject(new Error(`Pi RPC no pudo ejecutarse: ${err.message}`));
+                this.pendingResolve = null;
+                this.pendingReject = null;
+            }
         });
 
         this.child.stdout.setEncoding("utf8");
@@ -3104,6 +3130,9 @@ const handleRequest = async (req, res) => {
     // Remote screen routes live in lib/screen-routes.mjs; it answers true when
     // the path is theirs. Still behind requireAuth like everything below.
     if (await handleScreenRoute(req, res, pathname)) return;
+    // Interactive PTY terminals live in lib/pty-routes.mjs; it answers true
+    // when the path is theirs. Still behind requireAuth like everything below.
+    if (await handlePtyRoute(req, res, pathname)) return;
 
     // 0. Stream de eventos del chat (SSE). Long-lived: no responde y sigue abierto.
     if (pathname === "/api/v1/chat/stream" && req.method === "GET") {
@@ -3370,6 +3399,12 @@ const handleRequest = async (req, res) => {
                 console.log(`[Terminal Exec] Ejecutando "${command}" en terminal '${termId || 'pi-cli'}'...`);
                 const result = await terminalMgr.execCommand(termId, command);
 
+                if (result && typeof result === "object" && result.error === "terminal not found") {
+                    res.writeHead(404, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify({ status: "error", message: "terminal not found" }));
+                    return;
+                }
+
                 res.writeHead(200, { "Content-Type": "application/json" });
                 res.end(JSON.stringify({ status: "ok", output: result }));
             } catch (err) {
@@ -3406,7 +3441,13 @@ const handleRequest = async (req, res) => {
     if (pathname.startsWith("/api/v1/terminals/") && req.method === "DELETE") {
         const parts = pathname.split("/");
         const termId = parts[4];
-        terminalMgr.closeTerminal(termId);
+        // An unknown terminal is a 404, not a fake success: the app used to
+        // believe a surviving shell had been closed.
+        if (!terminalMgr.closeTerminal(termId)) {
+            res.writeHead(404, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ status: "error", message: "not found" }));
+            return;
+        }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ status: "ok" }));
         return;
@@ -4088,11 +4129,19 @@ function getModelsForProvider(providerId) {
             try {
                 const parsed = JSON.parse(body || "{}");
                 const profileName = (parsed.profileName || parsed.name || "").trim();
-                const profileId = (parsed.profileId || parsed.id || profileName.toLowerCase().replace(/[^a-z0-9_-]/g, "-")).trim();
+                const rawProfileId = parsed.profileId || parsed.id || profileName.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+                const profileId = typeof rawProfileId === "string" ? rawProfileId.trim() : rawProfileId;
 
                 if (!profileName) {
                     res.writeHead(400, { "Content-Type": "application/json" });
                     res.end(JSON.stringify({ error: "profileName es obligatorio" }));
+                    return;
+                }
+
+                const profileFilePath = resolveProfileFile(profileId);
+                if (!profileFilePath) {
+                    res.writeHead(400, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify({ error: "profileId inválido" }));
                     return;
                 }
 
@@ -4102,12 +4151,7 @@ function getModelsForProvider(providerId) {
                     stateData = JSON.parse(readFileSync(statePath, "utf8"));
                 }
 
-                const profilesDir = join(homedir(), ".config", "opencode", "profiles");
-                if (!existsSync(profilesDir)) {
-                    mkdirSync(profilesDir, { recursive: true });
-                }
-
-                const profileFilePath = join(profilesDir, `${profileId}.json`);
+                mkdirSync(sddProfilesDir(), { recursive: true });
 
                 const profilePayload = {
                     id: profileId,
@@ -4148,7 +4192,12 @@ function getModelsForProvider(providerId) {
                     return;
                 }
 
-                const profileFilePath = join(homedir(), ".config", "opencode", "profiles", `${profileId}.json`);
+                const profileFilePath = resolveProfileFile(profileId);
+                if (!profileFilePath) {
+                    res.writeHead(400, { "Content-Type": "application/json" });
+                    res.end(JSON.stringify({ error: "profileId inválido" }));
+                    return;
+                }
                 if (existsSync(profileFilePath)) {
                     unlinkSync(profileFilePath);
                     console.log(`[Gentle-AI Profiles] Eliminado perfil SDD: ${profileFilePath}`);
@@ -4434,13 +4483,14 @@ function resolveClaudeSpawnTarget() {
     // Universal fallback: use the actual hit found by where (world-wide, no hardcoded path).
     // spawn("claude") without extension fails with ENOENT on some Node/Windows combos
     // because PATHEXT resolution needs the full .cmd path, so we use the hit directly.
+    // Security: an unparseable .cmd shim is NOT run through `cmd.exe /c`.
+    // cmd.exe re-parses the whole command line, and Node's argv quoting (\")
+    // is not cmd.exe quoting, so a chat message with `" & calc.exe` would
+    // execute. Fall through to a direct spawn or a clear install error.
     if (cmdHits.length > 0) {
-        const fallbackShim = cmdHits[0];
-        console.warn(`[Claude Resolve] shim no parseable pero where encontró ${hits.length} hit(s), fallback a shim directo ${fallbackShim} via cmd.exe`);
-        claudeSpawnTargetCache = { cmdShim: fallbackShim };
-        return claudeSpawnTargetCache;
+        console.warn(`[Claude Resolve] shim ${cmdHits[0]} no parseable; se omite el fallback via cmd.exe por seguridad`);
     }
-    if (hits.length > 0) {
+    if (hits.some((h) => !h.toLowerCase().endsWith(".cmd"))) {
         console.warn(`[Claude Resolve] shim no parseable pero where encontró ${hits.length} hit(s), fallback a spawn("claude") directo`);
         claudeSpawnTargetCache = { cmd: "claude" };
         return claudeSpawnTargetCache;
@@ -4472,7 +4522,7 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
         const target = resolveClaudeSpawnTarget();
         const args = claudeArgs({ modelId, sessionId, isNewSession, message });
 
-        const targetLabel = target.exe ? target.exe : target.js ? `node ${target.js}` : target.cmdShim ? `cmd /c ${target.cmdShim}` : `claude (PATH)`;
+        const targetLabel = target.exe ? target.exe : target.js ? `node ${target.js}` : `claude (PATH)`;
         console.log(`[Claude CLI Spawn] Iniciando Claude en ${projPath}: ${targetLabel}`);
 
         let fullOutput = "";
@@ -4509,16 +4559,6 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
                 stdio: ["pipe", "pipe", "pipe"],
                 env: process.env
             });
-        } else if (target.cmdShim) {
-            // .cmd shim needs cmd.exe to execute, but args stay as ARRAY after /c shim
-            // The shim itself handles the node invocation, so we pass it as the command
-            // and claude args after it. No shell:true on the outer spawn - we spawn cmd.exe directly.
-            child = spawn("cmd.exe", ["/c", target.cmdShim, ...args], {
-                cwd: projPath,
-                windowsHide: true,
-                stdio: ["pipe", "pipe", "pipe"],
-                env: process.env
-            });
         } else {
             child = spawn(target.cmd, args, {
                 cwd: projPath,
@@ -4527,6 +4567,7 @@ function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {
                 env: process.env
             });
         }
+        guardChildStreams(child, "Claude CLI");
 
         // Without a shell wrapper `child` IS Claude itself, but MCP servers it
         // spawns are its children -- a tree-kill still reaches everything.
@@ -4899,6 +4940,7 @@ async function runOpenCodeCli(projPath, sessionId, message, openCodeModel = null
             stdio: ["pipe", "pipe", "pipe"],
             env: process.env
         });
+        guardChildStreams(child, "OpenCode CLI");
 
         // CRITICAL hang fix (verified empirically against opencode-ai 1.18.27
         // on Windows): `opencode run` BLOCKS at startup while stdin is an
@@ -5377,6 +5419,13 @@ async function runOpenCodeCli(projPath, sessionId, message, openCodeModel = null
  */
 export async function guardedRequest(req, res) {
     try {
+        const limitError = checkBodyLimits(req);
+        if (limitError) {
+            // Connection: close so Node does not keep reading the rejected body.
+            res.writeHead(limitError.status, { "Content-Type": "application/json", "Connection": "close" });
+            res.end(JSON.stringify({ error: limitError.error }));
+            return;
+        }
         await handleRequest(req, res);
     } catch (err) {
         try {
@@ -5397,6 +5446,11 @@ const server = http.createServer(guardedRequest);
 
 // Kill the capture helper when the server process exits so it never outlives us.
 process.on("exit", shutdownScreen);
+// PTY hosts must die with the server too. shutdownAll() closes each host's
+// stdin synchronously (the Go job object reaps the tree) before its promise.
+process.on("exit", () => {
+    ptyManager.shutdownAll().catch(() => {});
+});
 
 
 // TEST SEAM (behavior-preserving): skip binding the socket when IDUPI_NO_LISTEN=1

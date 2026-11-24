@@ -1,0 +1,44 @@
+/*
+ * Dark terminal surface matching the app palette (SlateBg / matrix background).
+ * The WebView is transparent-hostile on some Android versions, so the page
+ * owns its background instead of relying on the Compose container behind it.
+ */
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #020617;
+  color: #e2e8f0;
+}
+
+/*
+ * Inset with offsets, not padding: FitAddon reads the parent's computed
+ * (border-box) size and only subtracts the .xterm element's own padding, so
+ * padding here would be counted as usable space and clip the last column.
+ */
+#terminal {
+  position: absolute;
+  top: 4px;
+  right: 2px;
+  bottom: 2px;
+  left: 2px;
+  padding: 0;
+  background: #020617;
+}
+
+/* FitAddon measures #terminal (the .xterm parent), so it must fill it. */
+.xterm {
+  height: 100%;
+}
+
+.xterm .xterm-viewport {
+  background-color: transparent !important;
+}
+
+/* No text-selection handles or callouts while long-pressing the terminal. */
+#terminal {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+}

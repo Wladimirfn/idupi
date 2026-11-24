@@ -37,3 +37,53 @@ test("a path that merely CONTAINS dot-dot but stays inside is allowed", () => {
 test("backslashes traverse exactly like forward slashes", () => {
     assert.equal(resolveProjectFilePath(ROOT, "..\\..\\claves.txt").ok, false);
 });
+
+// --- Hardening (2026-11-22 audit): the lexical check alone let a symlink or
+// NTFS junction inside a project read files anywhere on the host, and the tree
+// walk followed directory links into cycles. Uses a real junction (no admin
+// rights needed on Windows; a dir symlink elsewhere). ---
+
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { getProjectFilesTree } from "../lib/project-files.mjs";
+
+function withSandbox(fn) {
+    const base = mkdtempSync(join(tmpdir(), "idupi-guard-"));
+    const project = join(base, "project");
+    const outside = join(base, "outside");
+    mkdirSync(join(project, "src"), { recursive: true });
+    mkdirSync(outside);
+    writeFileSync(join(project, "src", "main.kt"), "fun main() {}");
+    writeFileSync(join(outside, "secret.txt"), "top secret");
+    symlinkSync(outside, join(project, "innocent"), process.platform === "win32" ? "junction" : "dir");
+    // A cycle: a link inside the project pointing back at the project.
+    symlinkSync(project, join(project, "src", "loop"), process.platform === "win32" ? "junction" : "dir");
+    try {
+        fn({ project, outside });
+    } finally {
+        rmSync(base, { recursive: true, force: true });
+    }
+}
+
+test("a link inside the project cannot be used to read files outside it", () => {
+    withSandbox(({ project }) => {
+        assert.equal(resolveProjectFilePath(project, "innocent/secret.txt").ok, false);
+        assert.equal(resolveProjectFilePath(project, "src/main.kt").ok, true);
+    });
+});
+
+test("root casing differences do not break containment on Windows", { skip: process.platform !== "win32" }, () => {
+    withSandbox(({ project }) => {
+        assert.equal(resolveProjectFilePath(project.toUpperCase(), "src/main.kt").ok, true);
+    });
+});
+
+test("the files tree skips symlinks/junctions instead of following them", () => {
+    withSandbox(({ project }) => {
+        const tree = getProjectFilesTree(project);
+        const names = tree.map((n) => n.name).sort();
+        assert.deepEqual(names, ["src"]);
+        const src = tree.find((n) => n.name === "src");
+        assert.deepEqual(src.children.map((n) => n.name), ["main.kt"]);
+    });
+});

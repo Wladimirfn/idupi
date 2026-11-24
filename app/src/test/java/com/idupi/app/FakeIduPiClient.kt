@@ -3,6 +3,7 @@ package com.idupi.app
 import com.idupi.app.domain.model.ChatEvent
 import com.idupi.app.domain.model.FileNode
 import com.idupi.app.domain.model.Project
+import com.idupi.app.domain.model.PtyInfo
 import com.idupi.app.domain.model.QuickCommand
 import com.idupi.app.domain.model.ServerStatus
 import com.idupi.app.domain.model.SessionCounts
@@ -24,6 +25,7 @@ import com.idupi.app.domain.model.ScreenInputEvent
 import com.idupi.app.domain.model.ScreenStreamRequest
 import com.idupi.app.domain.model.ScreenWireMessage
 import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 /**
@@ -258,6 +260,69 @@ class FakeIduPiClient : IduPiClient {
         return closeTerminalResult
     }
 
+    // --- Interactive PTY terminals ---
+
+    var ptyCreateResult: PtyInfo = PtyInfo(id = "pty-1", pid = 1001, cols = 80, rows = 24, alive = true)
+    var ptyCreateDelayMs: Long = 0
+    var ptyListToReturn: List<PtyInfo> = emptyList()
+    var ptyStreamChunks: List<ByteArray> = emptyList()
+    var ptyStreamHang: Boolean = false
+
+    /** Per-call stream script: each ptyStream() consumes one entry in FIFO order. */
+    val ptyStreamScript: ArrayDeque<PtyStreamCall> = ArrayDeque()
+    var ptyStreamCalls: Int = 0
+    var failPtyStreamWith: Exception? = null
+    var lastCreatedPtyDims: Pair<Int, Int>? = null
+    var lastCreatedPtyCwd: String? = null
+    val ptyInputs = mutableListOf<Pair<String, String>>()
+    val ptyResizes = mutableListOf<Triple<String, Int, Int>>()
+    var killPtyResult: Boolean = true
+    var lastKilledPtyId: String? = null
+
+    override suspend fun createPty(cols: Int, rows: Int, cwd: String?): PtyInfo {
+        maybeFail()
+        lastCreatedPtyDims = cols to rows
+        lastCreatedPtyCwd = cwd
+        if (ptyCreateDelayMs > 0) delay(ptyCreateDelayMs)
+        return ptyCreateResult
+    }
+
+    override suspend fun listPtys(): List<PtyInfo> {
+        maybeFail()
+        return ptyListToReturn
+    }
+
+    override fun ptyStream(id: String): Flow<ByteArray> {
+        ptyStreamCalls++
+        val call = if (ptyStreamScript.isNotEmpty()) {
+            ptyStreamScript.removeFirst()
+        } else {
+            PtyStreamCall(ptyStreamChunks, ptyStreamHang)
+        }
+        val failure = failPtyStreamWith
+        return flow {
+            failure?.let { throw it }
+            call.chunks.forEach { emit(it) }
+            if (call.hang) awaitCancellation()
+        }
+    }
+
+    override suspend fun ptyInput(id: String, data: String) {
+        maybeFail()
+        ptyInputs.add(id to data)
+    }
+
+    override suspend fun ptyResize(id: String, cols: Int, rows: Int) {
+        maybeFail()
+        ptyResizes.add(Triple(id, cols, rows))
+    }
+
+    override suspend fun killPty(id: String): Boolean {
+        maybeFail()
+        lastKilledPtyId = id
+        return killPtyResult
+    }
+
     override fun connectChat(): Flow<ChatEvent> = chatEvents.asSharedFlow()
 
     override suspend fun sendMessage(message: String) {
@@ -476,6 +541,12 @@ class FakeIduPiClient : IduPiClient {
 
 /** A single recorded [getSessions] request, for asserting engine/cursor/limit history. */
 data class SessionRequest(val engine: String, val cursor: String?, val limit: Int)
+
+/** One scripted [FakeIduPiClient.ptyStream] call: chunks, then optionally hang. */
+data class PtyStreamCall(
+    val chunks: List<ByteArray> = emptyList(),
+    val hang: Boolean = false
+)
 
 /** A queued [getSessions] responder, for controlling response timing deterministically. */
 typealias SessionHandler = suspend (engine: String, cursor: String?, limit: Int) -> SessionsPage

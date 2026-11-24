@@ -38,6 +38,7 @@ enum class Screen(val title: String) {
     PROJECTS("Proyectos"),
     SESSIONS("Sesiones"),
     CONSOLE("Terminal"),
+    PTY_TERMINAL("Terminal interactiva"),
     REMOTE("Escritorio Remoto"),
     SETTINGS("Ajustes")
 }
@@ -60,7 +61,12 @@ fun AppNavigation() {
     val projectsViewModel: ProjectsViewModel = viewModel()
     val sessionsViewModel: SessionsViewModel = viewModel()
     val consoleViewModel: ConsoleViewModel = viewModel()
+    val ptyTerminalViewModel: PtyTerminalViewModel = viewModel()
     val remoteViewModel: RemoteScreenViewModel = viewModel()
+
+    // Interactive terminal target chosen from the Console screen: null means
+    // "create a new PTY"; an id attaches to one already running on the PC.
+    var ptyTerminalTargetId by remember { mutableStateOf<String?>(null) }
 
     // Central error surface: every ViewModel's errorMessage is observed here and
     // shown via a single shared snackbar, instead of wiring it in each screen.
@@ -79,6 +85,9 @@ fun AppNavigation() {
             scope.launch { drawerState.close() }
         } else if (currentScreen == Screen.CONNECTION) {
             currentScreen = previousScreen ?: Screen.WELCOME
+        } else if (currentScreen == Screen.PTY_TERMINAL) {
+            // Back leaves the PTY running on the PC; return to its launcher.
+            currentScreen = Screen.CONSOLE
         } else if (currentScreen != Screen.CHAT && currentScreen != Screen.WELCOME) {
             currentScreen = Screen.CHAT
         }
@@ -281,7 +290,16 @@ fun AppNavigation() {
                             )
                             Screen.CONSOLE -> ConsoleScreen(
                                 viewModel = consoleViewModel,
-                                onMenuClick = { scope.launch { drawerState.open() } }
+                                onMenuClick = { scope.launch { drawerState.open() } },
+                                onOpenPtyTerminal = { targetId ->
+                                    ptyTerminalTargetId = targetId
+                                    navigateTo(Screen.PTY_TERMINAL)
+                                }
+                            )
+                            Screen.PTY_TERMINAL -> PtyTerminalScreen(
+                                viewModel = ptyTerminalViewModel,
+                                ptyId = ptyTerminalTargetId,
+                                onBack = { currentScreen = Screen.CONSOLE }
                             )
                             Screen.REMOTE -> RemoteScreen(
                                 viewModel = remoteViewModel,

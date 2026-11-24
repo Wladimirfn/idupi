@@ -41,3 +41,9 @@ signing.properties
 /research.md
 .commandcode/
 
+# Virtual display driver: downloaded on demand by idupi-server/lib/virtual-display.mjs
+idupi-server/drivers/
+# Editor/backup copies
+*~
+# Local scratch workspace (copies of other repos, experiments)
+/scratch/

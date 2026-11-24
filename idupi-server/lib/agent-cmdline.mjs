@@ -7,8 +7,12 @@
 // index.mjs next to its sibling OpenCode resolver.
 
 /**
- * Claude CLI argv. The message rides as ONE JSON-string element -- newlines
- * and quotes are just characters to the array-based spawn.
+ * Claude CLI argv. The message rides as ONE raw element after `--`: newlines
+ * and quotes are just characters to the array-based spawn, and the
+ * end-of-options marker keeps a prompt such as "-x ..." or "--help" from being
+ * parsed as a flag (verified against Claude Code 2.1.330). It used to be
+ * JSON.stringify'd, which delivered "/compact" with literal quotes and
+ * multi-line prompts with literal \n sequences.
  */
 export function claudeArgs({ modelId = "", sessionId = "", isNewSession = false, message = "" }) {
     const args = [];
@@ -18,7 +22,7 @@ export function claudeArgs({ modelId = "", sessionId = "", isNewSession = false,
         "--output-format", "stream-json",
         "--verbose",
         "--permission-mode", "bypassPermissions",
-        "-p", JSON.stringify(message),
+        "-p", "--", String(message),
     );
     return args;
 }

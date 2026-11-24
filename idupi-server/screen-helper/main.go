@@ -67,6 +67,10 @@ type frameMeta struct {
 }
 
 func main() {
+	// PTY host mode replaces the whole NDJSON helper loop (see pty_windows.go).
+	if len(os.Args) > 1 && os.Args[1] == "pty" {
+		os.Exit(runPty(os.Args[2:]))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "--audio-loopback" {
 		if err := runAudioLoopback(os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "[audio-loopback]", err)
