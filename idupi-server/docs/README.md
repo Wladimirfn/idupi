@@ -28,139 +28,8 @@ Everything except the loopback-only browser terminal page requires the bearer to
   clients get `403`, so the page is never exposed to the LAN or Tailscale.
 - Handlers split out of `index.mjs` (`lib/pty-routes.mjs`, `lib/delivery-routes.mjs`,
   `lib/system-metrics-routes.mjs`, `lib/os-processes-routes.mjs`,
-  `lib/screen-routes.mjs`, `lib/inbox-routes.mjs`, `lib/phone-routes.mjs`) are
-  mounted after `requireAuth`.
-
-## API routes
-
-### PTY terminals
-
-Source: [`lib/pty-routes.mjs`](../lib/pty-routes.mjs), manager in
-[`lib/pty-manager.mjs`](../lib/pty-manager.mjs).
-
-| Method | Path | Auth | Purpose |
-|--------|------|------|---------|
-| GET | `/api/v1/pty` | Bearer | List live terminals |
-| POST | `/api/v1/pty` | Bearer | Create a terminal; body `{cols, rows, cwd?}`, answers `201 {id, pid, ...}` |
-| GET | `/api/v1/pty/{id}/stream` | Bearer | Chunked `application/octet-stream`: 256 KiB replay ring, then live output |
-| POST | `/api/v1/pty/{id}/input` | Bearer | Send input; body `{data}` (UTF-8 string) |
-| POST | `/api/v1/pty/{id}/resize` | Bearer | Resize the PTY; body `{cols, rows}` |
-| DELETE | `/api/v1/pty/{id}` | Bearer | Kill the terminal and its whole process tree; `404` when unknown |
-
-A PTY has one size; the last client to resize wins. Reconnecting to `stream`
-replays the ring before live bytes, so the phone, the browser page and
-`idupi-term` can share one terminal.
-
-Each listed terminal also carries `context`: the live `cwd` (read from the PEB
-of the running agent, falling back to the shell and then the launch cwd), the
-git `project` and `branch` (`detached: true` with the short sha as branch), and
-the `agent` running in it (`{id, name, pid}`, or `null` when only the shell is
-there). Source: [`lib/pty-context.mjs`](../lib/pty-context.mjs); it is sampled
-at most every 3 s, only while terminals exist, and any failure degrades to
-`null` fields instead of failing the list.
-
-### APK deliveries
-
-Source: [`lib/delivery-routes.mjs`](../lib/delivery-routes.mjs), registry in
-[`lib/delivery-registry.mjs`](../lib/delivery-registry.mjs).
-
-| Method | Path | Auth | Purpose |
-|--------|------|------|---------|
-| GET | `/api/v1/deliveries` | Bearer | List published deliveries |
-| POST | `/api/v1/deliveries` | Bearer | Register an existing `.apk`; body `{path}` (absolute, regular file, max 300 MB); snapshots it and returns `{id, name, size, sha256, createdAt}` |
-| GET / HEAD | `/api/v1/deliveries/{id}/download` | Bearer | Stream the APK snapshot with `Content-Length`; HEAD returns headers only |
-| DELETE | `/api/v1/deliveries/{id}` | Bearer | Remove a delivery |
-
-Snapshots live in `idupi-server/deliveries/` (index plus `dlv-*.apk`); the newest
-10 entries are kept. The hash is computed while copying, so later rebuilds do not
-change the bytes of an already-published delivery.
-
-### PC observability
-
-| Method | Path | Auth | Purpose |
-|--------|------|------|---------|
-| GET / HEAD | `/api/v1/system/metrics` | Bearer | CPU/RAM usage, GPU usage/temp/power/VRAM, CPU temp and power, storage per disk; unknown sensors are `null` |
-| GET / HEAD | `/api/v1/os/processes` | Bearer | All PC processes with memory, CPU, category and protection flag (2 s server cache) |
-| POST | `/api/v1/os/processes/{pid}/kill` | Bearer | End a process; `409 protected` for critical system processes, `404` when gone |
-
-Sources: [`lib/system-metrics.mjs`](../lib/system-metrics.mjs),
-[`lib/os-processes.mjs`](../lib/os-processes.mjs). CPU temperature and power come
-from the elevated helper described in [`sensors.md`](sensors.md) when it is
-installed; GPU data comes from `nvidia-smi`.
-
-### Terminal browser page
-
-Source: [`lib/terminal-web-routes.mjs`](../lib/terminal-web-routes.mjs), page in
-[`web/`](../web).
-
-| Method | Path | Auth | Purpose |
-|--------|------|------|---------|
-| GET / HEAD | `/terminal/` | None; **loopback only** | Static page that lists, creates and attaches to PTYs |
-| GET / HEAD | `/terminal/app.js`, `/terminal/app.css` | None; loopback only | Page assets |
-| GET / HEAD | `/terminal/vendor/xterm.js`, `xterm.css`, `addon-fit.js` | None; loopback only | Vendored xterm.js reused from the app |
-
-`/terminal` redirects `301` to `/terminal/`. The page keeps the token in the URL
-fragment, stores it in `sessionStorage` and sends it as `Authorization: Bearer`
-to the API.
-
-### App data
-
-| Method | Path | Auth | Purpose |
-|--------|------|------|---------|
-| GET | `/api/v1/status` | Bearer | Server and active-engine status |
-| GET | `/api/v1/projects` | Bearer | Registered projects |
-| POST | `/api/v1/projects/switch` | Bearer | Activate a project |
-| POST | `/api/v1/projects/add` | Bearer | Register a project |
-| POST | `/api/v1/projects/remove` (also `/delete`) | Bearer | Remove a project |
-| DELETE | `/api/v1/projects/{id}` | Bearer | Remove a project by id |
-| GET | `/api/v1/projects/{id}/files` | Bearer | List project files |
-| GET | `/api/v1/projects/{id}/file-content?path=` | Bearer | Read one project file |
-| GET | `/api/v1/fs/browse` | Bearer | Browse the filesystem to add a project |
-| GET | `/api/v1/models` | Bearer | Available models |
-| POST | `/api/v1/model/switch` | Bearer | Select a model |
-| GET | `/api/v1/commands` | Bearer | Available commands |
-| GET | `/api/v1/alerts` | Bearer | Supervisor alerts |
-
-### Phone inbox
-
-Source: [`lib/inbox-routes.mjs`](../lib/inbox-routes.mjs), store in
-[`lib/inbox-store.mjs`](../lib/inbox-store.mjs), agent runner in
-[`lib/inbox-agent.mjs`](../lib/inbox-agent.mjs).
-
-| Method | Path | Auth | Purpose |
-|--------|------|------|---------|
-| POST | `/api/v1/inbox/messages` | Bearer | Accept a captured notification (`app`, `appLabel`, `packageName`, `sender`, `conversation`, `text`, `postedAt`, `notificationKey`); `app` is any followed app: a preset id or a package name matching `^[A-Za-z0-9_.]{1,120}# IDUPI server — documentation index
-
-The IDUPI server is a zero-dependency Node.js HTTP server that runs on the user's
-Windows PC. It owns the interactive PTY terminals, the PC-to-phone APK deliveries,
-the system metrics and process list, the remote screen stream and the legacy agent
-chat endpoints. The Android app and the PC CLIs talk to it over LAN or Tailscale.
-
-Everything except the loopback-only browser terminal page requires the bearer token.
-
-## Index
-
-| Document | Contents |
-|----------|----------|
-| [`phone.md`](phone.md) | Phone agent contract for PC agents: status snapshot, command queue, `idupi-phone` CLI, screen dump format |
-| [`sensors.md`](sensors.md) | Elevated sensor helper: install, uninstall, pinned hashes, version bumps |
-| [`../../README.md`](../../README.md) | Product overview, quick start, app screens, build |
-| [`../../PRIVACY.md`](../../PRIVACY.md) | Privacy policy |
-
-## Authentication
-
-- The token is read from `IDUPI_TOKEN` or from `.idupi-token` at the repository root.
-  It is generated on first start and printed in full only then (or with
-  `IDUPI_SHOW_TOKEN=1`); later starts print a masked value.
-- Every `/api/v1/*` route requires `Authorization: Bearer <token>`. A missing or
-  wrong token answers `401` with `WWW-Authenticate: Bearer`.
-- The only exception is the `/terminal/*` static page, which answers before the
-  token check **but only for loopback clients** (`127.0.0.1` / `::1`). Non-loopback
-  clients get `403`, so the page is never exposed to the LAN or Tailscale.
-- Handlers split out of `index.mjs` (`lib/pty-routes.mjs`, `lib/delivery-routes.mjs`,
-  `lib/system-metrics-routes.mjs`, `lib/os-processes-routes.mjs`,
-  `lib/screen-routes.mjs`, `lib/inbox-routes.mjs`, `lib/phone-routes.mjs`) are
-  mounted after `requireAuth`.
+  `lib/screen-routes.mjs`, `lib/inbox-routes.mjs`, `lib/phone-routes.mjs`,
+  `lib/phone-calendar-routes.mjs`) are mounted after `requireAuth`.
 
 ## API routes
 
@@ -302,6 +171,28 @@ command queue is memory-only and pending commands expire after 60 s. Control
 is off by default and requires the app's accessibility grant plus its master
 switch.
 
+### Phone calendar
+
+Source: [`lib/phone-calendar-routes.mjs`](../lib/phone-calendar-routes.mjs),
+store and math in [`lib/phone-calendar-store.mjs`](../lib/phone-calendar-store.mjs).
+Agent contract and wire examples in [`phone.md`](phone.md).
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| POST | `/api/v1/phone/calendar` | Bearer | Phone replaces the snapshot: `{capturedAt, rangeStart, rangeEnd, tzOffsetMinutes, calendars[], events[]}` (max 1000 events, 512 KiB); strict ISO-8601 validation |
+| GET | `/api/v1/phone/calendar?from=&to=` | Bearer | `{capturedAt, storedAt, rangeStart, rangeEnd, tzOffsetMinutes, calendars, events, conflicts}`; events sorted by start, `conflicts` are deterministic overlapping non-all-day pairs |
+| GET | `/api/v1/phone/calendar/free?from=&to=&min=30` | Bearer | `{from, to, minMinutes, tzOffsetMinutes, hasSnapshot, slots}` between 08:00 and 20:00 local |
+| POST | `/api/v1/phone/calendar/proposals` | Bearer | PC queues `{title, start, end?, allDay?, location, notes, calendarId?, source}`; `201 {proposal, tzOffsetMinutes}` |
+| GET | `/api/v1/phone/calendar/proposals?status=` | Bearer | Proposals newest first; `status` is `pending`, `approved`, `rejected`, `expired` or `all` |
+| POST | `/api/v1/phone/calendar/proposals/{id}/decision` | Bearer | Phone reports `{decision: "approved"\|"rejected", eventId?}`; `409` when already decided or expired |
+
+`phone-calendar.json` keeps the latest snapshot and
+`phone-calendar-proposals.json` the queue (both gitignored). Pending proposals
+expire after 7 days. Every write happens on the phone after the owner approves;
+the PC can read and propose only. Event text from notifications is untrusted:
+the inbox analysis fills an `event` field and the server validates it, but the
+owner confirms it on the phone.
+
 ### Remote screen
 
 Source: [`lib/screen-routes.mjs`](../lib/screen-routes.mjs).
@@ -364,7 +255,7 @@ not use them.
 |------|-------|
 | [`bin/idupi-term.mjs`](../bin/idupi-term.mjs) (`idupi-term.cmd`) | `idupi-term` lists/attaches (creates if none), `ls`, `new [--cwd DIR]`, `attach <ref>`, `web`; `Ctrl+]` detaches without killing |
 | [`bin/idupi-push.mjs`](../bin/idupi-push.mjs) (`idupi-push.cmd`) | `idupi-push <archivo.apk>` publishes an APK, `idupi-push ls` lists deliveries |
-| [`bin/idupi-phone.mjs`](../bin/idupi-phone.mjs) (`idupi-phone.cmd`) | `idupi-phone status`, `screen`, `tap`, `long-press`, `type`, `scroll`, `back`/`home`/`recents`/`notifications`, `open`, `wait`, `log`; see [`phone.md`](phone.md) |
+| [`bin/idupi-phone.mjs`](../bin/idupi-phone.mjs) (`idupi-phone.cmd`) | `idupi-phone status`, `screen`, `tap`, `long-press`, `type`, `scroll`, `back`/`home`/`recents`/`notifications`, `open`, `wait`, `calendar [agenda\|free\|propose\|proposals]`, `log`; see [`phone.md`](phone.md) |
 
 Both CLIs read the token from `.idupi-token` or `IDUPI_TOKEN`, use `IDUPI_PORT`
 (default `8788`) and print a hint pointing to `start-server.ps1` when the server
@@ -389,7 +280,7 @@ is unreachable.
 | `.idupi-token` | Access token (repo root) |
 | `idupi-server/projects.json` | Registered projects and active project |
 | `idupi-server/deliveries/` | Delivery index and APK snapshots (newest 10) |
-| `idupi-server/data/` | Phone inbox items/config, conversation digests and `phone-status.json` (gitignored) |
+| `idupi-server/data/` | Phone inbox items/config, conversation digests, `phone-status.json`, `phone-calendar.json` and `phone-calendar-proposals.json` (gitignored) |
 | `idupi-server/logs/` | Server stdout/stderr from `start-server.ps1` |
 | `%ProgramData%\IDUPI\` | Sensor helper, LibreHardwareMonitor DLLs and `sensors.json` |
 
@@ -398,7 +289,7 @@ is unreachable.
 | Path | Role |
 |------|------|
 | [`index.mjs`](../index.mjs) | HTTP entry point, route chain, auth choke point, legacy chat and orchestrator routes |
-| [`lib/`](../lib) | Route modules, PTY manager, deliveries, metrics, processes, screen stream, phone agent |
+| [`lib/`](../lib) | Route modules, PTY manager, deliveries, metrics, processes, screen stream, phone agent and calendar |
 | [`screen-helper/`](../screen-helper) | Zero-dependency Go helper: screen capture and ConPTY host |
 | [`web/`](../web) | Static browser terminal page |
 | [`test/`](../test) | `node --test` suites |
