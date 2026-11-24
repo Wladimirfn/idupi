@@ -4,6 +4,8 @@ import com.idupi.app.FakeClientSource
 import com.idupi.app.FakeIduPiClient
 import com.idupi.app.MainDispatcherRule
 import com.idupi.app.PtyStreamCall
+import com.idupi.app.domain.model.PtyAgent
+import com.idupi.app.domain.model.PtyContext
 import com.idupi.app.domain.model.PtyInfo
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceTimeBy
@@ -184,6 +186,79 @@ class PtyTerminalViewModelTest {
 
         assertNull(viewModel.events.tryReceive().getOrNull())
         viewModel.detach()
+    }
+
+    @Test
+    fun `header refresh exposes the attached terminal context`() = runTest {
+        val fake = FakeIduPiClient().apply {
+            ptyListToReturn = listOf(
+                PtyInfo(
+                    id = "pty-9",
+                    pid = 7,
+                    shell = "powershell.exe -NoLogo",
+                    context = PtyContext(
+                        cwd = "C:\\work\\IDUPI",
+                        project = "IDUPI",
+                        branch = "main",
+                        agent = PtyAgent(id = "claude", name = "Claude Code", pid = 99)
+                    )
+                )
+            )
+        }
+        val viewModel = PtyTerminalViewModel(FakeClientSource(fake))
+
+        viewModel.prepare("pty-9")
+        viewModel.refreshHeader()
+        advanceUntilIdle()
+
+        val header = viewModel.headerInfo.value
+        assertEquals("IDUPI", header?.context?.project)
+        assertEquals("main", header?.context?.branch)
+        assertEquals("Claude Code", header?.context?.agent?.name)
+        assertEquals(1, fake.listPtysCalls)
+
+        viewModel.detach()
+    }
+
+    @Test
+    fun `a failed header refresh keeps the last known context`() = runTest {
+        val fake = FakeIduPiClient().apply {
+            ptyListToReturn = listOf(
+                PtyInfo(id = "pty-9", context = PtyContext(project = "IDUPI"))
+            )
+        }
+        val viewModel = PtyTerminalViewModel(FakeClientSource(fake))
+
+        viewModel.prepare("pty-9")
+        viewModel.refreshHeader()
+        advanceUntilIdle()
+        assertEquals("IDUPI", viewModel.headerInfo.value?.context?.project)
+
+        fake.failWith = RuntimeException("offline")
+        viewModel.refreshHeader()
+        advanceUntilIdle()
+
+        assertEquals("IDUPI", viewModel.headerInfo.value?.context?.project)
+
+        viewModel.detach()
+    }
+
+    @Test
+    fun `preparing another terminal clears the previous header`() = runTest {
+        val fake = FakeIduPiClient().apply {
+            ptyListToReturn = listOf(
+                PtyInfo(id = "pty-9", context = PtyContext(project = "IDUPI"))
+            )
+        }
+        val viewModel = PtyTerminalViewModel(FakeClientSource(fake))
+
+        viewModel.prepare("pty-9")
+        viewModel.refreshHeader()
+        advanceUntilIdle()
+
+        viewModel.prepare("pty-10")
+
+        assertNull(viewModel.headerInfo.value)
     }
 
     @Test

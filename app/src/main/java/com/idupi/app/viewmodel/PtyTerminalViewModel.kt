@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.idupi.app.data.IduPiClientProvider
 import com.idupi.app.data.remote.IduPiHttpException
+import com.idupi.app.domain.model.PtyInfo
 import com.idupi.app.domain.repository.IduPiClientSource
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -49,6 +50,15 @@ class PtyTerminalViewModel(
     val uiState: StateFlow<PtyTerminalUiState> = _uiState.asStateFlow()
 
     /**
+     * Live context of the terminal this screen is attached to (project, git
+     * branch, running agent), read from the same list the Terminales screen
+     * uses. The screen refreshes it once on open and every few seconds while
+     * visible; it is informational, so a failed read keeps the last value.
+     */
+    private val _headerInfo = MutableStateFlow<PtyInfo?>(null)
+    val headerInfo: StateFlow<PtyInfo?> = _headerInfo.asStateFlow()
+
+    /**
      * Base64-encoded raw VT chunks, in wire order. A channel (not a SharedFlow)
      * because the WebView may not exist yet when the first replay lands: the
      * bytes wait for the screen's drain instead of being dropped.
@@ -89,6 +99,7 @@ class PtyTerminalViewModel(
     private var streamJob: Job? = null
     private var senderJob: Job? = null
     private var resizeJob: Job? = null
+    private var headerJob: Job? = null
 
     /**
      * Called when the screen is (re)entered for [terminalId]. Resets the
@@ -111,7 +122,29 @@ class PtyTerminalViewModel(
         while (eventChannel.tryReceive().isSuccess) {
             // A close event from a previous session must not navigate this one.
         }
+        _headerInfo.value = null
         _uiState.value = PtyTerminalUiState(terminalId = terminalId)
+    }
+
+    /**
+     * One list read to refresh the top-bar context (project, branch, agent).
+     * The screen calls it on open and every few seconds while visible; it is
+     * informational, so a failure logs and keeps the header the user already
+     * sees instead of raising an error over a working terminal.
+     */
+    fun refreshHeader() {
+        if (headerJob?.isActive == true) return
+        val id = activeId ?: requestedId ?: return
+        headerJob = viewModelScope.launch {
+            try {
+                val info = client.listPtys().firstOrNull { it.id == id }
+                if (info != null) _headerInfo.value = info
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Header refresh failed: ${e.localizedMessage}")
+            }
+        }
     }
 
     /**
@@ -420,6 +453,8 @@ class PtyTerminalViewModel(
         senderJob = null
         resizeJob?.cancel()
         resizeJob = null
+        headerJob?.cancel()
+        headerJob = null
         while (inputChannel.tryReceive().isSuccess) {
             // Stale keystrokes must never reach the next terminal.
         }

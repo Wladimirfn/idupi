@@ -3,6 +3,8 @@ package com.idupi.app.viewmodel
 import com.idupi.app.FakeClientSource
 import com.idupi.app.FakeIduPiClient
 import com.idupi.app.MainDispatcherRule
+import com.idupi.app.domain.model.PtyAgent
+import com.idupi.app.domain.model.PtyContext
 import com.idupi.app.domain.model.PtyInfo
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -55,6 +57,30 @@ class TerminalsViewModelTest {
         assertTrue(viewModel.loadFailed.value)
         assertNotNull(viewModel.errorMessage.value)
         assertTrue(viewModel.errorMessage.value!!.contains("offline"))
+    }
+
+    @Test
+    fun `listed terminals keep their live context`() = runTest {
+        fake.ptyListToReturn = listOf(
+            PtyInfo(
+                id = "pty-ctx",
+                pid = 300,
+                context = PtyContext(
+                    cwd = "C:\\repo\\IDUPI",
+                    project = "IDUPI",
+                    branch = "main",
+                    agent = PtyAgent(id = "opencode", name = "OpenCode", pid = 301)
+                )
+            )
+        )
+
+        val viewModel = TerminalsViewModel(FakeClientSource(fake))
+        advanceUntilIdle()
+
+        val context = viewModel.ptys.value.single().context
+        assertEquals("IDUPI", context?.project)
+        assertEquals("main", context?.branch)
+        assertEquals("OpenCode", context?.agent?.name)
     }
 
     @Test
