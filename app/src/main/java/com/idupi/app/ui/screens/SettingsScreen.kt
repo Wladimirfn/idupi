@@ -12,6 +12,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -54,7 +55,8 @@ fun SettingsScreen(
     mainViewModel: MainViewModel,
     onMenuClick: () -> Unit,
     onNavigateToConnection: () -> Unit,
-    onNavigateToWelcome: () -> Unit
+    onNavigateToWelcome: () -> Unit,
+    onNavigateToCommands: () -> Unit
 ) {
     val themeSettings by mainViewModel.themeSettings.collectAsState()
 
@@ -102,6 +104,8 @@ fun SettingsScreen(
             )
 
             AboutSection()
+
+            CommandsSection(onNavigateToCommands = onNavigateToCommands)
 
             ActionsSection(
                 onDiagnostics = {
@@ -435,6 +439,41 @@ private fun AboutSection() {
                     style = AppTypography.bodySmall,
                     color = TextSecondary
                 )
+            }
+        }
+    }
+}
+
+@Composable
+private fun CommandsSection(onNavigateToCommands: () -> Unit) {
+    SettingsSection("AYUDA") {
+        Card(
+            modifier = Modifier.fillMaxWidth().clickable { onNavigateToCommands() },
+            colors = CardDefaults.cardColors(containerColor = SlateCard),
+            shape = AppShapes.card
+        ) {
+            Row(
+                modifier = Modifier.padding(AppSpacing.cardPadding).fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .background(SlateBorder, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.Terminal, contentDescription = null, tint = PrimaryIndigo)
+                }
+                Spacer(modifier = Modifier.width(AppSpacing.lg))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Ver comandos IDUPI", style = AppTypography.bodyLarge, color = TextPrimary)
+                    Text(
+                        "Referencia de comandos de la PC",
+                        style = AppTypography.bodySmall,
+                        color = TextSecondary
+                    )
+                }
+                Icon(Icons.Default.ChevronRight, contentDescription = null, tint = TextSecondary)
             }
         }
     }
