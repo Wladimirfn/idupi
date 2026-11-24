@@ -312,7 +312,7 @@ private fun InboxItemCard(
                     horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm)
                 ) {
                     Text(
-                        text = inboxAppLabel(item.app),
+                        text = alertAppLabel(item.appLabel, item.app),
                         style = AppTypography.labelSmall,
                         color = PrimaryIndigo
                     )

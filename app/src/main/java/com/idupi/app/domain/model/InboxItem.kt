@@ -3,24 +3,61 @@ package com.idupi.app.domain.model
 import kotlinx.serialization.Serializable
 
 /**
- * The apps the phone captures for Alertas (phone-inbox T2/T3).
+ * A known messaging or mail app (phone-inbox T2/T3).
  *
- * [id] is the wire value the server accepts (`INBOX_APPS` in
- * idupi-server/lib/inbox-store.mjs). [packageName] is what the notification
- * listener matches; a package that is not listed here is never captured.
+ * [id] is the stable wire value the server stores and the reminder policy
+ * matches; the four original ids never change, so items captured by an older
+ * build keep decoding. [packageName] is what the notification listener maps to
+ * [id]. Any other app the owner follows uses its own package name as the app
+ * id (see [appIdFor]).
  */
-enum class InboxApp(val id: String, val packageName: String) {
-    WHATSAPP("whatsapp", "com.whatsapp"),
-    WHATSAPP_BUSINESS("whatsapp_business", "com.whatsapp.w4b"),
-    GMAIL("gmail", "com.google.android.gm"),
-    OUTLOOK("outlook", "com.microsoft.office.outlook");
+enum class InboxApp(val id: String, val packageName: String, val label: String) {
+    WHATSAPP("whatsapp", "com.whatsapp", "WhatsApp"),
+    WHATSAPP_BUSINESS("whatsapp_business", "com.whatsapp.w4b", "WhatsApp Business"),
+    GMAIL("gmail", "com.google.android.gm", "Gmail"),
+    OUTLOOK("outlook", "com.microsoft.office.outlook", "Outlook"),
+    MESSENGER("messenger", "com.facebook.orca", "Messenger"),
+    TELEGRAM("telegram", "org.telegram.messenger", "Telegram"),
+    INSTAGRAM("instagram", "com.instagram.android", "Instagram"),
+    SIGNAL("signal", "org.thoughtcrime.securesms", "Signal");
+
+    /** Mail notifications put the sender in the title and the body in bigText. */
+    val isMail: Boolean get() = this == GMAIL || this == OUTLOOK
 
     companion object {
-        /** Every capturable app id; the default for `InboxSettings.enabledApps`. */
-        val allIds: Set<String> = entries.map { it.id }.toSet()
+        /**
+         * The apps IDUPI follows on a fresh install: the four original presets
+         * plus Messenger and Telegram. Only installed apps get a switch in
+         * Ajustes; an id without the package stays followed but captures
+         * nothing.
+         */
+        val defaultFollowedIds: Set<String> = setOf(
+            WHATSAPP.id,
+            WHATSAPP_BUSINESS.id,
+            GMAIL.id,
+            OUTLOOK.id,
+            MESSENGER.id,
+            TELEGRAM.id
+        )
 
         fun fromPackageName(packageName: String?): InboxApp? =
             entries.firstOrNull { it.packageName == packageName }
+
+        fun fromId(id: String?): InboxApp? = entries.firstOrNull { it.id == id }
+
+        /** Follow key for a package: its preset id, or the package itself. */
+        fun appIdFor(packageName: String): String =
+            fromPackageName(packageName)?.id ?: packageName
+
+        /** Preset label, else the id or package name as-is. */
+        fun labelFor(appId: String): String = fromId(appId)?.label ?: appId
+
+        /**
+         * Owner-facing name: the captured PackageManager label first, then the
+         * preset label, then the app id or package name.
+         */
+        fun displayLabel(appLabel: String?, appId: String): String =
+            appLabel?.trim().takeUnless { it.isNullOrEmpty() } ?: labelFor(appId)
     }
 }
 
@@ -60,7 +97,10 @@ object InboxImportance {
 @Serializable
 data class InboxItem(
     val id: String = "",
+    /** Preset id or package name of the source app. */
     val app: String = "",
+    /** PackageManager label captured by the phone; empty on old items. */
+    val appLabel: String = "",
     val packageName: String = "",
     val sender: String = "",
     val conversation: String = "",
@@ -86,7 +126,10 @@ data class InboxItem(
  */
 @Serializable
 data class InboxMessageRequest(
+    /** Preset id or package name the owner follows. */
     val app: String,
+    /** Optional PackageManager label for display; empty omits it on the wire. */
+    val appLabel: String = "",
     val packageName: String,
     val sender: String,
     val conversation: String,

@@ -6,6 +6,9 @@ import com.idupi.app.MainDispatcherRule
 import com.idupi.app.data.inbox.InboxCaptureGateway
 import com.idupi.app.data.inbox.InboxCaptureState
 import com.idupi.app.data.inbox.InboxScanResult
+import com.idupi.app.data.inbox.InstalledAppInventory
+import com.idupi.app.data.inbox.InstalledApps
+import com.idupi.app.data.inbox.InstalledAppsSource
 import com.idupi.app.data.settings.InMemorySettingsRepository
 import com.idupi.app.domain.model.InboxConfig
 import com.idupi.app.domain.model.InboxImportance
@@ -43,8 +46,9 @@ class InboxSettingsViewModelTest {
     }
 
     private fun viewModel(
-        gateway: InboxCaptureGateway = FakeInboxCaptureGateway()
-    ) = InboxSettingsViewModel(FakeClientSource(fake), repository, gateway)
+        gateway: InboxCaptureGateway = FakeInboxCaptureGateway(),
+        installed: InstalledAppsSource = FakeInstalledAppsSource(),
+    ) = InboxSettingsViewModel(FakeClientSource(fake), repository, gateway, installed)
 
     private fun config(
         agent: String = "opencode",
@@ -195,14 +199,86 @@ class InboxSettingsViewModelTest {
         val viewModel = viewModel()
         advanceUntilIdle()
 
-        viewModel.setAppEnabled("gmail", false)
+        viewModel.setAppFollowed("gmail", false)
         advanceUntilIdle()
 
-        assertFalse(repository.inboxSettings.first().enabledApps.contains("gmail"))
+        assertFalse(repository.inboxSettings.first().followedApps.contains("gmail"))
         assertEquals(
-            InboxSettings().enabledApps - "gmail",
-            repository.inboxSettings.first().enabledApps
+            InboxSettings().followedApps - "gmail",
+            repository.inboxSettings.first().followedApps
         )
+    }
+
+    // --- Installed apps inventory (phone-inbox T3) ---
+
+    @Test
+    fun `installed apps load into the presets and others groups`() = runTest {
+        val source = FakeInstalledAppsSource(
+            InstalledApps.inventory(
+                listOf(
+                    "com.whatsapp" to "WhatsApp",
+                    "com.example.chat" to "Chat Vecinal"
+                )
+            )
+        )
+        val viewModel = viewModel(installed = source)
+
+        viewModel.loadInstalledApps()
+        advanceUntilIdle()
+
+        val state = viewModel.installedApps.value
+        assertFalse(state.isLoading)
+        assertNull(state.errorMessage)
+        assertEquals(listOf("WhatsApp"), state.inventory.presets.map { it.displayLabel })
+        assertEquals(listOf("Chat Vecinal"), state.inventory.others.map { it.displayLabel })
+        assertEquals(1, source.loadCalls)
+    }
+
+    @Test
+    fun `installed apps load only once unless forced`() = runTest {
+        val source = FakeInstalledAppsSource(
+            InstalledApps.inventory(listOf("com.example.chat" to "Chat Vecinal"))
+        )
+        val viewModel = viewModel(installed = source)
+
+        viewModel.loadInstalledApps()
+        advanceUntilIdle()
+        viewModel.loadInstalledApps()
+        advanceUntilIdle()
+        assertEquals(1, source.loadCalls)
+
+        viewModel.loadInstalledApps(force = true)
+        advanceUntilIdle()
+        assertEquals(2, source.loadCalls)
+    }
+
+    @Test
+    fun `installed apps failure reports a message`() = runTest {
+        val source = FakeInstalledAppsSource().apply { error = IllegalStateException("pm") }
+        val viewModel = viewModel(installed = source)
+
+        viewModel.loadInstalledApps()
+        advanceUntilIdle()
+
+        assertFalse(viewModel.installedApps.value.isLoading)
+        assertEquals(
+            "No se pudieron leer las apps instaladas",
+            viewModel.installedApps.value.errorMessage
+        )
+    }
+
+    @Test
+    fun `following a package-name app persists the package as the app id`() = runTest {
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        viewModel.setAppFollowed("com.example.chat", true)
+        advanceUntilIdle()
+        assertTrue("com.example.chat" in repository.inboxSettings.first().followedApps)
+
+        viewModel.setAppFollowed("com.example.chat", false)
+        advanceUntilIdle()
+        assertFalse("com.example.chat" in repository.inboxSettings.first().followedApps)
     }
 
     @Test
@@ -372,5 +448,19 @@ private class FakeInboxCaptureGateway : InboxCaptureGateway {
 
     override suspend fun refreshPendingCount() {
         pendingRefreshCalls++
+    }
+}
+
+/** Test double for the PackageManager seam; no device involved. */
+private class FakeInstalledAppsSource(
+    var inventory: InstalledAppInventory = InstalledAppInventory()
+) : InstalledAppsSource {
+    var loadCalls = 0
+    var error: Exception? = null
+
+    override suspend fun load(): InstalledAppInventory {
+        loadCalls++
+        error?.let { throw it }
+        return inventory
     }
 }

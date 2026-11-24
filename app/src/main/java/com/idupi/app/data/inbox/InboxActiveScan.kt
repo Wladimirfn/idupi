@@ -14,12 +14,14 @@ object InboxActiveScan {
 
     fun select(
         snapshots: List<NotificationSnapshot>,
+        followedApps: Set<String>,
         ownPackageName: String = NotificationParser.OWN_PACKAGE
     ): List<CapturedMessage> {
         val seenKeys = HashSet<String>(snapshots.size)
         val selected = ArrayList<CapturedMessage>(snapshots.size)
         for (snapshot in snapshots) {
-            val captured = NotificationParser.parse(snapshot, ownPackageName) ?: continue
+            val captured = NotificationParser.parse(snapshot, followedApps, ownPackageName)
+                ?: continue
             if (captured.notificationKey.isNotBlank() &&
                 !seenKeys.add(captured.notificationKey)
             ) {

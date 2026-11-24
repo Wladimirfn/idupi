@@ -48,7 +48,7 @@ object InboxReminderPolicy {
      * Decides this tick's actions.
      *
      * Rules, in order for every server item:
-     * - Only `open` items of an app the owner still monitors qualify.
+     * - Only `open` items of an app the owner still follows qualify.
      * - Importance: an item whose analysis failed or is still running counts
      *   as `medium`; a ready item without a level counts as `low` so an
      *   inconclusive analysis never makes the phone buzz.
@@ -156,7 +156,7 @@ object InboxReminderPolicy {
     private fun isEligible(item: InboxItem, settings: InboxSettings): Boolean =
         item.id.isNotBlank() &&
             item.state == InboxItemState.OPEN &&
-            item.app in settings.enabledApps
+            item.app in settings.followedApps
 
     private fun autoReplyFor(
         item: InboxItem,

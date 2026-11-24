@@ -56,9 +56,9 @@ class InboxReminderPolicyTest {
         autoReply: Boolean = false,
         autoReplyDelayMinutes: Int = 30,
         template: String = "Hola, te contesto apenas pueda.",
-        apps: Set<String> = InboxApp.allIds,
+        apps: Set<String> = InboxApp.defaultFollowedIds,
     ) = InboxSettings(
-        enabledApps = apps,
+        followedApps = apps,
         reminderIntervalMinutes = intervalMinutes,
         remindMinImportance = minImportance,
         autoReplyEnabled = autoReply,
@@ -186,7 +186,7 @@ class InboxReminderPolicyTest {
     }
 
     @Test
-    fun `an app the owner stopped monitoring produces no actions`() {
+    fun `an app the owner stopped following produces no actions`() {
         val actions = decide(
             items = listOf(item(app = InboxApp.GMAIL.id)),
             settings = settings(apps = setOf(InboxApp.WHATSAPP.id))
@@ -196,8 +196,8 @@ class InboxReminderPolicyTest {
     }
 
     @Test
-    fun `an unknown app is never processed`() {
-        assertTrue(decide(listOf(item(app = "telegram"))).isEmpty())
+    fun `an unfollowed app is never processed`() {
+        assertTrue(decide(listOf(item(app = "com.spotify.music"))).isEmpty())
     }
 
     // --- Importance gate ---

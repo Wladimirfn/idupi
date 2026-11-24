@@ -17,7 +17,8 @@ class InboxRetryQueueTest {
     private fun captured(
         key: String = "key-1",
         text: String = "hola",
-        app: String = "whatsapp"
+        app: String = "whatsapp",
+        appLabel: String = ""
     ) = CapturedMessage(
         app = app,
         packageName = "com.whatsapp",
@@ -25,7 +26,8 @@ class InboxRetryQueueTest {
         conversation = "Ana",
         text = text,
         postedAt = "2026-11-24T12:00:00Z",
-        notificationKey = key
+        notificationKey = key,
+        appLabel = appLabel
     )
 
     private fun pending(key: String = "key-1", text: String = "hola", at: Long = 1_000L) =
@@ -139,6 +141,20 @@ class InboxRetryQueueTest {
 
         val reloaded = InboxRetryRepository(store, clock = { now })
         assertEquals(listOf("k1", "k2"), reloaded.entries().map { it.notificationKey })
+    }
+
+    @Test
+    fun `a retried capture keeps its package label on the wire`() = runTest {
+        val store = InMemoryStore()
+        val repository = InboxRetryRepository(store, clock = { 10_000L })
+
+        repository.enqueue(
+            captured("tg", "hola", app = "org.telegram.messenger", appLabel = "Telegram")
+        )
+
+        val request = repository.entries().single().toRequest()
+        assertEquals("org.telegram.messenger", request.app)
+        assertEquals("Telegram", request.appLabel)
     }
 
     @Test

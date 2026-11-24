@@ -8,6 +8,7 @@ import androidx.core.app.NotificationCompat
 import com.idupi.app.data.IduPiClientProvider
 import com.idupi.app.data.phone.PhoneStatusReporting
 import com.idupi.app.data.settings.SettingsProvider
+import com.idupi.app.domain.model.InboxApp
 import com.idupi.app.domain.model.InboxImportance
 import com.idupi.app.domain.model.InboxItem
 import com.idupi.app.domain.model.InboxItemState
@@ -21,6 +22,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -28,12 +30,13 @@ import kotlinx.coroutines.sync.Mutex
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Captures WhatsApp/Business, Gmail and Outlook notifications and uploads them
- * to the owner's PC (phone-inbox T3).
+ * Captures notifications from every app the owner follows and uploads them to
+ * the owner's PC (phone-inbox T2/T3).
  *
  * Flow per post: build a plain [NotificationSnapshot], let [NotificationParser]
- * decide whether it is a message, remember the notification's own reply action
- * for T4/T5, record the conversation in [InboxSession], then upload in the
+ * decide whether it is a message (preset id or package name as the app id, plus
+ * the PackageManager label), remember the notification's own reply action for
+ * T4/T5, record the conversation in [InboxSession], then upload in the
  * background through the same client [com.idupi.app.data.notification.DeliveryWatcher]
  * uses -- the shared [IduPiClientProvider], configured from the saved profile
  * because the system can start this service in a process where MainActivity
@@ -80,6 +83,20 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
     private val retryRepository by lazy { InboxRetryProvider.get() }
 
     /**
+     * Followed app ids as last observed (phone-inbox T3). Settings changes are
+     * rare and written by our own UI; a collector keeps this current so a live
+     * post can be filtered without a suspend call on the system's callback.
+     */
+    @Volatile
+    private var followedApps: Set<String> = InboxApp.defaultFollowedIds
+
+    /** Keeps [followedApps] in sync while the listener is connected. */
+    private var settingsJob: Job? = null
+
+    /** PackageManager label per package; a launcher label only changes on update. */
+    private val appLabels = ConcurrentHashMap<String, String>()
+
+    /**
      * Pending "the owner dismissed this" markings, one per notification key.
      * A re-post with the same key cancels the job.
      */
@@ -107,6 +124,7 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
         connected = true
         InboxCaptureController.attach(this)
         InboxCaptureDiagnostics.onListenerConnected()
+        startSettingsWatch()
         startReminderLoop()
         // phone-agent T2: this listener is the long-lived host that already
         // exists. The reporter is process-wide and idempotent, so T3's
@@ -121,6 +139,7 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
         connected = false
         InboxCaptureController.detach(this)
         InboxCaptureDiagnostics.onListenerDisconnected()
+        stopSettingsWatch()
         stopReminderLoop()
         PhoneStatusReporting.stop()
         super.onListenerDisconnected()
@@ -164,6 +183,7 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
         connected = false
         InboxCaptureController.detach(this)
         InboxCaptureDiagnostics.onListenerDisconnected()
+        stopSettingsWatch()
         stopReminderLoop()
         pendingHandled.values.forEach { it.cancel() }
         pendingHandled.clear()
@@ -172,7 +192,8 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
     }
 
     private fun handlePosted(sbn: StatusBarNotification) {
-        val captured = NotificationParser.parse(snapshotOf(sbn)) ?: return
+        val captured = NotificationParser.parse(snapshotOf(sbn), followedApps)
+            ?.withPackageLabel() ?: return
 
         // An update of the same notification is not "read": cancel any pending
         // handled marking before remembering the refreshed capture.
@@ -184,6 +205,52 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
             if (upload(captured) == UploadOutcome.ACCEPTED) drainRetries()
         }
     }
+
+    /**
+     * Settings can change while the listener lives, and a live post must not
+     * wait for a DataStore read: collect the persisted follow list once per
+     * connection and keep the volatile field current.
+     */
+    private fun startSettingsWatch() {
+        if (settingsJob?.isActive == true) return
+        settingsJob = scope.launch {
+            try {
+                SettingsProvider.repository.inboxSettings.collect { settings ->
+                    followedApps = settings.followedApps
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "could not observe inbox settings: ${e.javaClass.simpleName}")
+            }
+        }
+    }
+
+    private fun stopSettingsWatch() {
+        settingsJob?.cancel()
+        settingsJob = null
+    }
+
+    /**
+     * PackageManager label for display. A failing lookup stays empty and the
+     * item falls back to the preset label or the app id. Labels are app names,
+     * never message content.
+     */
+    private fun appLabelOf(packageName: String): String {
+        appLabels[packageName]?.let { return it }
+        val label = try {
+            val manager = packageManager
+            @Suppress("DEPRECATION")
+            manager.getApplicationLabel(manager.getApplicationInfo(packageName, 0)).toString()
+        } catch (e: Exception) {
+            ""
+        }
+        appLabels[packageName] = label
+        return label
+    }
+
+    private fun CapturedMessage.withPackageLabel(): CapturedMessage =
+        if (appLabel.isNotBlank()) this else copy(appLabel = appLabelOf(packageName))
 
     // --- Active-notification scan and retry drain (inbox capture fix T1) ---
 
@@ -197,13 +264,16 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
      */
     override suspend fun scanActiveNow(): InboxScanResult {
         if (!connected) return InboxScanResult.NotConnected
+        val followed = SettingsProvider.repository.inboxSettings.first().followedApps
+        followedApps = followed
         val pairs = snapshotActiveNotifications()
         val sbnByKey = pairs.associate { it.second.key to it.first }
-        val captured = InboxActiveScan.select(pairs.map { it.second })
+        val captured = InboxActiveScan.select(pairs.map { it.second }, followed)
 
         var sent = 0
         var uploadDeferred = false
-        for (message in captured) {
+        for (raw in captured) {
+            val message = raw.withPackageLabel()
             pendingHandled.remove(message.notificationKey)?.cancel()
             if (message.notificationKey.isNotBlank()) {
                 sbnByKey[message.notificationKey]?.let { sbn ->
@@ -433,6 +503,7 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
             postTime = sbn.postTime,
             isOngoing = sbn.isOngoing,
             isGroupSummary = ((notification?.flags ?: 0) and Notification.FLAG_GROUP_SUMMARY) != 0,
+            category = notification?.category,
             title = extras?.getCharSequence(Notification.EXTRA_TITLE)?.toString(),
             text = extras?.getCharSequence(Notification.EXTRA_TEXT)?.toString(),
             bigText = extras?.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString(),
@@ -470,8 +541,9 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
     private suspend fun upload(captured: CapturedMessage): UploadOutcome {
         try {
             val settings = SettingsProvider.repository.inboxSettings.first()
-            if (captured.app !in settings.enabledApps) {
-                // Monitoring was turned off after the notification appeared.
+            if (captured.app !in settings.followedApps) {
+                // The owner stopped following the app after the notification
+                // appeared (or the collector had not seen a just-saved change).
                 ReplyActionRegistry.drop(inboxConversationKey(captured.app, captured.conversation))
                 InboxSession.remove(captured.notificationKey)
                 return UploadOutcome.DISCARDED
@@ -611,6 +683,7 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
 /** The wire request for a captured notification; also used by retry drains. */
 private fun CapturedMessage.toRequest(): InboxMessageRequest = InboxMessageRequest(
     app = app,
+    appLabel = appLabel,
     packageName = packageName,
     sender = sender,
     conversation = conversation,

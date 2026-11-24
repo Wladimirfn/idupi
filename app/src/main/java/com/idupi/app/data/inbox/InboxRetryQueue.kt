@@ -23,10 +23,13 @@ data class PendingInboxUpload(
     val postedAt: String,
     val notificationKey: String,
     val queuedAtMillis: Long,
+    /** PackageManager label for display; empty in entries queued by older builds. */
+    val appLabel: String = "",
 ) {
     /** The wire request rebuilt from the persisted capture. */
     fun toRequest(): InboxMessageRequest = InboxMessageRequest(
         app = app,
+        appLabel = appLabel,
         packageName = packageName,
         sender = sender,
         conversation = conversation,
@@ -45,7 +48,8 @@ data class PendingInboxUpload(
                 text = captured.text,
                 postedAt = captured.postedAt,
                 notificationKey = captured.notificationKey,
-                queuedAtMillis = queuedAtMillis
+                queuedAtMillis = queuedAtMillis,
+                appLabel = captured.appLabel
             )
     }
 }

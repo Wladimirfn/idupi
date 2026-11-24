@@ -27,6 +27,7 @@ class InboxModelsTest {
             {
               "id": "itm-2f1a9c",
               "app": "whatsapp",
+              "appLabel": "WhatsApp",
               "packageName": "com.whatsapp",
               "sender": "Carlos Mendez",
               "conversation": "Carlos Mendez",
@@ -49,6 +50,7 @@ class InboxModelsTest {
 
         assertEquals("itm-2f1a9c", item.id)
         assertEquals("whatsapp", item.app)
+        assertEquals("WhatsApp", item.appLabel)
         assertEquals("com.whatsapp", item.packageName)
         assertEquals("Carlos Mendez", item.sender)
         assertEquals("Se rompio el compresor del taller, necesitamos el service urgente", item.text)
@@ -83,6 +85,7 @@ class InboxModelsTest {
 
         assertEquals("itm-b001", item.id)
         assertEquals("gmail", item.app)
+        assertEquals("", item.appLabel)
         assertNull(item.postedAt)
         assertEquals("", item.sender)
         assertEquals("", item.conversation)
@@ -125,6 +128,28 @@ class InboxModelsTest {
                 """"conversation":"Taller","text":"Hola","postedAt":"2026-11-24T12:30:00Z",""" +
                 """"notificationKey":"key-1"}""",
             json.encodeToString(InboxMessageRequest.serializer(), request)
+        )
+    }
+
+    @Test
+    fun `encodes the optional appLabel only when the capture carried one`() {
+        val labelled = InboxMessageRequest(
+            app = "org.telegram.messenger",
+            appLabel = "Telegram",
+            packageName = "org.telegram.messenger",
+            sender = "Ana",
+            conversation = "Taller",
+            text = "Hola",
+            postedAt = "2026-11-24T12:30:00Z",
+            notificationKey = "key-2"
+        )
+
+        assertEquals(
+            """{"app":"org.telegram.messenger","appLabel":"Telegram",""" +
+                """"packageName":"org.telegram.messenger","sender":"Ana",""" +
+                """"conversation":"Taller","text":"Hola",""" +
+                """"postedAt":"2026-11-24T12:30:00Z","notificationKey":"key-2"}""",
+            json.encodeToString(InboxMessageRequest.serializer(), labelled)
         )
     }
 

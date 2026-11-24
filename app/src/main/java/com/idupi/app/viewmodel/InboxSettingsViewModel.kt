@@ -4,13 +4,15 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.idupi.app.data.IduPiClientProvider
+import com.idupi.app.data.inbox.AndroidInstalledApps
 import com.idupi.app.data.inbox.InboxCaptureController
 import com.idupi.app.data.inbox.InboxCaptureGateway
 import com.idupi.app.data.inbox.InboxCaptureState
 import com.idupi.app.data.inbox.InboxScanResult
+import com.idupi.app.data.inbox.InstalledAppInventory
+import com.idupi.app.data.inbox.InstalledAppsSource
 import com.idupi.app.data.settings.SettingsProvider
 import com.idupi.app.data.settings.SettingsRepository
-import com.idupi.app.domain.model.InboxApp
 import com.idupi.app.domain.model.InboxSettings
 import com.idupi.app.domain.repository.IduPiClientSource
 import kotlinx.coroutines.CancellationException
@@ -66,6 +68,17 @@ data class InboxCaptureActionState(
 )
 
 /**
+ * Installed launchable apps offered in Ajustes > Alertas (phone-inbox T3).
+ * [inventory] splits presets (top) from the rest of the phone; both groups are
+ * already sorted by label.
+ */
+data class InstalledAppsState(
+    val inventory: InstalledAppInventory = InstalledAppInventory(),
+    val isLoading: Boolean = false,
+    val errorMessage: String? = null,
+)
+
+/**
  * Ajustes > Alertas (phone-inbox T5): listener access is a platform check the
  * screen owns, while everything else lives here.
  *
@@ -78,11 +91,16 @@ data class InboxCaptureActionState(
  * process-wide listener diagnostics and [scanNow] asks the connected listener
  * to read the notifications already in the shade plus drain the retry queue.
  * The gateway is injected so both are tested with a fake.
+ *
+ * Followed apps (phone-inbox T3): [installedApps] is the launchable inventory,
+ * loaded through an injected [InstalledAppsSource]; [setAppFollowed] persists
+ * a preset id or a package name in the same DataStore key as before.
  */
 class InboxSettingsViewModel(
     private val clientSource: IduPiClientSource = IduPiClientProvider,
     private val settingsRepository: SettingsRepository = SettingsProvider.repository,
     private val captureGateway: InboxCaptureGateway = InboxCaptureController,
+    private val installedAppsSource: InstalledAppsSource = AndroidInstalledApps,
 ) : ViewModel() {
 
     private val client get() = clientSource.client
@@ -99,7 +117,12 @@ class InboxSettingsViewModel(
     private val _agentConfig = MutableStateFlow(InboxAgentConfigState())
     val agentConfig: StateFlow<InboxAgentConfigState> = _agentConfig.asStateFlow()
 
+    private val _installedApps = MutableStateFlow(InstalledAppsState())
+    val installedApps: StateFlow<InstalledAppsState> = _installedApps.asStateFlow()
+
     private var configLoaded = false
+
+    private var installedAppsLoaded = false
 
     /**
      * Reads the PC's current agent configuration. The section calls this from
@@ -253,13 +276,41 @@ class InboxSettingsViewModel(
 
     // --- Phone-side settings, persisted immediately ---
 
-    fun setAppEnabled(appId: String, enabled: Boolean) {
+    /**
+     * Reads the phone's launchable apps for "Apps a seguir". The section calls
+     * this from a `LaunchedEffect`, so a recomposition does not requery; pass
+     * [force] after an install or for an explicit reload.
+     */
+    fun loadInstalledApps(force: Boolean = false) {
+        if (_installedApps.value.isLoading) return
+        if (!force && installedAppsLoaded) return
+        viewModelScope.launch {
+            _installedApps.update { it.copy(isLoading = true, errorMessage = null) }
+            try {
+                val inventory = installedAppsSource.load()
+                installedAppsLoaded = true
+                _installedApps.value = InstalledAppsState(inventory = inventory)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "could not list installed apps", e)
+                _installedApps.update {
+                    it.copy(
+                        isLoading = false,
+                        errorMessage = "No se pudieron leer las apps instaladas"
+                    )
+                }
+            }
+        }
+    }
+
+    fun setAppFollowed(appId: String, followed: Boolean) {
         viewModelScope.launch {
             // Read the latest stored set inside the coroutine: two quick
             // toggles must not both start from the same stale snapshot.
-            val current = settingsRepository.inboxSettings.first().enabledApps
-            val updated = if (enabled) current + appId else current - appId
-            settingsRepository.setInboxEnabledApps(updated)
+            val current = settingsRepository.inboxSettings.first().followedApps
+            val updated = if (followed) current + appId else current - appId
+            settingsRepository.setInboxFollowedApps(updated)
         }
     }
 
@@ -313,13 +364,5 @@ class InboxSettingsViewModel(
 
     companion object {
         private const val TAG = "InboxSettingsVM"
-
-        /** Apps the section renders, in display order. */
-        val MONITORED_APPS: List<InboxApp> = listOf(
-            InboxApp.WHATSAPP,
-            InboxApp.WHATSAPP_BUSINESS,
-            InboxApp.GMAIL,
-            InboxApp.OUTLOOK
-        )
     }
 }

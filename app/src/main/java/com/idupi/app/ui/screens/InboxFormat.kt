@@ -12,14 +12,15 @@ import java.time.Instant
  * Spanish because the owner and their contacts are; code stays English.
  */
 
-/** Owner-facing name of the source app. */
-fun inboxAppLabel(app: String): String = when (app) {
-    InboxApp.WHATSAPP.id -> "WhatsApp"
-    InboxApp.WHATSAPP_BUSINESS.id -> "WhatsApp Business"
-    InboxApp.GMAIL.id -> "Gmail"
-    InboxApp.OUTLOOK.id -> "Outlook"
-    else -> app
-}
+/** Owner-facing name of the source app: preset label, else the id/package. */
+fun inboxAppLabel(app: String): String = InboxApp.labelFor(app)
+
+/**
+ * Alertas card title for the source app: the label the phone captured first,
+ * then the preset label, then the app id or package name.
+ */
+fun alertAppLabel(appLabel: String, app: String): String =
+    InboxApp.displayLabel(appLabel, app)
 
 /** Alta / Media / Baja, or null while the agent has not returned a level. */
 fun importanceLabel(importance: String?): String? = when (importance) {

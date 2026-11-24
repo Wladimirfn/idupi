@@ -31,12 +31,23 @@ class InboxFormatTest {
         Instant.ofEpochMilli(now - minutes * 60_000L).toString()
 
     @Test
-    fun `app labels cover the four supported apps`() {
+    fun `app labels cover the presets and fall back to the id`() {
         assertEquals("WhatsApp", inboxAppLabel("whatsapp"))
         assertEquals("WhatsApp Business", inboxAppLabel("whatsapp_business"))
         assertEquals("Gmail", inboxAppLabel("gmail"))
         assertEquals("Outlook", inboxAppLabel("outlook"))
-        assertEquals("telegram", inboxAppLabel("telegram"))
+        assertEquals("Messenger", inboxAppLabel("messenger"))
+        assertEquals("Telegram", inboxAppLabel("telegram"))
+        assertEquals("Instagram", inboxAppLabel("instagram"))
+        assertEquals("Signal", inboxAppLabel("signal"))
+        assertEquals("com.example.chat", inboxAppLabel("com.example.chat"))
+    }
+
+    @Test
+    fun `alert label prefers the captured package label`() {
+        assertEquals("Telegram X", alertAppLabel("Telegram X", "telegram"))
+        assertEquals("Telegram", alertAppLabel("   ", "telegram"))
+        assertEquals("com.example.chat", alertAppLabel("", "com.example.chat"))
     }
 
     @Test

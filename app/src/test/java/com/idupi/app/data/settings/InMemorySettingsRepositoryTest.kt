@@ -60,11 +60,11 @@ class InMemorySettingsRepositoryTest {
     }
 
     @Test
-    fun `fresh repository captures every app and leaves auto-reply off`() = runTest {
+    fun `fresh repository follows the default apps and leaves auto-reply off`() = runTest {
         val settings = InMemorySettingsRepository().inboxSettings.first()
 
         assertEquals(InboxSettings(), settings)
-        assertEquals(4, settings.enabledApps.size)
+        assertEquals(6, settings.followedApps.size)
         assertEquals(false, settings.autoReplyEnabled)
     }
 
@@ -72,7 +72,7 @@ class InMemorySettingsRepositoryTest {
     fun `inbox setters update only their own field`() = runTest {
         val repo = InMemorySettingsRepository()
 
-        repo.setInboxEnabledApps(setOf("gmail"))
+        repo.setInboxFollowedApps(setOf("gmail"))
         repo.setInboxReminderIntervalMinutes(5)
         repo.setInboxRemindMinImportance("medium")
         repo.setInboxAutoReplyEnabled(true)
@@ -80,7 +80,7 @@ class InMemorySettingsRepositoryTest {
         repo.setInboxAutoReplyTemplate("Plantilla")
 
         val settings = repo.inboxSettings.first()
-        assertEquals(setOf("gmail"), settings.enabledApps)
+        assertEquals(setOf("gmail"), settings.followedApps)
         assertEquals(5, settings.reminderIntervalMinutes)
         assertEquals("medium", settings.remindMinImportance)
         assertEquals(true, settings.autoReplyEnabled)

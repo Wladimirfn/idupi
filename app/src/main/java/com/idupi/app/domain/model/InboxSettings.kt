@@ -1,16 +1,20 @@
 package com.idupi.app.domain.model
 
 /**
- * Phone-side Alertas settings (phone-inbox T2).
+ * Phone-side Alertas settings (phone-inbox T2/T3).
  *
- * Defaults mirror the feature's agreed behaviour: every supported app is
- * captured, important unanswered items are reminded every 15 minutes and
- * auto-reply is OFF until the owner enables it. The template is the only text
- * an automatic reply ever sends (see the feature's Decisions section); it is
- * Spanish because the owner's contacts are.
+ * Defaults mirror the feature's agreed behaviour: the four original apps plus
+ * Messenger and Telegram are followed, important unanswered items are reminded
+ * every 15 minutes and auto-reply is OFF until the owner enables it. The
+ * template is the only text an automatic reply ever sends (see the feature's
+ * Decisions section); it is Spanish because the owner's contacts are.
  */
 data class InboxSettings(
-    val enabledApps: Set<String> = InboxApp.allIds,
+    /**
+     * Apps IDUPI follows: a preset [InboxApp.id] or the package name of any
+     * other installed app. Empty is a real choice ("follow nothing").
+     */
+    val followedApps: Set<String> = InboxApp.defaultFollowedIds,
     val reminderIntervalMinutes: Int = DEFAULT_REMINDER_INTERVAL_MINUTES,
     /** Only [InboxImportance.HIGH] or [InboxImportance.MEDIUM] trigger reminders. */
     val remindMinImportance: String = InboxImportance.HIGH,

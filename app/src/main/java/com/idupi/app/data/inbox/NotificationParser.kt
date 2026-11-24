@@ -11,9 +11,9 @@ data class MessagingLine(
 
 /**
  * Everything [NotificationParser] needs from a `StatusBarNotification`, as
- * plain values. Keeping the input this small is what lets the WhatsApp, Gmail
- * and Outlook rules be unit-tested on the JVM without Robolectric: the
- * listener is the only place that touches the Android notification objects.
+ * plain values. Keeping the input this small is what lets the capture rules be
+ * unit-tested on the JVM without Robolectric: the listener is the only place
+ * that touches the Android notification objects.
  */
 data class NotificationSnapshot(
     val packageName: String,
@@ -21,6 +21,8 @@ data class NotificationSnapshot(
     val postTime: Long,
     val isOngoing: Boolean = false,
     val isGroupSummary: Boolean = false,
+    /** `Notification.getCategory()`, e.g. "msg", "call", "progress". */
+    val category: String? = null,
     val title: String? = null,
     val text: String? = null,
     val bigText: String? = null,
@@ -32,8 +34,10 @@ data class NotificationSnapshot(
 /**
  * A notification that should become an inbox item.
  *
- * [app] is the server's wire id ([InboxApp.id]); [postedAt] is ISO-8601
- * because that is what `POST /api/v1/inbox/messages` accepts.
+ * [app] is the wire app id: a preset [InboxApp.id] or the package name of any
+ * other followed app (see [InboxApp.appIdFor]); [postedAt] is ISO-8601 because
+ * that is what `POST /api/v1/inbox/messages` accepts. [appLabel] is filled by
+ * the listener, which owns the PackageManager lookup, so the parser stays pure.
  */
 data class CapturedMessage(
     val app: String,
@@ -42,57 +46,78 @@ data class CapturedMessage(
     val conversation: String,
     val text: String,
     val postedAt: String,
-    val notificationKey: String
+    val notificationKey: String,
+    val appLabel: String = ""
 )
 
 /**
- * Pure capture rules (phone-inbox T3): which notifications become inbox items
- * and what each field means for WhatsApp vs mail.
+ * Pure capture rules (phone-inbox T2/T3): which notifications become inbox
+ * items and what each field means for messaging vs mail.
  *
  * Skipped on purpose:
- * - any package that is not one of the four supported apps (including our own);
+ * - any package whose follow key is not in the owner's followed set, including
+ *   our own package;
  * - ongoing notifications (calls, music, navigation): they are not messages;
  * - group summaries, which only repeat messages already captured;
+ * - call, progress, transport, service and system categories, which are never
+ *   a conversation the owner can answer;
  * - blank text;
- * - WhatsApp's aggregation rows ("3 mensajes nuevos" / "3 new messages"),
+ * - messaging aggregation rows ("3 mensajes nuevos" / "3 new messages"),
  *   which are summaries of a summary and carry no sender.
  */
 object NotificationParser {
 
-    /** Our own package is not an `InboxApp`; kept explicit so it can never leak in. */
+    /** Our own package is never followed; kept explicit so it can never leak in. */
     const val OWN_PACKAGE = "com.idupi.app"
 
-    /** WhatsApp's Android 13+ aggregation row, in the owner's phone language. */
-    private val WHATSAPP_SUMMARY = Regex(
+    /**
+     * Categories that never describe a message. These mirror the string values
+     * of `android.app.Notification.CATEGORY_*` so this file stays Android-free.
+     */
+    private val SKIPPED_CATEGORIES = setOf("call", "progress", "transport", "service", "system")
+
+    /** A messaging app's Android 13+ aggregation row, in the phone's language. */
+    private val MESSAGING_SUMMARY = Regex(
         "^\\s*\\d+\\s+(mensajes nuevos|new messages)(\\s+de\\s+.*)?\\s*$",
         RegexOption.IGNORE_CASE
     )
 
+    /**
+     * @param followedApps preset ids or package names the owner follows.
+     */
     fun parse(
         snapshot: NotificationSnapshot,
+        followedApps: Set<String>,
         ownPackageName: String = OWN_PACKAGE
     ): CapturedMessage? {
         if (snapshot.packageName == ownPackageName) return null
-        val app = InboxApp.fromPackageName(snapshot.packageName) ?: return null
         if (snapshot.isOngoing) return null
         if (snapshot.isGroupSummary) return null
+        if (snapshot.category != null && snapshot.category in SKIPPED_CATEGORIES) return null
+
+        val appId = InboxApp.appIdFor(snapshot.packageName)
+        // A preset is followed by its stable id; any other app by its package.
+        if (appId !in followedApps && snapshot.packageName !in followedApps) return null
 
         val postedAt = Instant.ofEpochMilli(snapshot.postTime).toString()
-        return when (app) {
-            InboxApp.WHATSAPP, InboxApp.WHATSAPP_BUSINESS -> messaging(snapshot, app, postedAt)
-            InboxApp.GMAIL, InboxApp.OUTLOOK -> mail(snapshot, app, postedAt)
+        val preset = InboxApp.fromPackageName(snapshot.packageName)
+        return if (preset?.isMail == true) {
+            mail(snapshot, appId, postedAt)
+        } else {
+            messaging(snapshot, appId, postedAt)
         }
     }
 
     /**
-     * WhatsApp/Business: prefer the last MessagingStyle message, because a
-     * conversation notification repeats the recent ones and only the newest
-     * matters. Without a MessagingStyle the notification text is the message
-     * and the title is the contact (1:1) or the group (group chat).
+     * Messaging (WhatsApp, Messenger, Telegram, and any other followed app):
+     * prefer the last MessagingStyle message, because a conversation
+     * notification repeats the recent ones and only the newest matters.
+     * Without a MessagingStyle the notification text is the message and the
+     * title is the contact (1:1) or the group (group chat).
      */
     private fun messaging(
         snapshot: NotificationSnapshot,
-        app: InboxApp,
+        appId: String,
         postedAt: String
     ): CapturedMessage? {
         val lastLine = snapshot.messagingLines.lastOrNull { !it.text.isNullOrBlank() }
@@ -102,7 +127,7 @@ object NotificationParser {
                 ?: snapshot.text
             )?.trim().orEmpty()
         if (text.isEmpty()) return null
-        if (WHATSAPP_SUMMARY.matches(text)) return null
+        if (MESSAGING_SUMMARY.matches(text)) return null
 
         val groupName = snapshot.conversationTitle?.trim().orEmpty()
         val sender = lastLine?.sender?.trim().takeUnless { it.isNullOrEmpty() }
@@ -110,7 +135,7 @@ object NotificationParser {
         val conversation = groupName.ifEmpty { sender }
 
         return CapturedMessage(
-            app = app.id,
+            app = appId,
             packageName = snapshot.packageName,
             sender = sender,
             conversation = conversation,
@@ -127,7 +152,7 @@ object NotificationParser {
      */
     private fun mail(
         snapshot: NotificationSnapshot,
-        app: InboxApp,
+        appId: String,
         postedAt: String
     ): CapturedMessage? {
         val sender = snapshot.title?.trim().orEmpty()
@@ -137,7 +162,7 @@ object NotificationParser {
             ?: sender
 
         return CapturedMessage(
-            app = app.id,
+            app = appId,
             packageName = snapshot.packageName,
             sender = sender,
             conversation = conversation,
@@ -147,3 +172,4 @@ object NotificationParser {
         )
     }
 }
+
