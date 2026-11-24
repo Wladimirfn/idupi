@@ -35,10 +35,10 @@ session counts, "latest session" lookup and per-provider model lists stopped wor
 
 ## Tasks
 
-- [ ] T1 Sessions via `session list` (+ optional counts), latest-session lookup, models by prefix;
+- [x] T1 Sessions via `session list` (+ optional counts), latest-session lookup, models by prefix;
       tests with injected execFile/sqlite; update `sessions-runtime` and
       `opencode-model-passthrough` tests that assert the old `db` shape.
-- [ ] T2 Live check against the real OpenCode v2 + server restart (owner OK if PTYs are open).
+- [x] T2 Live check against the real OpenCode v2 + server restart (owner OK if PTYs are open).
 
 ## Checks
 
@@ -54,7 +54,9 @@ session counts, "latest session" lookup and per-provider model lists stopped wor
 
 | Task | Commit | Checks |
 |------|--------|--------|
+| T1 | 1120294 | Writer idu-pi work-1: new `lib/opencode-cli.mjs` (cached `session list --format json`, JS cursor paging, read-only node:sqlite counts with bound params, models prefix filter), `execOpenCodeDb` + SQL builders removed; 17 new tests; opencode-model-passthrough / sessions-runtime / session-noise updated (41/41). Parent: reviewed readOnly + bound params; full suite 543/543 excluding screen-*; screen-stream + screen-helper 24/24 alone (full-suite load flake). |
+| T2 | 1120294 | Server restarted (no PTYs). Live: `/api/v1/orchestrator/providers/opencode-go/models` 200 -> 32 models; `/api/v1/sessions?engine=opencode` 200 with no errors (0 sessions: default "Proyecto Actual" path is the server cwd `idupi-server`, which has 0 OpenCode sessions vs 51 at the repo root — pre-existing registry behavior on main, not part of this fix). Worker smoke vs repo root: 42 filtered / 48 total, exact msgCount. |
 
 ## Next step
 
-T1 via idu-pi work-1.
+PR to main; owner decides merge. Follow-up (out of scope): default project path = server cwd (`idupi-server`) instead of the repo root.
