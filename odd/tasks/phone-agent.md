@@ -52,7 +52,7 @@ server wrapper, acting on lock screen / unlocking.
 - [x] T2 App status: pure mappers + Android collectors (battery, signal,
   network, memory, storage, usage stats, foreground app), reporter every 60 s
   from a persistent service, usage-access permission UI.
-- [ ] T3 App control: AccessibilityService + config XML, command executor
+- [x] T3 App control: AccessibilityService + config XML, command executor
   (screen dump, tap by text/id/coords, type, scroll, global actions, open app,
   wait), long-poll loop gated by the master switch, command log, Ajustes UI,
   `idupi-phone` entries in the commands catalog.
@@ -113,3 +113,35 @@ stacked PRs (same as #18 → #19 → #20).
   `signal.networkType` is expected null because READ_PHONE_STATE is not
   declared or requested.
   Next: T3 accessibility service and command executor.
+- T3 done (ff54298, d8e7faf, eda18db): pure control core in
+  `data/phone/control/` (`NodeSnapshot`/`ScreenDumpFormatter` with the exact
+  docs/phone.md line shape, depth-first ordinals shared across window roots,
+  escaping, `••••` masking, invisible-node skip; `NodeMatcher` with exact text,
+  then case-insensitive contains on text/desc, view ids, nearest clickable
+  ancestor and ambiguity refusal; `CommandParser` mirroring the server
+  validation; `AppResolver`; 30-entry payload-free `PhoneCommandLog`;
+  `PhoneControlPoller`/`PollBackoff`). `IdupiAccessibilityService` with
+  `res/xml/idupi_accessibility_service.xml` and the manifest entry, started only
+  while the service is connected, the new `phone_control_enabled` switch
+  (default off) is on and a profile exists; it observes the switch, cancels the
+  in-flight poll when it turns off, stops on `onInterrupt`/`onUnbind`/
+  `onDestroy`, and hosts the idempotent `PhoneStatusReporting.start`. Executor:
+  screen from `rootInActiveWindow` (active-window fallback), tap/long-press via
+  `ACTION_CLICK`/`ACTION_LONG_CLICK` then gesture, type via `ACTION_SET_TEXT`
+  with `campo de contraseña` refusal and `ACTION_IME_ENTER` on API 30+, scroll
+  action or swipe, global actions (quick settings API 31+), open through the
+  launcher intent, wait, status through `reportNow`; every path returns ok/error
+  and never crashes the service. Client trio: `getNextPhoneCommand(waitSeconds)`
+  (204 → null, timeout wait + 15 s) and `postPhoneCommandResult`. Ajustes adds
+  the control switch, accessibility status rechecked on resume with its settings
+  button and the Android 13 restricted-settings hint, a READ_PHONE_STATE row for
+  4G/5G, and recent activity; the catalog gains the `idupi-phone` section.
+  Expired commands are reported as failures instead of executed; the log records
+  typed text as a length and never the dump.
+  Verification: `.\gradlew.bat :app:testDebugUnitTest :app:assembleRelease -q`
+  exit 0; 563 unit tests, 0 failures (70 new across the control tests, poller,
+  accessibility status, control-setting DataStore, ViewModel and catalog).
+  Unverified on a device: real accessibility trees/windows, gesture dispatch,
+  package visibility and IME submit; no instrumentation here. Live end-to-end
+  against the PC and the APK delivery belong to T4; the server was not restarted.
+  Next: T4 version bump, APK delivery and live e2e.
