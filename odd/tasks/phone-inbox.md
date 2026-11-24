@@ -52,9 +52,9 @@ per-contact rules.
   methods, inbox settings in DataStore.
 - [x] T3 App capture: notification parser (pure, tested), listener service +
   manifest, reply-action registry, upload to server, handled-on-removal.
-- [ ] T4 App policy: reminder/auto-reply decision logic (pure, tested) wired in
+- [x] T4 App policy: reminder/auto-reply decision logic (pure, tested) wired in
   the listener; local reminder notifications; RemoteInput send.
-- [ ] T5 App UI: Alertas inbox list + actions; Ajustes > Alertas config.
+- [x] T5 App UI: Alertas inbox list + actions; Ajustes > Alertas config.
 - [ ] T6 Deliver: version bump, release APK to phone, server restart (after
   checking live PTYs).
 
@@ -117,10 +117,54 @@ PRs decided at delivery.
   profile (`IduPiClientProvider.configureFromStorage`, also used by
   MainActivity). Verification: `:app:testDebugUnitTest :app:assembleRelease`
   380/380, release APK built.
+- T4 done: 534f58b feat(app): inbox reminders and template auto-reply.
+  `InboxReminderPolicy` is pure: open items only, monitored apps only,
+  importance gate (high, or high+medium; analyzing/failed count as medium and a
+  ready item without a level counts as low), reminders at
+  `now - max(receivedAt, lastRemindedAt) >= interval`, auto-reply only for
+  WhatsApp/Business with the delay elapsed, a live reply action, a non-blank
+  template and not done yet, always sending `autoReplyTemplate` and never the
+  AI suggestion. One auto-reply per conversation per tick; an item being
+  auto-replied is not reminded in the same tick. InboxReminderPolicyTest 30/30
+  (time math, boundaries, gates, idempotence, dedupe, template-only). Host:
+  60 s coroutine loop in `InboxNotificationListener`, started on
+  onListenerConnected and cancelled on onListenerDisconnected/onDestroy; on
+  success the item becomes `auto_replied`, failure keeps reminding.
+  Reminders post on the new `idupi_inbox_reminders` channel ("Recordatorios
+  IDUPI") with sender + summary and tap through to Alertas
+  (`InboxNotifier.EXTRA_OPEN_ALERTS` → MainActivity → AppNavigationIntents).
+  The first observation of a ready high item is announced once ("Mensaje
+  importante de <sender>"); items that were already ready before the process
+  started are not re-announced. No message text is logged.
+- T5 done: 91eb4af feat(app): inbox alerts screen and settings. Alertas now
+  reads `getInboxItems(50)` (the server `/api/v1/alerts` stub is unused) and
+  polls every 10 s only while the screen is composed, plus a manual refresh
+  icon; filters Pendientes/Todas/Importantes; cards show app label, sender,
+  relative time, importance chip, category, summary (or Analizando… / error +
+  Reintentar), expandable original text and the suggested reply, with Enviar
+  sugerencia / Editar y enviar / Copiar / Atendida / Descartar. Sending uses
+  the live `ReplyActionRegistry` action for the conversation and marks the item
+  `replied`; without one the card shows Copiar plus "Respondé desde la app
+  original". The drawer badge now counts open high items. Ajustes > ALERTAS
+  adds listener access status (re-checked on resume) + settings intent,
+  monitored-app switches, reminder interval and minimum importance, auto-reply
+  toggle (off by default) + fixed warning + delay + template, and the PC agent
+  (agent / model / effort, opencode models from the server) with explicit save
+  and inline error/success feedback. AlertsViewModelTest 16/16,
+  InboxSettingsViewModelTest 13/13, InboxFormatTest 8/8.
+  Verification: `:app:testDebugUnitTest :app:assembleRelease` 440/440, release
+  APK built (50,222,002 bytes).
 - Unverified in unit tests (no Robolectric): RemoteInput delivery through
-  PendingIntent, listener rebind behaviour and the real 2 s removal ordering.
-  Parser, session, registry decision logic and reason classification are
-  covered; the on-device proof belongs to T6.
-- Working tree note: `idupi-server/lib/inbox-routes.mjs` still carries an
-  uncommitted hardening change that predates T2/T3 (error handling only, no
-  wire-shape change). Left untouched.
+  PendingIntent (manual send and auto-reply), listener rebind behaviour, the
+  2 s removal ordering, notification permission/channel behaviour on the
+  phone, PendingIntent extras surviving a cold start, and that sending a
+  template auto-reply does not leave the source notification's action usable
+  for a second reply. Policy, session, registry decision logic, formatting and
+  both ViewModels are covered; the on-device proof belongs to T6. Interpretations
+  beyond the letter of T4/T5: reminders/auto-replies also stop for apps the
+  owner stopped monitoring, and at most one auto-reply per conversation is sent
+  per tick. Alertas renders a refresh icon rather than a pull-to-refresh
+  gesture.
+- Working tree note: the `idupi-server/lib/inbox-routes.mjs` hardening change
+  that predated T2/T3 was committed as 8ff3044 (error handling only, no
+  wire-shape change); the tree was clean when T4 started.
