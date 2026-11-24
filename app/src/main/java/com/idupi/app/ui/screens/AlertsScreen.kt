@@ -24,6 +24,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -31,6 +32,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -60,6 +63,10 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.idupi.app.data.inbox.InboxConversationGroup
+import com.idupi.app.data.inbox.InboxConversationGroups
+import com.idupi.app.domain.model.InboxDigest
+import com.idupi.app.domain.model.InboxDigestStatus
 import com.idupi.app.domain.model.InboxImportance
 import com.idupi.app.domain.model.InboxItem
 import com.idupi.app.domain.model.InboxItemState
@@ -79,13 +86,16 @@ import com.idupi.app.viewmodel.AlertsViewModel
 import com.idupi.app.viewmodel.InboxFilter
 
 /**
- * Alertas = the phone inbox (phone-inbox T5).
+ * Alertas = the phone inbox (phone-inbox T5 + inbox-management T4).
  *
  * The old supervisor-alert list read `/api/v1/alerts`, which is a stub that
- * always returns `[]`; only its test-notification action survived. Each card
- * shows the agent's analysis plus the actions the phone can actually perform
- * through the source notification's reply action. Polling is tied to this
- * screen's composition so leaving Alertas stops the 10 s requests.
+ * always returns `[]`. The list groups open items per conversation: one item
+ * renders as the usual card, two or more render as one conversation card with
+ * the PC digest, the questions pending for the owner and a suggested reply.
+ * Each card menu can silence the chat inside IDUPI ("silence but read"): the
+ * phone keeps capturing it, removes its notification from the shade and stops
+ * reminding, while the conversation still shows up here. Polling is tied to
+ * this screen's composition so leaving Alertas stops the 10 s requests.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -98,8 +108,12 @@ fun AlertsScreen(
     val items by viewModel.items.collectAsState()
     val filter by viewModel.filter.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val digests by viewModel.digests.collectAsState()
+    val requestingDigests by viewModel.requestingDigests.collectAsState()
+    val silencedConversations by viewModel.silencedConversations.collectAsState()
 
     val visibleItems = remember(items, filter) { AlertsViewModel.filterItems(items, filter) }
+    val groups = remember(visibleItems) { InboxConversationGroups.group(visibleItems) }
     val nowMillis = remember(items) { System.currentTimeMillis() }
 
     DisposableEffect(viewModel) {
@@ -108,6 +122,7 @@ fun AlertsScreen(
     }
 
     var editingItem by remember { mutableStateOf<InboxItem?>(null) }
+    var editingGroup by remember { mutableStateOf<InboxConversationGroup?>(null) }
     var editText by remember { mutableStateOf("") }
 
     Scaffold(
@@ -145,7 +160,7 @@ fun AlertsScreen(
                         CircularProgressIndicator(color = PrimaryIndigo)
                     }
                 }
-                visibleItems.isEmpty() -> {
+                groups.isEmpty() -> {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
                             text = emptyMessage(filter),
@@ -159,25 +174,68 @@ fun AlertsScreen(
                         verticalArrangement = Arrangement.spacedBy(AppSpacing.md),
                         contentPadding = PaddingValues(bottom = AppSpacing.xl)
                     ) {
-                        items(visibleItems, key = { it.id }) { item ->
-                            InboxItemCard(
-                                item = item,
-                                nowMillis = nowMillis,
-                                canReply = viewModel.canReply(item),
-                                onSendSuggestion = { viewModel.sendSuggestion(item) },
-                                onEdit = {
-                                    editingItem = item
-                                    editText = item.suggestedReply
-                                },
-                                onCopy = {
-                                    clipboard.setText(AnnotatedString(item.suggestedReply))
-                                    Toast.makeText(context, "Sugerencia copiada", Toast.LENGTH_SHORT)
-                                        .show()
-                                },
-                                onHandled = { viewModel.markHandled(item) },
-                                onDismiss = { viewModel.dismiss(item) },
-                                onRetry = { viewModel.retryAnalysis(item) }
-                            )
+                        items(groups, key = { it.conversationKey }) { group ->
+                            val silenced = group.conversationKey in silencedConversations
+                            val onToggleSilence = {
+                                viewModel.setConversationSilenced(
+                                    group.conversationKey,
+                                    !silenced
+                                )
+                            }
+                            if (group.count == 1) {
+                                val item = group.newestItem
+                                InboxItemCard(
+                                    item = item,
+                                    nowMillis = nowMillis,
+                                    canReply = viewModel.canReply(item),
+                                    silenced = silenced,
+                                    onToggleSilence = onToggleSilence,
+                                    onSendSuggestion = { viewModel.sendSuggestion(item) },
+                                    onEdit = {
+                                        editingItem = item
+                                        editText = item.suggestedReply
+                                    },
+                                    onCopy = {
+                                        clipboard.setText(AnnotatedString(item.suggestedReply))
+                                        Toast.makeText(
+                                            context,
+                                            "Sugerencia copiada",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    },
+                                    onHandled = { viewModel.markHandled(item) },
+                                    onDismiss = { viewModel.dismiss(item) },
+                                    onRetry = { viewModel.retryAnalysis(item) }
+                                )
+                            } else {
+                                val digest = digests[group.conversationKey]
+                                ConversationCard(
+                                    group = group,
+                                    digest = digest,
+                                    isRequesting = group.conversationKey in requestingDigests,
+                                    canReply = viewModel.canReply(group),
+                                    silenced = silenced,
+                                    nowMillis = nowMillis,
+                                    onToggleSilence = onToggleSilence,
+                                    onRequestDigest = { viewModel.requestDigest(group) },
+                                    onSendSuggestion = { viewModel.sendGroupSuggestion(group) },
+                                    onEdit = {
+                                        editingGroup = group
+                                        editText = digest?.suggestedReply.orEmpty()
+                                    },
+                                    onCopy = {
+                                        clipboard.setText(
+                                            AnnotatedString(digest?.suggestedReply.orEmpty())
+                                        )
+                                        Toast.makeText(
+                                            context,
+                                            "Sugerencia copiada",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    },
+                                    onMarkAllHandled = { viewModel.markGroupHandled(group) }
+                                )
+                            }
                         }
                     }
                 }
@@ -186,51 +244,78 @@ fun AlertsScreen(
     }
 
     editingItem?.let { item ->
-        AlertDialog(
-            onDismissRequest = { editingItem = null },
-            title = {
-                Text("Editar respuesta", color = TextPrimary, fontWeight = FontWeight.Bold)
+        EditReplyDialog(
+            text = editText,
+            onTextChange = { editText = it },
+            onConfirm = {
+                viewModel.sendEdited(item, editText)
+                editingItem = null
             },
-            text = {
-                OutlinedTextField(
-                    value = editText,
-                    onValueChange = { editText = it },
-                    minLines = 3,
-                    placeholder = { Text("Escribe tu respuesta", color = TextSecondary) },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = TextPrimary,
-                        unfocusedTextColor = TextPrimary,
-                        focusedBorderColor = PrimaryIndigo,
-                        unfocusedBorderColor = SlateBorder,
-                        focusedContainerColor = SlateBg,
-                        unfocusedContainerColor = SlateBg
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        viewModel.sendEdited(item, editText)
-                        editingItem = null
-                    },
-                    enabled = editText.isNotBlank(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = PrimaryIndigo,
-                        contentColor = Color.White
-                    )
-                ) {
-                    Text("Enviar", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { editingItem = null }) {
-                    Text("Cancelar", color = TextSecondary)
-                }
-            },
-            containerColor = SlateCard
+            onDismiss = { editingItem = null }
         )
     }
+
+    editingGroup?.let { group ->
+        EditReplyDialog(
+            text = editText,
+            onTextChange = { editText = it },
+            onConfirm = {
+                viewModel.sendGroupEdited(group, editText)
+                editingGroup = null
+            },
+            onDismiss = { editingGroup = null }
+        )
+    }
+}
+
+@Composable
+private fun EditReplyDialog(
+    text: String,
+    onTextChange: (String) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text("Editar respuesta", color = TextPrimary, fontWeight = FontWeight.Bold)
+        },
+        text = {
+            OutlinedTextField(
+                value = text,
+                onValueChange = onTextChange,
+                minLines = 3,
+                placeholder = { Text("Escribe tu respuesta", color = TextSecondary) },
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = TextPrimary,
+                    unfocusedTextColor = TextPrimary,
+                    focusedBorderColor = PrimaryIndigo,
+                    unfocusedBorderColor = SlateBorder,
+                    focusedContainerColor = SlateBg,
+                    unfocusedContainerColor = SlateBg
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirm,
+                enabled = text.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = PrimaryIndigo,
+                    contentColor = Color.White
+                )
+            ) {
+                Text("Enviar", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancelar", color = TextSecondary)
+            }
+        },
+        containerColor = SlateCard
+    )
 }
 
 @Composable
@@ -270,12 +355,57 @@ private fun FilterRow(
     }
 }
 
+/**
+ * Per-conversation menu (inbox-management T4): "silence but read" removes the
+ * source notifications while IDUPI keeps the chat in Alertas.
+ */
+@Composable
+private fun ConversationMenu(
+    silenced: Boolean,
+    onToggleSilence: () -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        IconButton(onClick = { expanded = true }) {
+            Icon(
+                Icons.Default.MoreVert,
+                contentDescription = "Opciones del chat",
+                tint = TextSecondary
+            )
+        }
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            DropdownMenuItem(
+                text = {
+                    Text(
+                        text = if (silenced) {
+                            "Dejar de silenciar"
+                        } else {
+                            "Silenciar en el teléfono (seguir leyendo)"
+                        },
+                        style = AppTypography.bodySmall,
+                        color = TextPrimary
+                    )
+                },
+                onClick = {
+                    expanded = false
+                    onToggleSilence()
+                }
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun InboxItemCard(
     item: InboxItem,
     nowMillis: Long,
     canReply: Boolean,
+    silenced: Boolean,
+    onToggleSilence: () -> Unit,
     onSendSuggestion: () -> Unit,
     onEdit: () -> Unit,
     onCopy: () -> Unit,
@@ -326,11 +456,14 @@ private fun InboxItemCard(
                         )
                     }
                 }
-                Text(
-                    text = relativeTimeLabel(item, nowMillis),
-                    style = AppTypography.bodySmall,
-                    color = TextSecondary
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = relativeTimeLabel(item, nowMillis),
+                        style = AppTypography.bodySmall,
+                        color = TextSecondary
+                    )
+                    ConversationMenu(silenced = silenced, onToggleSilence = onToggleSilence)
+                }
             }
 
             Row(
@@ -454,6 +587,231 @@ private fun InboxItemCard(
                         style = AppTypography.labelSmall,
                         color = TextSecondary
                     )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * One chat with two or more unseen messages (inbox-management T4): a single
+ * card with the conversation digest, the pending questions, the suggested
+ * reply, the expandable message list and the bulk close action.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ConversationCard(
+    group: InboxConversationGroup,
+    digest: InboxDigest?,
+    isRequesting: Boolean,
+    canReply: Boolean,
+    silenced: Boolean,
+    nowMillis: Long,
+    onToggleSilence: () -> Unit,
+    onRequestDigest: () -> Unit,
+    onSendSuggestion: () -> Unit,
+    onEdit: () -> Unit,
+    onCopy: () -> Unit,
+    onMarkAllHandled: () -> Unit,
+) {
+    var expanded by rememberSaveable(group.conversationKey) { mutableStateOf(false) }
+    val analyzing = isRequesting || digest?.status == InboxDigestStatus.ANALYZING
+    val failed = digest?.status == InboxDigestStatus.FAILED
+    val summary = digest?.summary?.trim().orEmpty()
+    val pending = digest?.pendingForOwner.orEmpty()
+    val suggestedReply = digest?.suggestedReply?.trim().orEmpty()
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SlateCard),
+        shape = AppShapes.card,
+        border = BorderStroke(1.dp, SlateBorder)
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(AppSpacing.cardPadding)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = alertAppLabel(group.appLabel, group.app),
+                        style = AppTypography.labelSmall,
+                        color = PrimaryIndigo
+                    )
+                    Text(
+                        text = group.conversation.ifBlank { "Sin conversación" },
+                        style = AppTypography.bodyLarge.copy(fontWeight = FontWeight.Bold),
+                        color = TextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = relativeTimeLabel(group.newestAtMillis, nowMillis),
+                        style = AppTypography.bodySmall,
+                        color = TextSecondary
+                    )
+                    ConversationMenu(silenced = silenced, onToggleSilence = onToggleSilence)
+                }
+            }
+
+            Text(
+                text = "${group.count} mensajes sin ver",
+                style = AppTypography.labelSmall,
+                color = StatusWorking
+            )
+
+            when {
+                analyzing -> {
+                    Text("Resumiendo…", style = AppTypography.bodySmall, color = TextSecondary)
+                }
+                failed -> {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+                    ) {
+                        Text(
+                            text = digest?.error?.takeIf { it.isNotBlank() }
+                                ?: "No se pudo resumir la conversación",
+                            style = AppTypography.bodySmall,
+                            color = StatusError,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = onRequestDigest) {
+                            Text(
+                                "Reintentar",
+                                style = AppTypography.labelSmall,
+                                color = PrimaryIndigo
+                            )
+                        }
+                    }
+                }
+                summary.isNotBlank() -> {
+                    Text(summary, style = AppTypography.bodySmall, color = TextPrimary)
+                }
+            }
+
+            if (pending.isNotEmpty()) {
+                Text(
+                    text = "Pendiente para ti",
+                    style = AppTypography.labelSmall,
+                    color = TextSecondary
+                )
+                pending.forEach { entry ->
+                    Text(
+                        text = "• $entry",
+                        style = AppTypography.bodySmall,
+                        color = TextPrimary
+                    )
+                }
+            }
+
+            if (summary.isBlank() && !analyzing && !failed) {
+                TextButton(onClick = onRequestDigest) {
+                    Text("Resumir", style = AppTypography.labelSmall, color = PrimaryIndigo)
+                }
+            }
+
+            if (suggestedReply.isNotBlank()) {
+                SuggestedReplyBox(suggestedReply)
+            }
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm),
+                verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
+            ) {
+                if (canReply && suggestedReply.isNotBlank()) {
+                    Button(
+                        onClick = onSendSuggestion,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = PrimaryIndigo,
+                            contentColor = Color.White
+                        ),
+                        shape = AppShapes.small,
+                        contentPadding = PaddingValues(
+                            horizontal = AppSpacing.md,
+                            vertical = AppSpacing.xs
+                        )
+                    ) {
+                        Text("Enviar sugerencia", style = AppTypography.labelSmall)
+                    }
+                }
+                if (canReply) {
+                    CompactOutlinedButton(
+                        label = "Editar y enviar",
+                        onClick = onEdit,
+                        contentColor = PrimaryIndigo
+                    )
+                }
+                if (suggestedReply.isNotBlank()) {
+                    CompactOutlinedButton(
+                        label = "Copiar",
+                        onClick = onCopy,
+                        contentColor = TextPrimary
+                    )
+                }
+                CompactOutlinedButton(
+                    label = "Marcar todo atendido",
+                    onClick = onMarkAllHandled,
+                    contentColor = StatusConnected
+                )
+            }
+            if (!canReply) {
+                Text(
+                    text = "Responde desde la app original",
+                    style = AppTypography.labelSmall,
+                    color = TextSecondary
+                )
+            }
+
+            TextButton(
+                onClick = { expanded = !expanded },
+                contentPadding = PaddingValues(horizontal = AppSpacing.xs)
+            ) {
+                Text(
+                    text = if (expanded) "Ocultar mensajes" else "Ver mensajes",
+                    style = AppTypography.labelSmall,
+                    color = PrimaryIndigo
+                )
+            }
+
+            if (expanded) {
+                group.items.forEach { item ->
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(AppSpacing.xxs)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = item.sender.ifBlank { "Sin remitente" },
+                                style = AppTypography.labelSmall,
+                                color = TextPrimary,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = relativeTimeLabel(item, nowMillis),
+                                style = AppTypography.labelSmall,
+                                color = TextSecondary
+                            )
+                        }
+                        Text(
+                            text = item.text,
+                            style = AppTypography.bodySmall,
+                            color = TextSecondary
+                        )
+                    }
                 }
             }
         }

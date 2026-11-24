@@ -110,4 +110,21 @@ class InboxFormatTest {
         assertEquals(true, isInboxItemFailed(item(status = InboxItemStatus.FAILED)))
         assertEquals(false, isInboxItemFailed(item(status = InboxItemStatus.READY)))
     }
+
+    @Test
+    fun `silenced conversation labels name the app and the chat`() {
+        assertEquals("WhatsApp · Equipo", silencedConversationLabel("whatsapp|Equipo"))
+        assertEquals(
+            "Telegram · Grupo de la familia",
+            silencedConversationLabel("telegram|Grupo de la familia")
+        )
+        // A non-preset app falls back to its package name.
+        assertEquals(
+            "com.example.chat · Amigos",
+            silencedConversationLabel("com.example.chat|Amigos")
+        )
+        // A malformed key renders as-is instead of crashing the settings list.
+        assertEquals("sin-separador", silencedConversationLabel("sin-separador"))
+        assertEquals("WhatsApp", silencedConversationLabel("whatsapp|"))
+    }
 }

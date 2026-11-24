@@ -3,9 +3,13 @@ package com.idupi.app.viewmodel
 import com.idupi.app.FakeClientSource
 import com.idupi.app.FakeIduPiClient
 import com.idupi.app.MainDispatcherRule
+import com.idupi.app.data.settings.InMemorySettingsRepository
+import com.idupi.app.data.settings.SettingsRepository
+import com.idupi.app.domain.model.InboxDigest
 import com.idupi.app.domain.model.InboxItem
 import com.idupi.app.domain.model.InboxItemState
 import com.idupi.app.domain.model.InboxItemStatus
+import com.idupi.app.domain.model.InboxSettings
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -62,7 +66,8 @@ class AlertsViewModelTest {
     private fun viewModel(
         hasReplyAction: (String) -> Boolean = { true },
         sendReply: (String, String) -> Boolean = { _, _ -> true },
-    ) = AlertsViewModel(FakeClientSource(fake), hasReplyAction, sendReply)
+        settings: SettingsRepository = InMemorySettingsRepository(),
+    ) = AlertsViewModel(FakeClientSource(fake), hasReplyAction, sendReply, settings)
 
     @Test
     fun `init loads the inbox and requests the page size`() = runTest {
@@ -330,5 +335,217 @@ class AlertsViewModelTest {
         viewModel.clearError()
 
         assertNull(viewModel.errorMessage.value)
+    }
+
+    // --- conversation grouping and digest (inbox-management T4) -------------
+
+    private fun groupItems(conversation: String = "Ana", count: Int = 3): List<InboxItem> =
+        (1..count).map { index ->
+            sampleItem(id = "i$index", conversation = conversation)
+        }
+
+    @Test
+    fun `three open messages of one chat request the digest automatically`() = runTest {
+        fake.inboxItemsToReturn = groupItems(count = 3)
+        fake.inboxDigestToReturn = InboxDigest(
+            app = "whatsapp",
+            conversation = "Ana",
+            itemCount = 3,
+            status = "analyzing"
+        )
+
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        assertEquals(listOf("whatsapp" to "Ana"), fake.requestedInboxDigests)
+        assertEquals(1, viewModel.visibleGroups.size)
+        assertEquals(3, viewModel.visibleGroups.single().count)
+        assertEquals("analyzing", viewModel.digests.value["whatsapp|Ana"]?.status)
+    }
+
+    @Test
+    fun `two open messages never request a digest automatically`() = runTest {
+        fake.inboxItemsToReturn = groupItems(count = 2)
+
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        assertTrue(fake.requestedInboxDigests.isEmpty())
+        assertEquals(2, viewModel.visibleGroups.single().count)
+    }
+
+    @Test
+    fun `an analyzing digest is fetched on the next load`() = runTest {
+        fake.inboxItemsToReturn = groupItems(count = 3)
+        fake.inboxDigestToReturn = InboxDigest(
+            app = "whatsapp",
+            conversation = "Ana",
+            itemCount = 3,
+            status = "analyzing"
+        )
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        fake.inboxDigestToReturn = InboxDigest(
+            app = "whatsapp",
+            conversation = "Ana",
+            itemCount = 3,
+            summary = "Acordaron la reunión del martes.",
+            pendingForOwner = listOf("¿Puedes enviar el informe?"),
+            suggestedReply = "Sí, lo envío el lunes.",
+            status = "ready"
+        )
+        viewModel.refresh()
+        advanceUntilIdle()
+
+        assertEquals(listOf("whatsapp" to "Ana"), fake.fetchedInboxDigests)
+        val digest = viewModel.digests.value.getValue("whatsapp|Ana")
+        assertEquals("ready", digest.status)
+        assertEquals("Acordaron la reunión del martes.", digest.summary)
+        assertEquals(listOf("¿Puedes enviar el informe?"), digest.pendingForOwner)
+    }
+
+    @Test
+    fun `a failing digest request leaves an inline retryable failure`() = runTest {
+        fake.inboxItemsToReturn = groupItems(count = 3)
+        fake.failInboxDigestWith = RuntimeException("pc off")
+
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        val digest = viewModel.digests.value.getValue("whatsapp|Ana")
+        assertEquals("failed", digest.status)
+        assertTrue(digest.error!!.contains("pc off"))
+        assertNull(viewModel.errorMessage.value)
+    }
+
+    @Test
+    fun `a manual digest request works with fewer than three messages`() = runTest {
+        fake.inboxItemsToReturn = groupItems(count = 2)
+        fake.inboxDigestToReturn = InboxDigest(
+            app = "whatsapp",
+            conversation = "Ana",
+            itemCount = 2,
+            summary = "Resumen de dos mensajes.",
+            status = "ready"
+        )
+        val viewModel = viewModel()
+        advanceUntilIdle()
+        assertTrue(fake.requestedInboxDigests.isEmpty())
+
+        viewModel.requestDigest(viewModel.visibleGroups.single())
+        advanceUntilIdle()
+
+        assertEquals(listOf("whatsapp" to "Ana"), fake.requestedInboxDigests)
+        assertEquals("Resumen de dos mensajes.", viewModel.digests.value.getValue("whatsapp|Ana").summary)
+    }
+
+    @Test
+    fun `markGroupHandled removes the chat and closes it in one bulk call`() = runTest {
+        fake.inboxItemsToReturn = groupItems(count = 2) + sampleItem(
+            id = "other",
+            conversation = "Beto"
+        )
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        val group = viewModel.visibleGroups.first { it.conversation == "Ana" }
+        viewModel.markGroupHandled(group)
+
+        assertEquals(listOf("other"), viewModel.items.value.map { it.id })
+        advanceUntilIdle()
+
+        assertEquals(
+            listOf(Triple("whatsapp", "Ana", InboxItemState.HANDLED)),
+            fake.inboxConversationStates
+        )
+        assertTrue(fake.inboxStateChanges.isEmpty())
+    }
+
+    @Test
+    fun `a failed bulk close restores the chat items`() = runTest {
+        fake.inboxItemsToReturn = groupItems(count = 2)
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        fake.failWith = RuntimeException("state rejected")
+        viewModel.markGroupHandled(viewModel.visibleGroups.single())
+        assertTrue(viewModel.items.value.isEmpty())
+        advanceUntilIdle()
+
+        assertEquals(listOf("i1", "i2"), viewModel.items.value.map { it.id }.sorted())
+        assertNotNull(viewModel.errorMessage.value)
+        assertTrue(viewModel.errorMessage.value!!.contains("state rejected"))
+    }
+
+    @Test
+    fun `a group suggestion sends through the live action and closes the chat`() = runTest {
+        fake.inboxItemsToReturn = groupItems(count = 3)
+        fake.inboxDigestToReturn = InboxDigest(
+            app = "whatsapp",
+            conversation = "Ana",
+            itemCount = 3,
+            summary = "Resumen.",
+            suggestedReply = "Sí, lo envío el lunes.",
+            status = "ready"
+        )
+        val sent = mutableListOf<Pair<String, String>>()
+        val viewModel = viewModel(sendReply = { key, text -> sent += key to text; true })
+        advanceUntilIdle()
+
+        viewModel.sendGroupSuggestion(viewModel.visibleGroups.single())
+        advanceUntilIdle()
+
+        assertEquals(listOf("whatsapp|Ana" to "Sí, lo envío el lunes."), sent)
+        assertEquals(
+            listOf(Triple("whatsapp", "Ana", InboxItemState.HANDLED)),
+            fake.inboxConversationStates
+        )
+        assertTrue(viewModel.items.value.isEmpty())
+    }
+
+    @Test
+    fun `a group reply without a live action is rejected inline`() = runTest {
+        fake.inboxItemsToReturn = groupItems(count = 2)
+        fake.inboxDigestToReturn = InboxDigest(
+            app = "whatsapp",
+            conversation = "Ana",
+            itemCount = 2,
+            suggestedReply = "Sí.",
+            status = "ready"
+        )
+        val sent = mutableListOf<Pair<String, String>>()
+        val viewModel = viewModel(
+            hasReplyAction = { false },
+            sendReply = { key, text -> sent += key to text; true }
+        )
+        advanceUntilIdle()
+        viewModel.requestDigest(viewModel.visibleGroups.single())
+        advanceUntilIdle()
+
+        assertFalse(viewModel.canReply(viewModel.visibleGroups.single()))
+        viewModel.sendGroupSuggestion(viewModel.visibleGroups.single())
+        advanceUntilIdle()
+
+        assertTrue(sent.isEmpty())
+        assertTrue(fake.inboxConversationStates.isEmpty())
+        assertNotNull(viewModel.errorMessage.value)
+    }
+
+    @Test
+    fun `silenced conversations come from the settings flow`() = runTest {
+        fake.inboxItemsToReturn = listOf(sampleItem())
+        val settings = InMemorySettingsRepository(
+            initialInbox = InboxSettings(silencedConversations = setOf("whatsapp|Ana"))
+        )
+        val viewModel = viewModel(settings = settings)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.isSilenced("whatsapp|Ana"))
+
+        viewModel.setConversationSilenced("whatsapp|Ana", silenced = false)
+        advanceUntilIdle()
+
+        assertFalse(viewModel.isSilenced("whatsapp|Ana"))
     }
 }

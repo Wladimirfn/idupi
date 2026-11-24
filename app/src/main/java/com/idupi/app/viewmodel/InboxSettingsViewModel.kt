@@ -314,6 +314,17 @@ class InboxSettingsViewModel(
         }
     }
 
+    /** Removes (or restores) one conversation from the silenced list. */
+    fun setConversationSilenced(conversationKey: String, silenced: Boolean) {
+        if (conversationKey.isBlank()) return
+        viewModelScope.launch {
+            val current = settingsRepository.inboxSettings.first().silencedConversations
+            settingsRepository.setInboxSilencedConversations(
+                if (silenced) current + conversationKey else current - conversationKey
+            )
+        }
+    }
+
     fun setReminderInterval(minutes: Int) {
         viewModelScope.launch {
             settingsRepository.setInboxReminderIntervalMinutes(minutes)

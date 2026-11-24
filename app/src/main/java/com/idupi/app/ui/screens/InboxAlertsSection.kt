@@ -161,6 +161,13 @@ fun InboxAlertsSection(viewModel: InboxSettingsViewModel) {
             onReload = { viewModel.loadInstalledApps(force = true) }
         )
 
+        SilencedChatsCard(
+            silenced = settings.silencedConversations,
+            onRemove = { conversationKey ->
+                viewModel.setConversationSilenced(conversationKey, silenced = false)
+            }
+        )
+
         RemindersCard(
             settings = settings,
             onIntervalSelect = viewModel::setReminderInterval,
@@ -503,6 +510,69 @@ private fun AppFollowRow(
                 uncheckedBorderColor = SlateBorder
             )
         )
+    }
+}
+
+/**
+ * Chats silenced inside IDUPI (inbox-management T4). The hint is the whole
+ * contract: IDUPI can only read a chat the source app does not mute, so the
+ * owner un-mutes it there and marks it here. Removing a row restores the
+ * notifications on the next capture.
+ */
+@Composable
+private fun SilencedChatsCard(
+    silenced: Set<String>,
+    onRemove: (String) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SlateCard),
+        shape = AppShapes.card
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(AppSpacing.cardPadding)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
+        ) {
+            Text("Chats silenciados por IDUPI", style = AppTypography.bodyLarge, color = TextPrimary)
+            Text(
+                text = "Para que IDUPI lea un grupo silenciado, quítale el silencio en la app " +
+                    "original y márcalo aquí como silenciado.",
+                style = AppTypography.bodySmall,
+                color = TextSecondary
+            )
+            if (silenced.isEmpty()) {
+                Text(
+                    text = "No hay chats silenciados",
+                    style = AppTypography.bodySmall,
+                    color = TextSecondary
+                )
+            } else {
+                silenced
+                    .sortedBy { silencedConversationLabel(it) }
+                    .forEach { conversationKey ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = silencedConversationLabel(conversationKey),
+                                style = AppTypography.bodySmall,
+                                color = TextPrimary,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(onClick = { onRemove(conversationKey) }) {
+                                Text(
+                                    text = "Quitar",
+                                    style = AppTypography.labelSmall,
+                                    color = PrimaryIndigo
+                                )
+                            }
+                        }
+                    }
+            }
+        }
     }
 }
 

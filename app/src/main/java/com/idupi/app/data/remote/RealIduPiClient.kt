@@ -906,6 +906,36 @@ class RealIduPiClient : IduPiClient {
             parameter("agent", agent)
         }.body<InboxModelsEnvelope>().models
 
+    // --- Conversation digest (inbox-management T4) ---
+
+    override suspend fun requestInboxDigest(app: String, conversation: String): InboxDigest =
+        send(HttpMethod.Post, "/api/v1/inbox/digest") {
+            contentType(ContentType.Application.Json)
+            setBody(InboxDigestRequest(app = app, conversation = conversation))
+        }.body<InboxDigestEnvelope>().digest
+
+    override suspend fun getInboxDigest(app: String, conversation: String): InboxDigest =
+        send(HttpMethod.Get, "/api/v1/inbox/digest") {
+            parameter("app", app)
+            parameter("conversation", conversation)
+        }.body<InboxDigestEnvelope>().digest
+
+    override suspend fun setInboxConversationState(
+        app: String,
+        conversation: String,
+        state: String
+    ): Int =
+        send(HttpMethod.Post, "/api/v1/inbox/conversation/state") {
+            contentType(ContentType.Application.Json)
+            setBody(
+                InboxConversationStateRequest(
+                    app = app,
+                    conversation = conversation,
+                    state = state
+                )
+            )
+        }.body<InboxConversationStateResult>().closed
+
     // --- Phone status reporting (phone-agent T2) ---
 
     override suspend fun postPhoneStatus(status: PhoneStatus) {
@@ -978,6 +1008,10 @@ private data class InboxStatePayload(val state: String)
 /** `PUT /inbox/config` body; the server keeps `agents`/`efforts` server-side. */
 @Serializable
 private data class InboxConfigPayload(val agent: String, val model: String, val effort: String)
+
+/** `POST|GET /inbox/digest` wraps the conversation digest. */
+@Serializable
+private data class InboxDigestEnvelope(val digest: InboxDigest)
 
 
 /**

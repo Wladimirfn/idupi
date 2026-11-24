@@ -49,6 +49,20 @@ fun agentLabel(agent: String): String = when (agent) {
 }
 
 /**
+ * Owner-facing name of a silenced conversation key
+ * (`inboxConversationKey(app, conversation)`): "WhatsApp · Equipo". A key
+ * without the separator (older build, malformed value) renders as-is.
+ */
+fun silencedConversationLabel(conversationKey: String): String {
+    val separator = conversationKey.indexOf('|')
+    if (separator <= 0) return conversationKey
+    val app = conversationKey.substring(0, separator)
+    val conversation = conversationKey.substring(separator + 1)
+    val appLabel = InboxApp.labelFor(app)
+    return if (conversation.isBlank()) appLabel else "$appLabel · $conversation"
+}
+
+/**
  * "ahora", "hace 5 min", "hace 2 h" or "hace 3 d"; empty when the item has no
  * parseable timestamp.
  */
