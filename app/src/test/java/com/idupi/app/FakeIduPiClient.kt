@@ -2,6 +2,10 @@ package com.idupi.app
 
 import com.idupi.app.domain.model.ChatEvent
 import com.idupi.app.domain.model.FileNode
+import com.idupi.app.domain.model.InboxConfig
+import com.idupi.app.domain.model.InboxItem
+import com.idupi.app.domain.model.InboxItemState
+import com.idupi.app.domain.model.InboxMessageRequest
 import com.idupi.app.domain.model.KillProcessOutcome
 import com.idupi.app.domain.model.OsProcessSample
 import com.idupi.app.domain.model.Project
@@ -505,6 +509,86 @@ class FakeIduPiClient : IduPiClient {
         maybeFail()
         lastDeletedProfileId = profileId
         return deleteSddProfileResult
+    }
+
+    // --- Phone inbox (phone-inbox T2) ---
+
+    var inboxItemsToReturn: List<InboxItem> = emptyList()
+    var inboxConfigToReturn: InboxConfig = InboxConfig(
+        agent = "opencode",
+        model = "opencode-go/deepseek-v4.1-flash",
+        effort = "max",
+        agents = listOf("opencode", "claude", "codex", "pi"),
+        efforts = listOf("low", "medium", "high", "max"),
+    )
+    var inboxModelsToReturn: List<String> = emptyList()
+
+    /** When set, [postInboxMessage] returns it; otherwise it derives one. */
+    var inboxPostResult: InboxItem? = null
+    var inboxStateUpdateResult: InboxItem? = null
+    var inboxRetryResult: InboxItem? = null
+
+    /** Every posted message, in order. */
+    val postedInboxMessages = mutableListOf<InboxMessageRequest>()
+
+    /** (id, state) pairs sent through [setInboxItemState]. */
+    val inboxStateChanges = mutableListOf<Pair<String, String>>()
+    val retriedInboxIds = mutableListOf<String>()
+    var lastRequestedInboxLimit: Int? = null
+    var lastInboxConfigUpdate: Triple<String, String, String>? = null
+    var lastRequestedInboxModelsAgent: String? = null
+
+    override suspend fun postInboxMessage(message: InboxMessageRequest): InboxItem {
+        maybeFail()
+        postedInboxMessages += message
+        return inboxPostResult ?: InboxItem(
+            id = "itm-fake-${postedInboxMessages.size}",
+            app = message.app,
+            packageName = message.packageName,
+            sender = message.sender,
+            conversation = message.conversation,
+            text = message.text,
+            postedAt = message.postedAt,
+            receivedAt = message.postedAt,
+            notificationKey = message.notificationKey,
+            state = InboxItemState.OPEN,
+        )
+    }
+
+    override suspend fun getInboxItems(limit: Int): List<InboxItem> {
+        maybeFail()
+        lastRequestedInboxLimit = limit
+        return inboxItemsToReturn
+    }
+
+    override suspend fun setInboxItemState(id: String, state: String): InboxItem {
+        maybeFail()
+        inboxStateChanges += id to state
+        return inboxStateUpdateResult ?: InboxItem(id = id, state = state)
+    }
+
+    override suspend fun retryInboxItem(id: String): InboxItem {
+        maybeFail()
+        retriedInboxIds += id
+        return inboxRetryResult ?: InboxItem(id = id, status = "analyzing")
+    }
+
+    override suspend fun getInboxConfig(): InboxConfig {
+        maybeFail()
+        return inboxConfigToReturn
+    }
+
+    override suspend fun updateInboxConfig(agent: String, model: String, effort: String): InboxConfig {
+        maybeFail()
+        lastInboxConfigUpdate = Triple(agent, model, effort)
+        inboxConfigToReturn = inboxConfigToReturn.copy(agent = agent, model = model, effort = effort)
+        return inboxConfigToReturn
+    }
+
+    override suspend fun getInboxModels(agent: String): List<String> {
+        maybeFail()
+        lastRequestedInboxModelsAgent = agent
+        return inboxModelsToReturn
     }
 
     // --- Remote screen module ---

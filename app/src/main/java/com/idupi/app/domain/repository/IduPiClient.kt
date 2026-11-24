@@ -123,6 +123,18 @@ interface IduPiClient {
     suspend fun saveSddProfile(profile: SddProfileItem): Boolean
     suspend fun deleteSddProfile(profileId: String): Boolean
 
+    // Phone inbox (phone-inbox T2). `POST /inbox/messages` answers 202 with the
+    // stored item while the PC analyzes it asynchronously; polling
+    // [getInboxItems] is how the UI sees status/importance/summary appear.
+    suspend fun postInboxMessage(message: InboxMessageRequest): InboxItem
+    suspend fun getInboxItems(limit: Int = 50): List<InboxItem>
+    suspend fun setInboxItemState(id: String, state: String): InboxItem
+    suspend fun retryInboxItem(id: String): InboxItem
+    suspend fun getInboxConfig(): InboxConfig
+    suspend fun updateInboxConfig(agent: String, model: String, effort: String): InboxConfig
+    /** Empty list for agents whose catalog the server does not cache yet. */
+    suspend fun getInboxModels(agent: String): List<String>
+
     // Remote screen module (docs/remote-screen-module.md)
     suspend fun getScreenMonitors(): List<ScreenMonitor>
 

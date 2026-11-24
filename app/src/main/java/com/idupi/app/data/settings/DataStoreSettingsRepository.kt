@@ -2,9 +2,14 @@ package com.idupi.app.data.settings
 
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
+import com.idupi.app.domain.model.InboxApp
+import com.idupi.app.domain.model.InboxImportance
+import com.idupi.app.domain.model.InboxSettings
 import com.idupi.app.domain.model.ThemeColors
 import com.idupi.app.domain.model.ThemeDefaults
 import com.idupi.app.domain.model.ThemeMode
@@ -14,13 +19,15 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
 /**
- * DataStore-backed [SettingsRepository] for the app theme (T9).
+ * DataStore-backed [SettingsRepository] for the app theme (T9) and the
+ * phone-side Alertas settings (phone-inbox T2).
  *
  * Every value has a safe default, so a fresh install and an install upgrading
  * from a build without these keys both land on dark + Índigo instead of
  * crashing or rendering an undefined palette. Each setter writes one key, which
  * keeps unrelated choices intact (changing the mode must not reset the custom
- * swatches).
+ * swatches, and changing the reminder interval must not reset the monitored
+ * apps).
  */
 class DataStoreSettingsRepository(
     private val dataStore: DataStore<Preferences>,
@@ -37,6 +44,25 @@ class DataStoreSettingsRepository(
                     cardArgb = prefs[THEME_CUSTOM_CARD_KEY] ?: ThemeDefaults.cardArgb,
                     textArgb = prefs[THEME_CUSTOM_TEXT_KEY] ?: ThemeDefaults.textArgb,
                 ),
+            )
+        }
+
+    override val inboxSettings: Flow<InboxSettings> =
+        dataStore.data.map { prefs ->
+            InboxSettings(
+                // An empty stored set is a real choice ("monitor nothing"), so
+                // only a missing key falls back to every app.
+                enabledApps = (prefs[INBOX_ENABLED_APPS_KEY] ?: InboxApp.allIds).toSet(),
+                reminderIntervalMinutes = prefs[INBOX_REMINDER_INTERVAL_KEY]
+                    ?: InboxSettings.DEFAULT_REMINDER_INTERVAL_MINUTES,
+                remindMinImportance = InboxSettings.normalizeImportance(
+                    prefs[INBOX_REMIND_MIN_IMPORTANCE_KEY] ?: InboxImportance.HIGH
+                ),
+                autoReplyEnabled = prefs[INBOX_AUTO_REPLY_ENABLED_KEY] ?: false,
+                autoReplyDelayMinutes = prefs[INBOX_AUTO_REPLY_DELAY_KEY]
+                    ?: InboxSettings.DEFAULT_AUTO_REPLY_DELAY_MINUTES,
+                autoReplyTemplate = prefs[INBOX_AUTO_REPLY_TEMPLATE_KEY]
+                    ?: InboxSettings.DEFAULT_AUTO_REPLY_TEMPLATE,
             )
         }
 
@@ -57,6 +83,34 @@ class DataStoreSettingsRepository(
         }
     }
 
+    override suspend fun setInboxEnabledApps(apps: Set<String>) {
+        dataStore.edit { prefs -> prefs[INBOX_ENABLED_APPS_KEY] = apps }
+    }
+
+    override suspend fun setInboxReminderIntervalMinutes(minutes: Int) {
+        // A zero-minute interval would mean "remind in a loop"; the reader
+        // would have no sane fallback, so clamp at the writer.
+        dataStore.edit { prefs -> prefs[INBOX_REMINDER_INTERVAL_KEY] = minutes.coerceAtLeast(1) }
+    }
+
+    override suspend fun setInboxRemindMinImportance(importance: String) {
+        dataStore.edit { prefs ->
+            prefs[INBOX_REMIND_MIN_IMPORTANCE_KEY] = InboxSettings.normalizeImportance(importance)
+        }
+    }
+
+    override suspend fun setInboxAutoReplyEnabled(enabled: Boolean) {
+        dataStore.edit { prefs -> prefs[INBOX_AUTO_REPLY_ENABLED_KEY] = enabled }
+    }
+
+    override suspend fun setInboxAutoReplyDelayMinutes(minutes: Int) {
+        dataStore.edit { prefs -> prefs[INBOX_AUTO_REPLY_DELAY_KEY] = minutes.coerceAtLeast(0) }
+    }
+
+    override suspend fun setInboxAutoReplyTemplate(template: String) {
+        dataStore.edit { prefs -> prefs[INBOX_AUTO_REPLY_TEMPLATE_KEY] = template }
+    }
+
     private inline fun <reified T : Enum<T>> enumValue(raw: String?, fallback: T): T =
         raw?.let { stored -> enumValues<T>().firstOrNull { it.name == stored } } ?: fallback
 
@@ -68,5 +122,18 @@ class DataStoreSettingsRepository(
             intPreferencesKey("theme_custom_background")
         val THEME_CUSTOM_CARD_KEY: Preferences.Key<Int> = intPreferencesKey("theme_custom_card")
         val THEME_CUSTOM_TEXT_KEY: Preferences.Key<Int> = intPreferencesKey("theme_custom_text")
+
+        val INBOX_ENABLED_APPS_KEY: Preferences.Key<Set<String>> =
+            stringSetPreferencesKey("inbox_enabled_apps")
+        val INBOX_REMINDER_INTERVAL_KEY: Preferences.Key<Int> =
+            intPreferencesKey("inbox_reminder_interval_minutes")
+        val INBOX_REMIND_MIN_IMPORTANCE_KEY: Preferences.Key<String> =
+            stringPreferencesKey("inbox_remind_min_importance")
+        val INBOX_AUTO_REPLY_ENABLED_KEY: Preferences.Key<Boolean> =
+            booleanPreferencesKey("inbox_auto_reply_enabled")
+        val INBOX_AUTO_REPLY_DELAY_KEY: Preferences.Key<Int> =
+            intPreferencesKey("inbox_auto_reply_delay_minutes")
+        val INBOX_AUTO_REPLY_TEMPLATE_KEY: Preferences.Key<String> =
+            stringPreferencesKey("inbox_auto_reply_template")
     }
 }
