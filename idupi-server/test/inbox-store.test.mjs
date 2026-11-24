@@ -149,11 +149,13 @@ test("any followed package name is accepted and its label is persisted", async (
     assert.equal(reloaded.get(item.id).appLabel, "Telegram");
 });
 
-test("app ids outside the lowercase id/package alphabet are rejected", async (t) => {
+test("app ids outside the id/package alphabet are rejected", async (t) => {
     const dir = await makeDir(t);
     const store = createInboxStore({ dataDir: dir, log: silentLog });
 
-    assert.throws(() => store.add(message({ app: "Telegram" })), /invalid app/);
+    // Android package names may contain uppercase letters.
+    assert.doesNotThrow(() => store.add(message({ app: "com.Example.App", notificationKey: "upper" })));
+    assert.throws(() => store.add(message({ app: "tele gram" })), /invalid app/);
     assert.throws(() => store.add(message({ app: "telegram!" })), /invalid app/);
     assert.throws(() => store.add(message({ app: "" })), /invalid app/);
     assert.throws(() => store.add(message({ app: "x".repeat(121) })), /invalid app/);

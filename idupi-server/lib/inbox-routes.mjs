@@ -206,7 +206,7 @@ export function createInboxRoutes({
             sendError(
                 res,
                 400,
-                "app must be a lowercase id or package name (a-z, 0-9, _ and ., at most 120)",
+                "app must be an id or package name (letters, digits, _ and ., at most 120)",
                 "INVALID_APP",
             );
             return;

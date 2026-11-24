@@ -19,11 +19,12 @@ export const ITEM_ID_PATTERN = /^inb-[0-9a-f]{12}$/;
 
 /**
  * App ids the inbox accepts: a preset id ("whatsapp_business") or the package
- * name of any app the owner follows ("org.telegram.messenger"). Both are
- * lowercase; anything else is refused so a malformed client cannot store an
+ * name of any app the owner follows ("org.telegram.messenger"). Android
+ * package names may contain uppercase letters; anything outside letters,
+ * digits, "_" and "." is refused so a malformed client cannot store an
  * arbitrary string that later reaches the agent prompt.
  */
-export const APP_ID_PATTERN = /^[a-z0-9_.]{1,120}$/;
+export const APP_ID_PATTERN = /^[A-Za-z0-9_.]{1,120}$/;
 
 /** The optional display label the phone captures from PackageManager. */
 export const MAX_APP_LABEL_CHARS = 60;

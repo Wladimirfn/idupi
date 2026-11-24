@@ -217,7 +217,7 @@ test("a followed package name is accepted and its label round-trips through GET"
 test("missing or malformed app ids are rejected; appLabel is optional and clipped", async (t) => {
     const { base } = await startHarness(t);
 
-    for (const app of ["", "Telegram", "telegram!", "x".repeat(121)]) {
+    for (const app of ["", "tele gram", "telegram!", "x".repeat(121)]) {
         const { res, body } = await postMessage(base, {
             app,
             notificationKey: `bad-${app.length}`,
