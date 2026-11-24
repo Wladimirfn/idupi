@@ -93,6 +93,16 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
     /** Keeps [followedApps] in sync while the listener is connected. */
     private var settingsJob: Job? = null
 
+    /**
+     * Conversations silenced inside IDUPI (inbox-management T4), as last
+     * observed. A silenced conversation is still captured, but its notification
+     * is cancelled from the shade right after the upload starts, its upload
+     * asks the server to skip the per-message agent, and its reminders are
+     * suppressed unless the analysis says `high`.
+     */
+    @Volatile
+    private var silencedConversations: Set<String> = emptySet()
+
     /** PackageManager label per package; a launcher label only changes on update. */
     private val appLabels = ConcurrentHashMap<String, String>()
 
@@ -192,19 +202,30 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
     }
 
     private fun handlePosted(sbn: StatusBarNotification) {
-        val captured = NotificationParser.parse(snapshotOf(sbn), followedApps)
+        val parsed = NotificationParser.parse(snapshotOf(sbn), followedApps)
             ?.withPackageLabel() ?: return
 
         // An update of the same notification is not "read": cancel any pending
         // handled marking before remembering the refreshed capture.
         pendingHandled.remove(sbn.key)?.cancel()
+        val silenced = isSilenced(parsed)
+        val captured = parsed.copy(digestOnly = silenced)
         registerReplyAction(sbn, captured)
         InboxSession.remember(captured)
         InboxCaptureDiagnostics.onCaptured(captured.app)
         scope.launch {
             if (upload(captured) == UploadOutcome.ACCEPTED) drainRetries()
         }
+        // Silence but read: the capture (reply action + session) is registered
+        // and its upload was started above; now the notification leaves the
+        // shade. The reply action stays registered, so "Enviar sugerencia"
+        // still works after the owner opens Alertas.
+        if (silenced) cancelSilencedNotification(sbn.key)
     }
+
+    /** "This conversation is silenced inside IDUPI", not inside the source app. */
+    private fun isSilenced(message: CapturedMessage): Boolean =
+        inboxConversationKey(message.app, message.conversation) in silencedConversations
 
     /**
      * Settings can change while the listener lives, and a live post must not
@@ -217,12 +238,28 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
             try {
                 SettingsProvider.repository.inboxSettings.collect { settings ->
                     followedApps = settings.followedApps
+                    silencedConversations = settings.silencedConversations
                 }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.w(TAG, "could not observe inbox settings: ${e.javaClass.simpleName}")
             }
+        }
+    }
+
+    /**
+     * Removes a silenced conversation's notification from the shade after IDUPI
+     * captured it. `cancelNotification` is a binder call that throws when
+     * access was revoked mid-run; a failed cancel must never crash the listener
+     * (Android disables a listener that keeps dying).
+     */
+    private fun cancelSilencedNotification(notificationKey: String) {
+        if (notificationKey.isBlank()) return
+        try {
+            cancelNotification(notificationKey)
+        } catch (e: Exception) {
+            Log.w(TAG, "could not cancel a silenced notification: ${e.javaClass.simpleName}")
         }
     }
 
@@ -273,7 +310,10 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
         var sent = 0
         var uploadDeferred = false
         for (raw in captured) {
-            val message = raw.withPackageLabel()
+            val parsed = raw.withPackageLabel()
+            // inbox-management T4: the same silence rules as a live post.
+            val silenced = isSilenced(parsed)
+            val message = parsed.copy(digestOnly = silenced)
             pendingHandled.remove(message.notificationKey)?.cancel()
             if (message.notificationKey.isNotBlank()) {
                 sbnByKey[message.notificationKey]?.let { sbn ->
@@ -287,6 +327,7 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
                 UploadOutcome.QUEUED -> uploadDeferred = true
                 UploadOutcome.DISCARDED -> Unit
             }
+            if (silenced) cancelSilencedNotification(message.notificationKey)
         }
         InboxCaptureDiagnostics.onScanCompleted(captured.size)
         // A deferred upload just proved the PC is unreachable (or unconfigured):
@@ -392,7 +433,10 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
             stateFor = { id ->
                 reminderStates[id]?.toPolicyState() ?: InboxReminderPolicy.ItemState()
             },
-            hasLiveReplyAction = ReplyActionRegistry::has
+            hasLiveReplyAction = ReplyActionRegistry::has,
+            isSilencedConversation = { conversationKey ->
+                conversationKey in silencedConversations
+            }
         )
 
         for (action in actions) {
@@ -447,6 +491,9 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
         for (item in items) {
             val previousStatus = observedStatuses.put(item.id, item.status)
             if (item.status != InboxItemStatus.READY) continue
+            // Silenced conversations keep this ping only at high importance:
+            // the guard below already limits the ping to high, which is exactly
+            // the exception "silence but read" allows (inbox-management T4).
             if (item.importance != InboxImportance.HIGH) continue
             if (item.state != InboxItemState.OPEN) continue
             if (!notifiedReady.add(item.id)) continue
@@ -689,5 +736,6 @@ private fun CapturedMessage.toRequest(): InboxMessageRequest = InboxMessageReque
     conversation = conversation,
     text = text,
     postedAt = postedAt,
-    notificationKey = notificationKey
+    notificationKey = notificationKey,
+    digestOnly = digestOnly
 )

@@ -62,6 +62,12 @@ interface SettingsRepository {
 
     suspend fun setInboxAutoReplyTemplate(template: String)
 
+    /**
+     * Conversations silenced inside IDUPI, keyed by
+     * [com.idupi.app.data.inbox.inboxConversationKey].
+     */
+    suspend fun setInboxSilencedConversations(conversations: Set<String>)
+
     suspend fun setPhoneStatusEnabled(enabled: Boolean)
 
     suspend fun setPhoneControlEnabled(enabled: Boolean)
@@ -124,6 +130,10 @@ class InMemorySettingsRepository(
 
     override suspend fun setInboxAutoReplyTemplate(template: String) {
         _inboxSettings.update { it.copy(autoReplyTemplate = template) }
+    }
+
+    override suspend fun setInboxSilencedConversations(conversations: Set<String>) {
+        _inboxSettings.update { it.copy(silencedConversations = conversations.toSet()) }
     }
 
     override suspend fun setPhoneStatusEnabled(enabled: Boolean) {

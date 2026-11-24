@@ -136,7 +136,13 @@ data class InboxMessageRequest(
     val text: String,
     /** ISO-8601 string (decided in the feature's Decisions section). */
     val postedAt: String,
-    val notificationKey: String
+    val notificationKey: String,
+    /**
+     * inbox-management T4: silenced conversation. The server stores the item
+     * already analyzed (low importance, category "Silenciado") and never runs
+     * the per-message agent for it. False is omitted by the default serializer.
+     */
+    val digestOnly: Boolean = false
 )
 
 /**

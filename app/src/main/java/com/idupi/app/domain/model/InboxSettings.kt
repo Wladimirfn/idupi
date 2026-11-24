@@ -20,7 +20,15 @@ data class InboxSettings(
     val remindMinImportance: String = InboxImportance.HIGH,
     val autoReplyEnabled: Boolean = false,
     val autoReplyDelayMinutes: Int = DEFAULT_AUTO_REPLY_DELAY_MINUTES,
-    val autoReplyTemplate: String = DEFAULT_AUTO_REPLY_TEMPLATE
+    val autoReplyTemplate: String = DEFAULT_AUTO_REPLY_TEMPLATE,
+    /**
+     * Conversations the owner silenced inside IDUPI (inbox-management T4),
+     * keyed by `inboxConversationKey(app, conversation)`. IDUPI keeps capturing
+     * them, removes their notification from the shade and suppresses their
+     * reminders, so the owner can read a busy group without the notifications.
+     * The source app's own mute must be OFF: a muted chat posts nothing.
+     */
+    val silencedConversations: Set<String> = emptySet()
 ) {
 
     companion object {

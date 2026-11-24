@@ -26,6 +26,10 @@ object InboxRemovalRules {
         NotificationListenerService.REASON_CANCEL,     // swiped away
         NotificationListenerService.REASON_APP_CANCEL  // source app cleared it
             -> true
+        // inbox-management T4: IDUPI itself cancelled a silenced conversation
+        // after capturing it. Keeping the item open is the whole point: the
+        // owner has not read it, they only asked for no notification.
+        NotificationListenerService.REASON_LISTENER_CANCEL -> false
         else -> false
     }
 }

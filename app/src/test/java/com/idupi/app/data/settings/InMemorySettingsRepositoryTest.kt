@@ -108,4 +108,23 @@ class InMemorySettingsRepositoryTest {
         assertEquals(true, repo.phoneControlEnabled.first())
         assertEquals(true, repo.phoneStatusEnabled.first())
     }
+
+    @Test
+    fun `silenced conversations default to empty and toggle one key`() = runTest {
+        val repo = InMemorySettingsRepository()
+
+        assertEquals(emptySet<String>(), repo.inboxSettings.first().silencedConversations)
+
+        repo.setInboxSilencedConversations(setOf("whatsapp|Equipo", "telegram|Grupo"))
+        assertEquals(
+            setOf("whatsapp|Equipo", "telegram|Grupo"),
+            repo.inboxSettings.first().silencedConversations
+        )
+
+        repo.setInboxSilencedConversations(setOf("telegram|Grupo"))
+        assertEquals(
+            setOf("telegram|Grupo"),
+            repo.inboxSettings.first().silencedConversations
+        )
+    }
 }

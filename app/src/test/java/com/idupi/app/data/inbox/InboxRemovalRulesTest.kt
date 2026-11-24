@@ -41,6 +41,19 @@ class InboxRemovalRulesTest {
     }
 
     @Test
+    fun `IDUPI cancelling a silenced notification is not an owner dismissal`() {
+        // The listener cancels the notification right after capturing a
+        // silenced conversation. Treating that as a dismissal would close the
+        // item the owner asked to keep reading, which is the opposite of
+        // "silence but read".
+        assertFalse(
+            InboxRemovalRules.isUserDismissalReason(
+                NotificationListenerService.REASON_LISTENER_CANCEL
+            )
+        )
+    }
+
+    @Test
     fun `the update grace window is two seconds`() {
         assertEquals(2_000L, InboxRemovalRules.REMOVAL_GRACE_MS)
     }

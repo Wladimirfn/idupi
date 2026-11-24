@@ -47,7 +47,13 @@ data class CapturedMessage(
     val text: String,
     val postedAt: String,
     val notificationKey: String,
-    val appLabel: String = ""
+    val appLabel: String = "",
+    /**
+     * inbox-management T4: the conversation is silenced inside IDUPI, so the
+     * upload asks the server to skip the per-message agent and keep the item
+     * for the conversation digest.
+     */
+    val digestOnly: Boolean = false
 )
 
 /**

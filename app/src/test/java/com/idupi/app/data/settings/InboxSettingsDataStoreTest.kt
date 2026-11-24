@@ -149,4 +149,28 @@ class InboxSettingsDataStoreTest {
         repo.setInboxReminderIntervalMinutes(20)
         assertEquals(20, repo.inboxSettings.first().reminderIntervalMinutes)
     }
+
+    @Test
+    fun `silenced conversations survive a restart and start empty`() = runTest {
+        assertEquals(emptySet<String>(), repo.inboxSettings.first().silencedConversations)
+
+        repo.setInboxSilencedConversations(setOf("whatsapp|Equipo", "telegram|Grupo"))
+
+        assertEquals(
+            setOf("whatsapp|Equipo", "telegram|Grupo"),
+            reopen().inboxSettings.first().silencedConversations
+        )
+    }
+
+    @Test
+    fun `changing other settings keeps the silenced list`() = runTest {
+        repo.setInboxSilencedConversations(setOf("whatsapp|Equipo"))
+
+        repo.setInboxReminderIntervalMinutes(30)
+
+        assertEquals(
+            setOf("whatsapp|Equipo"),
+            reopen().inboxSettings.first().silencedConversations
+        )
+    }
 }

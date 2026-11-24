@@ -65,6 +65,12 @@ object InboxReminderPolicy {
      *
      * [stateFor] and [hasLiveReplyAction] are functions so the caller can back
      * them with a map and [ReplyActionRegistry] while tests use plain lambdas.
+     *
+     * [isSilencedConversation] implements "silence but read" (inbox-management
+     * T4): a conversation the owner silenced inside IDUPI gets no reminder
+     * unless the analysis says `high`, because that is the one level the owner
+     * still wants to hear. Auto-reply is a setting, not a notification, so this
+     * gate does not touch it.
      */
     fun decide(
         items: List<InboxItem>,
@@ -72,6 +78,7 @@ object InboxReminderPolicy {
         nowMillis: Long,
         stateFor: (String) -> ItemState = { ItemState() },
         hasLiveReplyAction: (String) -> Boolean = { false },
+        isSilencedConversation: (String) -> Boolean = { false },
     ): List<Action> {
         if (items.isEmpty()) return emptyList()
 
@@ -95,6 +102,7 @@ object InboxReminderPolicy {
             val state = stateFor(item.id)
             val importance = effectiveImportance(item)
             if (!passesImportanceGate(importance, minImportance)) continue
+            val conversationKey = inboxConversationKey(item.app, item.conversation)
 
             val autoReply = autoReplyFor(
                 item = item,
@@ -109,7 +117,13 @@ object InboxReminderPolicy {
             )
             if (autoReply != null) {
                 actions += autoReply
-                repliedConversations += inboxConversationKey(item.app, item.conversation)
+                repliedConversations += conversationKey
+                continue
+            }
+
+            // Silence-but-read: no reminder for a muted conversation unless
+            // the analysis says the owner must act soon.
+            if (isSilencedConversation(conversationKey) && importance != InboxImportance.HIGH) {
                 continue
             }
 

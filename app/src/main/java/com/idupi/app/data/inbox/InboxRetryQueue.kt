@@ -25,6 +25,8 @@ data class PendingInboxUpload(
     val queuedAtMillis: Long,
     /** PackageManager label for display; empty in entries queued by older builds. */
     val appLabel: String = "",
+    /** inbox-management T4: silenced conversation, kept across a retry. */
+    val digestOnly: Boolean = false,
 ) {
     /** The wire request rebuilt from the persisted capture. */
     fun toRequest(): InboxMessageRequest = InboxMessageRequest(
@@ -35,7 +37,8 @@ data class PendingInboxUpload(
         conversation = conversation,
         text = text,
         postedAt = postedAt,
-        notificationKey = notificationKey
+        notificationKey = notificationKey,
+        digestOnly = digestOnly
     )
 
     companion object {
@@ -49,7 +52,8 @@ data class PendingInboxUpload(
                 postedAt = captured.postedAt,
                 notificationKey = captured.notificationKey,
                 queuedAtMillis = queuedAtMillis,
-                appLabel = captured.appLabel
+                appLabel = captured.appLabel,
+                digestOnly = captured.digestOnly
             )
     }
 }

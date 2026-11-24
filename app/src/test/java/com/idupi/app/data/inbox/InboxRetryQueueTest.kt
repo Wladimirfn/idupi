@@ -228,4 +228,24 @@ class InboxRetryQueueTest {
         assertEquals(null, InboxUploadRules.statusCodeOf(RuntimeException("offline")))
         assertEquals(null, InboxUploadRules.statusCodeOf(null))
     }
+
+    // --- Silence but read (inbox-management T4) ----------------------------
+
+    @Test
+    fun `a digestOnly capture keeps the flag across the queue and the request`() {
+        val silenced = captured("key-silenced").copy(digestOnly = true)
+
+        val entry = PendingInboxUpload.from(silenced, queuedAtMillis = 1_000L)
+
+        assertTrue(entry.digestOnly)
+        assertTrue(entry.toRequest().digestOnly)
+    }
+
+    @Test
+    fun `a normal capture stays a per-message upload`() {
+        val entry = PendingInboxUpload.from(captured("key-normal"), queuedAtMillis = 1_000L)
+
+        assertFalse(entry.digestOnly)
+        assertFalse(entry.toRequest().digestOnly)
+    }
 }

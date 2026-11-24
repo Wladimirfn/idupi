@@ -65,6 +65,8 @@ class DataStoreSettingsRepository(
                     ?: InboxSettings.DEFAULT_AUTO_REPLY_DELAY_MINUTES,
                 autoReplyTemplate = prefs[INBOX_AUTO_REPLY_TEMPLATE_KEY]
                     ?: InboxSettings.DEFAULT_AUTO_REPLY_TEMPLATE,
+                silencedConversations = (prefs[INBOX_SILENCED_CONVERSATIONS_KEY] ?: emptySet())
+                    .toSet(),
             )
         }
 
@@ -111,6 +113,10 @@ class DataStoreSettingsRepository(
 
     override suspend fun setInboxAutoReplyTemplate(template: String) {
         dataStore.edit { prefs -> prefs[INBOX_AUTO_REPLY_TEMPLATE_KEY] = template }
+    }
+
+    override suspend fun setInboxSilencedConversations(conversations: Set<String>) {
+        dataStore.edit { prefs -> prefs[INBOX_SILENCED_CONVERSATIONS_KEY] = conversations }
     }
 
     // Missing key means ON: status reporting is opt-out, so an upgraded install
@@ -160,6 +166,14 @@ class DataStoreSettingsRepository(
             intPreferencesKey("inbox_auto_reply_delay_minutes")
         val INBOX_AUTO_REPLY_TEMPLATE_KEY: Preferences.Key<String> =
             stringPreferencesKey("inbox_auto_reply_template")
+
+        /**
+         * inbox-management T4: conversations silenced inside IDUPI, stored as
+         * `app|conversation` keys. Missing means none, so an upgraded install
+         * starts with nothing silenced.
+         */
+        val INBOX_SILENCED_CONVERSATIONS_KEY: Preferences.Key<Set<String>> =
+            stringSetPreferencesKey("inbox_silenced_conversations")
 
         /** phone-agent T2: periodic status reporting to the PC; default ON. */
         val PHONE_STATUS_ENABLED_KEY: Preferences.Key<Boolean> =
