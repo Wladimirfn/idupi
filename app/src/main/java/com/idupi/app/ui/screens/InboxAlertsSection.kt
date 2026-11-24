@@ -53,8 +53,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.idupi.app.data.inbox.InboxCaptureState
 import com.idupi.app.data.inbox.isInboxListenerEnabled
 import com.idupi.app.data.inbox.notificationListenerSettingsIntent
+import com.idupi.app.data.inbox.requestInboxListenerRebind
 import com.idupi.app.domain.model.InboxImportance
 import com.idupi.app.domain.model.InboxSettings
 import com.idupi.app.ui.theme.AppShapes
@@ -70,6 +72,7 @@ import com.idupi.app.ui.theme.StatusWorking
 import com.idupi.app.ui.theme.TextPrimary
 import com.idupi.app.ui.theme.TextSecondary
 import com.idupi.app.viewmodel.InboxAgentConfigState
+import com.idupi.app.viewmodel.InboxCaptureActionState
 import com.idupi.app.viewmodel.InboxSettingsViewModel
 
 /**
@@ -85,6 +88,8 @@ import com.idupi.app.viewmodel.InboxSettingsViewModel
 fun InboxAlertsSection(viewModel: InboxSettingsViewModel) {
     val settings by viewModel.inboxSettings.collectAsState()
     val config by viewModel.agentConfig.collectAsState()
+    val captureStatus by viewModel.captureStatus.collectAsState()
+    val captureAction by viewModel.captureAction.collectAsState()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -101,7 +106,10 @@ fun InboxAlertsSection(viewModel: InboxSettingsViewModel) {
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    LaunchedEffect(Unit) { viewModel.loadConfig() }
+    LaunchedEffect(Unit) {
+        viewModel.loadConfig()
+        viewModel.refreshCaptureStatus()
+    }
 
     SettingsSection("ALERTAS") {
         NotificationAccessCard(
@@ -110,6 +118,33 @@ fun InboxAlertsSection(viewModel: InboxSettingsViewModel) {
                 val intent = notificationListenerSettingsIntent()
                     .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 runCatching { context.startActivity(intent) }
+            }
+        )
+
+        CaptureStatusCard(
+            enabled = listenerEnabled,
+            status = captureStatus,
+            action = captureAction,
+            onScanNow = {
+                // "Instead of scanning" a dead listener, ask the system to
+                // rebind it; the card still shows the requested status below.
+                if (!captureStatus.listenerConnected && listenerEnabled) {
+                    requestInboxListenerRebind(context)
+                    Toast.makeText(context, "Reconectando el lector", Toast.LENGTH_SHORT).show()
+                }
+                viewModel.scanNow()
+            },
+            onReconnect = {
+                val requested = requestInboxListenerRebind(context)
+                Toast.makeText(
+                    context,
+                    if (requested) {
+                        "Reconectando el lector"
+                    } else {
+                        "No se pudo reconectar el lector"
+                    },
+                    Toast.LENGTH_SHORT
+                ).show()
             }
         )
 
@@ -205,6 +240,129 @@ private fun NotificationAccessCard(enabled: Boolean, onOpenSettings: () -> Unit)
             }
         }
     }
+}
+
+/**
+ * Live capture state (inbox capture fix T1): whether the listener is really
+ * bound, the last capture and upload result, how many retries are waiting, and
+ * the two recovery actions. "Escuchando" is diagnostics state, not the
+ * permission the access card above shows.
+ */
+@Composable
+private fun CaptureStatusCard(
+    enabled: Boolean,
+    status: InboxCaptureState,
+    action: InboxCaptureActionState,
+    onScanNow: () -> Unit,
+    onReconnect: () -> Unit
+) {
+    val now = System.currentTimeMillis()
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SlateCard),
+        shape = AppShapes.card
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(AppSpacing.cardPadding)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+        ) {
+            Text("Estado de captura", style = AppTypography.bodyLarge, color = TextPrimary)
+            Text(
+                text = "Escuchando: ${if (status.listenerConnected) "sí" else "no"}",
+                style = AppTypography.bodySmall,
+                color = if (status.listenerConnected) StatusConnected else StatusError
+            )
+            if (!status.listenerConnected) {
+                Text(
+                    text = if (enabled) {
+                        "Android desconectó el lector; tocá Reconectar"
+                    } else {
+                        "Sin acceso a notificaciones, el lector no puede escuchar."
+                    },
+                    style = AppTypography.bodySmall,
+                    color = TextSecondary
+                )
+            }
+            Text(
+                text = lastCaptureLabel(status, now),
+                style = AppTypography.bodySmall,
+                color = TextSecondary
+            )
+            Text(
+                text = lastUploadLabel(status, now),
+                style = AppTypography.bodySmall,
+                color = TextSecondary
+            )
+            Text(
+                text = "Pendientes de reenviar: ${status.pendingRetryCount}",
+                style = AppTypography.bodySmall,
+                color = TextSecondary
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+            ) {
+                Button(
+                    onClick = onScanNow,
+                    enabled = !action.isScanning,
+                    modifier = Modifier.weight(1f),
+                    shape = AppShapes.button,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = PrimaryIndigo,
+                        contentColor = Color.White
+                    )
+                ) {
+                    Text(
+                        text = if (action.isScanning) {
+                            "Leyendo..."
+                        } else {
+                            "Leer notificaciones ahora"
+                        },
+                        style = AppTypography.bodySmall
+                    )
+                }
+                if (!status.listenerConnected && enabled) {
+                    Button(
+                        onClick = onReconnect,
+                        modifier = Modifier.weight(1f),
+                        shape = AppShapes.button,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = SlateBorder,
+                            contentColor = TextPrimary
+                        )
+                    ) {
+                        Text("Reconectar", style = AppTypography.bodySmall)
+                    }
+                }
+            }
+            action.scanMessage?.let { message ->
+                Text(
+                    text = message,
+                    style = AppTypography.labelSmall,
+                    color = StatusWorking
+                )
+            }
+        }
+    }
+}
+
+private fun lastCaptureLabel(status: InboxCaptureState, nowMillis: Long): String {
+    val at = status.lastCaptureAtMillis ?: return "Última notificación leída: ninguna todavía"
+    val appLabel = status.lastCaptureApp?.let { inboxAppLabel(it) }
+    val suffix = if (appLabel.isNullOrBlank()) "" else " ($appLabel)"
+    return "Última notificación leída: ${relativeTimeLabel(at, nowMillis)}$suffix"
+}
+
+private fun lastUploadLabel(status: InboxCaptureState, nowMillis: Long): String {
+    val errorClass = status.lastUploadErrorClass
+    val errorAt = status.lastUploadErrorAtMillis
+    if (!errorClass.isNullOrBlank() && errorAt != null) {
+        return "Último envío al PC: falló: $errorClass ${relativeTimeLabel(errorAt, nowMillis)}"
+    }
+    val okAt = status.lastUploadOkAtMillis ?: return "Último envío al PC: ninguno todavía"
+    return "Último envío al PC: ok ${relativeTimeLabel(okAt, nowMillis)}"
 }
 
 @Composable

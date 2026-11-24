@@ -75,6 +75,15 @@ class InboxFormatTest {
     }
 
     @Test
+    fun `raw timestamp relative time powers the capture status block`() {
+        assertEquals("", relativeTimeLabel(null, now))
+        assertEquals("ahora", relativeTimeLabel(now, now))
+        assertEquals("hace 5 min", relativeTimeLabel(now - 5 * 60_000L, now))
+        assertEquals("hace 2 h", relativeTimeLabel(now - 2 * 60 * 60_000L, now))
+        assertEquals("hace 3 d", relativeTimeLabel(now - 3 * 24 * 60 * 60_000L, now))
+    }
+
+    @Test
     fun `effort labels`() {
         assertEquals("Baja", effortLabel("low"))
         assertEquals("Media", effortLabel("medium"))

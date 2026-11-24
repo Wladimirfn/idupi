@@ -4,6 +4,10 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.idupi.app.data.IduPiClientProvider
+import com.idupi.app.data.inbox.InboxCaptureController
+import com.idupi.app.data.inbox.InboxCaptureGateway
+import com.idupi.app.data.inbox.InboxCaptureState
+import com.idupi.app.data.inbox.InboxScanResult
 import com.idupi.app.data.settings.SettingsProvider
 import com.idupi.app.data.settings.SettingsRepository
 import com.idupi.app.domain.model.InboxApp
@@ -53,6 +57,15 @@ data class InboxAgentConfigState(
 }
 
 /**
+ * State of the "Leer notificaciones ahora" action (inbox capture fix T1).
+ * [scanMessage] is the short result under the button.
+ */
+data class InboxCaptureActionState(
+    val isScanning: Boolean = false,
+    val scanMessage: String? = null,
+)
+
+/**
  * Ajustes > Alertas (phone-inbox T5): listener access is a platform check the
  * screen owns, while everything else lives here.
  *
@@ -60,16 +73,28 @@ data class InboxAgentConfigState(
  * [SettingsRepository] (DataStore in production, in-memory in tests); the
  * agent/model/effort lives on the PC and is read/saved through the client, so
  * it is loaded only when the section appears instead of at app start.
+ *
+ * Capture reliability (inbox capture fix T1): [captureStatus] mirrors the
+ * process-wide listener diagnostics and [scanNow] asks the connected listener
+ * to read the notifications already in the shade plus drain the retry queue.
+ * The gateway is injected so both are tested with a fake.
  */
 class InboxSettingsViewModel(
     private val clientSource: IduPiClientSource = IduPiClientProvider,
     private val settingsRepository: SettingsRepository = SettingsProvider.repository,
+    private val captureGateway: InboxCaptureGateway = InboxCaptureController,
 ) : ViewModel() {
 
     private val client get() = clientSource.client
 
     val inboxSettings: StateFlow<InboxSettings> = settingsRepository.inboxSettings
         .stateIn(viewModelScope, SharingStarted.Eagerly, InboxSettings())
+
+    /** Live listener/upload/retry state owned by the capture layer. */
+    val captureStatus: StateFlow<InboxCaptureState> = captureGateway.status
+
+    private val _captureAction = MutableStateFlow(InboxCaptureActionState())
+    val captureAction: StateFlow<InboxCaptureActionState> = _captureAction.asStateFlow()
 
     private val _agentConfig = MutableStateFlow(InboxAgentConfigState())
     val agentConfig: StateFlow<InboxAgentConfigState> = _agentConfig.asStateFlow()
@@ -136,6 +161,47 @@ class InboxSettingsViewModel(
     fun clearFeedback() {
         _agentConfig.update { it.copy(errorMessage = null, successMessage = null) }
     }
+
+    // --- Capture reliability (inbox capture fix T1) ---
+
+    /** Refreshes the pending retry count shown in Ajustes. */
+    fun refreshCaptureStatus() {
+        viewModelScope.launch {
+            try {
+                captureGateway.refreshPendingCount()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not refresh inbox capture status", e)
+            }
+        }
+    }
+
+    /**
+     * Asks the connected listener to read the shade and retry queued uploads.
+     * [InboxCaptureActionState.scanMessage] is the short result the owner sees.
+     */
+    fun scanNow() {
+        if (_captureAction.value.isScanning) return
+        _captureAction.update { it.copy(isScanning = true, scanMessage = null) }
+        viewModelScope.launch {
+            val message = try {
+                when (val result = captureGateway.scanNow()) {
+                    is InboxScanResult.Completed -> scanResultMessage(result.sent)
+                    InboxScanResult.NotConnected -> "Lector no conectado"
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Inbox capture scan failed", e)
+                "No se pudo leer las notificaciones"
+            }
+            _captureAction.update { it.copy(isScanning = false, scanMessage = message) }
+        }
+    }
+
+    private fun scanResultMessage(sent: Int): String =
+        if (sent == 1) "1 notificación enviada" else "$sent notificaciones enviadas"
 
     fun saveConfig() {
         val state = _agentConfig.value
