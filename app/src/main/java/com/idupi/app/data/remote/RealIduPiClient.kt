@@ -136,20 +136,6 @@ class RealIduPiClient : IduPiClient {
     private var token: String = ""
     private var useHttps: Boolean = false
 
-    /**
-     * OpenCode auto-approve toggle (PR 3 / Task 4.1). When `true`, the spawn
-     * path on the server may launch `opencode run --auto` (legacy autopilot);
-     * when `false`, the sidecar is spawned and permission cards are surfaced.
-     *
-     * Defaults to `false` to keep the migration order safe: a fresh install
-     * gets cards instead of silently self-approving. `IduPiClientProvider`
-     * pushes the user's toggle choice here from the Settings Repository.
-     *
-     * @see com.idupi.app.data.settings.SettingsRepository
-     * @see <a href="../../../../../../../openspec/changes/opencode-serve-sidecar/design.md">design.md D8</a>
-     */
-    var opencodeAutoApprove: Boolean = false
-
     private val chatEventFlow = MutableSharedFlow<ChatEvent>(extraBufferCapacity = 64)
 
     private val json = Json {
@@ -177,6 +163,18 @@ class RealIduPiClient : IduPiClient {
         this.token = sanitizeAuthToken(token)
         this.useHttps = useHttps
     }
+
+    /**
+     * Read-only snapshot of the values every request is built from. Used by
+     * [com.idupi.app.data.IduPiClientProvider.clear]'s test and by diagnostics;
+     * it must never become a second way to configure the client.
+     */
+    internal fun connectionSnapshot(): ClientConnectionSnapshot = ClientConnectionSnapshot(
+        host = host,
+        port = port,
+        token = token,
+        useHttps = useHttps
+    )
 
     private val httpScheme: String get() = if (useHttps) "https" else "http"
     private val wsScheme: String get() = if (useHttps) "wss" else "ws"
@@ -314,46 +312,6 @@ class RealIduPiClient : IduPiClient {
         return true
     }
 
-    override suspend fun getTerminals(): List<com.idupi.app.domain.repository.TerminalSessionItem> =
-        send(HttpMethod.Get, "/api/v1/terminals").body()
-
-    override suspend fun getTerminalLogs(terminalId: String): List<String> =
-        send(HttpMethod.Get, "/api/v1/terminals/$terminalId/logs").body()
-
-    override suspend fun spawnTerminal(name: String?): com.idupi.app.domain.repository.TerminalSessionItem? {
-        val payload = if (name != null) mapOf("name" to name) else emptyMap<String, String>()
-        val res: Map<String, JsonElement> = send(HttpMethod.Post, "/api/v1/terminals/spawn") {
-            contentType(ContentType.Application.Json)
-            setBody(payload)
-        }.body()
-
-        val termObj = res["terminal"]
-        return if (termObj != null) {
-            json.decodeFromJsonElement(com.idupi.app.domain.repository.TerminalSessionItem.serializer(), termObj)
-        } else null
-    }
-
-    override suspend fun sendTerminalCommand(terminalId: String, command: String): String {
-        val res: Map<String, String> = send(HttpMethod.Post, "/api/v1/terminals/exec") {
-            contentType(ContentType.Application.Json)
-            setBody(mapOf("termId" to terminalId, "command" to command))
-        }.body()
-        return res["output"] ?: "Comando enviado."
-    }
-
-    override suspend fun restartTerminalServer(terminalId: String): String {
-        val res: Map<String, String> = send(HttpMethod.Post, "/api/v1/terminals/restart") {
-            contentType(ContentType.Application.Json)
-            setBody(mapOf("termId" to terminalId))
-        }.body()
-        return res["message"] ?: "Servidor reseteado."
-    }
-
-    override suspend fun closeTerminal(terminalId: String): Boolean {
-        send(HttpMethod.Delete, "/api/v1/terminals/$terminalId")
-        return true
-    }
-
     // --- Interactive PTY terminals ---
 
     override suspend fun createPty(cols: Int, rows: Int, cwd: String?): PtyInfo =
@@ -427,6 +385,30 @@ class RealIduPiClient : IduPiClient {
 
     override suspend fun listDeliveries(): List<DeliveryInfo> =
         send(HttpMethod.Get, "/api/v1/deliveries").body<DeliveryListResponse>().deliveries
+
+    override suspend fun getSystemMetrics(): SystemMetrics =
+        send(HttpMethod.Get, "/api/v1/system/metrics").body()
+
+    // --- OS processes (Procesos screen, T10) ---
+
+    override suspend fun getOsProcesses(): OsProcessSample =
+        send(HttpMethod.Get, "/api/v1/os/processes").body()
+
+    /**
+     * 200 -> killed; 404 -> already gone (the outcome the caller wanted);
+     * 409 -> the server refuses because the process is protected. Anything else
+     * is a real failure and propagates as [IduPiHttpException].
+     */
+    override suspend fun killOsProcess(pid: Int): KillProcessOutcome = try {
+        send(HttpMethod.Post, "/api/v1/os/processes/$pid/kill")
+        KillProcessOutcome.KILLED
+    } catch (e: IduPiHttpException) {
+        when (e.statusCode) {
+            404 -> KillProcessOutcome.GONE
+            409 -> KillProcessOutcome.PROTECTED
+            else -> throw e
+        }
+    }
 
     /**
      * Raw APK bytes over the chunked-response pattern: the caller writes each
@@ -651,13 +633,6 @@ class RealIduPiClient : IduPiClient {
                 // NAT to kill.
                 val response: ChatResponse = send(HttpMethod.Post, "/api/v1/chat/message") {
                     contentType(ContentType.Application.Json)
-                    // PR 3 / Task 4.1: ship the Settings toggle to the server
-                    // so `runOpenCodeCli` can branch between `opencode run --auto`
-                    // (toggle ON, autopilot) and the sidecar-first path (toggle
-                    // OFF, the default). The header is the single contract the
-                    // server reads — see design.md D8 and the AutoApproveHeaderTest
-                    // pinning for the wire shape.
-                    attachOpenCodeAutoApproveHeader(opencodeAutoApprove)
                     setBody(MessagePayload(message, clientTaskId))
                     timeout {
                         requestTimeoutMillis = 20_000
@@ -888,6 +863,17 @@ class RealIduPiClient : IduPiClient {
 @Serializable
 private data class ApplySddProfilePayload(val profileId: String)
 
+/**
+ * The host/port/token every request is built from, as one immutable value.
+ * Package-internal so tests can assert a reset without exposing mutators.
+ */
+internal data class ClientConnectionSnapshot(
+    val host: String,
+    val port: Int,
+    val token: String,
+    val useHttps: Boolean
+)
+
 // --- Interactive PTY wire payloads ---
 
 /** POST /api/v1/pty body. A null cwd makes the server use its default. */
@@ -910,31 +896,3 @@ private data class PtyInputPayload(val data: String)
 @Serializable
 private data class PtyResizePayload(val cols: Int, val rows: Int)
 
-/**
- * Wire header that carries the OpenCode auto-approve toggle to the server.
- * The server-side reader in `runOpenCodeCli` (PR 2 / 3.2) looks this up to
- * decide whether to launch `opencode run --auto` (`1`) or the sidecar-first
- * path (`0`, the spec-mandated default).
- */
-internal const val HEADER_OPENCODE_AUTO_APPROVE: String = "X-OpenCode-Auto-Approve"
-
-/**
- * Maps the in-memory Boolean toggle to the wire-format string the server
- * expects. `"0"`/`"1"` (not `"false"`/`"true"`) is what the server-side
- * header parser accepts — the same wire-shape discipline that
- * `RealIduPiClientUiResponseTest` pins for `UiResponsePayload`.
- */
-internal fun autoApproveHeaderValue(autoApprove: Boolean): String =
-    if (autoApprove) "1" else "0"
-
-/**
- * Attaches the OpenCode auto-approve header to a chat request. The single
- * testable seam for Task 4.1: `AutoApproveHeaderTest` exercises this
- * extension directly via `HttpRequestBuilder`, and `RealIduPiClient.sendMessage`
- * calls it once per `/api/v1/chat/message` POST.
- */
-internal fun io.ktor.client.request.HttpRequestBuilder.attachOpenCodeAutoApproveHeader(
-    autoApprove: Boolean,
-) {
-    header(HEADER_OPENCODE_AUTO_APPROVE, autoApproveHeaderValue(autoApprove))
-}

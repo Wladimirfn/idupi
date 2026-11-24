@@ -9,12 +9,17 @@ import com.idupi.app.data.install.InstallOutcome
 import com.idupi.app.data.install.InstallResultStore
 import com.idupi.app.domain.model.DeliveryInfo
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -45,10 +50,11 @@ class DeliveriesViewModelTest {
         resultStore = InstallResultStore()
     }
 
-    private fun createViewModel() = DeliveriesViewModel(
+    private fun createViewModel(scope: CoroutineScope? = null) = DeliveriesViewModel(
         clientSource = FakeClientSource(fake),
         installerProvider = { installer },
         resultStore = resultStore,
+        installScope = scope,
     )
 
     @Test
@@ -175,6 +181,119 @@ class DeliveriesViewModelTest {
             DeliveryInstallState.Failed("La firma no coincide con la app instalada"),
             viewModel.installStates.value[delivery.id]
         )
+    }
+
+    @Test
+    fun `an outcome that lands during the download is not overwritten by installing`() = runTest {
+        fake.deliveriesToReturn = listOf(delivery)
+        installer.gate = CompletableDeferred()
+
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.install(delivery)
+        runCurrent()
+
+        // The receiver can publish while the last bytes are still being written.
+        resultStore.publish(InstallOutcome(delivery.id, success = true, message = "APK instalada"))
+        advanceUntilIdle()
+        assertEquals(DeliveryInstallState.Installed, viewModel.installStates.value[delivery.id])
+
+        installer.gate!!.complete(Unit)
+        advanceUntilIdle()
+
+        assertEquals(
+            DeliveryInstallState.Installed,
+            viewModel.installStates.value[delivery.id]
+        )
+    }
+
+    @Test
+    fun `resume after a launched confirmation returns the stuck row to idle`() = runTest {
+        fake.deliveriesToReturn = listOf(delivery)
+        installer.gate = CompletableDeferred()
+
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.install(delivery)
+        runCurrent()
+        installer.gate!!.complete(Unit)
+        advanceUntilIdle()
+        assertEquals(DeliveryInstallState.Installing, viewModel.installStates.value[delivery.id])
+        assertEquals(delivery.id, viewModel.activeInstallIdForTest)
+
+        // Back from the system dialog without an InstallOutcome: the owner
+        // cancelled, so the row must be installable again.
+        viewModel.onScreenResumed()
+
+        assertEquals(DeliveryInstallState.Idle, viewModel.installStates.value[delivery.id])
+        assertNull(viewModel.activeInstallIdForTest)
+
+        viewModel.install(delivery)
+        runCurrent()
+        assertEquals(2, installer.installCalls)
+    }
+
+    @Test
+    fun `resume does not rewrite a terminal outcome`() = runTest {
+        fake.deliveriesToReturn = listOf(delivery)
+        installer.gate = CompletableDeferred()
+
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.install(delivery)
+        runCurrent()
+        installer.gate!!.complete(Unit)
+        advanceUntilIdle()
+        resultStore.publish(InstallOutcome(delivery.id, success = false, message = "Cancelada"))
+        advanceUntilIdle()
+
+        viewModel.onScreenResumed()
+
+        assertEquals(
+            DeliveryInstallState.Failed("Cancelada"),
+            viewModel.installStates.value[delivery.id]
+        )
+    }
+
+    @Test
+    fun `resume while the download is running keeps the install untouched`() = runTest {
+        fake.deliveriesToReturn = listOf(delivery)
+        installer.gate = CompletableDeferred()
+
+        val viewModel = createViewModel()
+        advanceUntilIdle()
+
+        viewModel.install(delivery)
+        runCurrent()
+
+        viewModel.onScreenResumed()
+
+        assertEquals(
+            DeliveryInstallState.Downloading(0f),
+            viewModel.installStates.value[delivery.id]
+        )
+        assertEquals(delivery.id, viewModel.activeInstallIdForTest)
+    }
+
+    @Test
+    fun `cancelling the install clears the active delivery`() = runTest {
+        fake.deliveriesToReturn = listOf(delivery)
+        installer.gate = CompletableDeferred()
+        val installScope = CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
+        val viewModel = createViewModel(installScope)
+        advanceUntilIdle()
+
+        viewModel.install(delivery)
+        runCurrent()
+        assertEquals(delivery.id, viewModel.activeInstallIdForTest)
+
+        installScope.cancel()
+        runCurrent()
+
+        assertNull(viewModel.activeInstallIdForTest)
     }
 
     @Test

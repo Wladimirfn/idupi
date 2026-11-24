@@ -26,11 +26,63 @@ class DeliveryNotificationDecisionTest {
         val decision = deliveryNotificationDecision(list, emptySet(), newestSeenCreatedAt = null)
 
         assertTrue(decision.toNotify.isEmpty())
+        assertTrue(decision.bootstrapped)
         assertEquals(
             setOf("dlv-aaaaaaaaaaaa", "dlv-bbbbbbbbbbbb"),
             decision.seenIds
         )
         assertEquals("2026-11-23T10:00:00.000Z", decision.newestCreatedAt)
+    }
+
+    @Test
+    fun `an empty bootstrap is remembered so the first later delivery notifies`() {
+        // An empty first poll has no date to persist: the explicit flag is the
+        // only thing that tells the next poll the bootstrap already happened.
+        val bootstrap = deliveryNotificationDecision(
+            deliveries = emptyList(),
+            seenIds = emptySet(),
+            newestSeenCreatedAt = null
+        )
+
+        assertTrue(bootstrap.toNotify.isEmpty())
+        assertTrue(bootstrap.bootstrapped)
+        assertEquals(null, bootstrap.newestCreatedAt)
+
+        val after = deliveryNotificationDecision(
+            deliveries = listOf(delivery("dlv-aaaaaaaaaaaa", "2026-11-23T10:00:00.000Z")),
+            seenIds = bootstrap.seenIds,
+            newestSeenCreatedAt = bootstrap.newestCreatedAt,
+            bootstrapped = bootstrap.bootstrapped
+        )
+
+        assertEquals(listOf("dlv-aaaaaaaaaaaa"), after.toNotify.map { it.id })
+    }
+
+    @Test
+    fun `a non-empty bootstrap does not notify the deliveries already on the PC`() {
+        val list = listOf(
+            delivery("dlv-bbbbbbbbbbbb", "2026-11-23T10:00:00.000Z"),
+            delivery("dlv-aaaaaaaaaaaa", "2026-11-23T09:00:00.000Z")
+        )
+
+        val bootstrap = deliveryNotificationDecision(list, emptySet(), newestSeenCreatedAt = null)
+
+        assertTrue(bootstrap.toNotify.isEmpty())
+        assertTrue(bootstrap.bootstrapped)
+        assertEquals("2026-11-23T10:00:00.000Z", bootstrap.newestCreatedAt)
+    }
+
+    @Test
+    fun `a persisted marker alone counts as bootstrapped`() {
+        // Migration path for installs that only stored the marker.
+        val decision = deliveryNotificationDecision(
+            deliveries = listOf(delivery("dlv-bbbbbbbbbbbb", "2026-11-23T11:00:00.000Z")),
+            seenIds = emptySet(),
+            newestSeenCreatedAt = "2026-11-23T10:00:00.000Z",
+            bootstrapped = false
+        )
+
+        assertEquals(listOf("dlv-bbbbbbbbbbbb"), decision.toNotify.map { it.id })
     }
 
     @Test

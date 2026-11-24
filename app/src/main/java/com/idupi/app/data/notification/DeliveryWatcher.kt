@@ -76,13 +76,23 @@ class DeliveryWatcher(
     private fun publishNewDeliveries(deliveries: List<DeliveryInfo>) {
         val seenIds = prefs.getStringSet(KEY_SEEN_IDS, emptySet()) ?: emptySet()
         val newestSeenCreatedAt = prefs.getString(KEY_NEWEST_CREATED_AT, null)
+        val bootstrapped = prefs.getBoolean(KEY_BOOTSTRAPPED, false)
 
-        val decision = deliveryNotificationDecision(deliveries, seenIds, newestSeenCreatedAt)
+        val decision = deliveryNotificationDecision(
+            deliveries,
+            seenIds,
+            newestSeenCreatedAt,
+            bootstrapped
+        )
 
-        if (decision.seenIds != seenIds || decision.newestCreatedAt != newestSeenCreatedAt) {
+        if (decision.seenIds != seenIds ||
+            decision.newestCreatedAt != newestSeenCreatedAt ||
+            decision.bootstrapped != bootstrapped
+        ) {
             prefs.edit()
                 .putStringSet(KEY_SEEN_IDS, decision.seenIds)
                 .putString(KEY_NEWEST_CREATED_AT, decision.newestCreatedAt)
+                .putBoolean(KEY_BOOTSTRAPPED, decision.bootstrapped)
                 .apply()
         }
 
@@ -101,6 +111,13 @@ class DeliveryWatcher(
         private const val PREFS_NAME = "idupi_delivery_prefs"
         private const val KEY_SEEN_IDS = "seen_delivery_ids"
         private const val KEY_NEWEST_CREATED_AT = "newest_seen_created_at"
+
+        /**
+         * Explicit "the first poll already ran" flag. An empty bootstrap leaves
+         * the newest marker null, so without this flag the first APK pushed
+         * afterwards would be swallowed by a second bootstrap.
+         */
+        private const val KEY_BOOTSTRAPPED = "bootstrapped"
         private const val DEFAULT_POLL_INTERVAL_MS = 8_000L
         private const val DEFAULT_ERROR_BACKOFF_MS = 30_000L
     }

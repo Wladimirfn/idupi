@@ -1,8 +1,12 @@
 package com.idupi.app.ui.screens
 
+import android.Manifest
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -15,6 +19,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -30,6 +35,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.idupi.app.data.notification.DeliveryNotifications
+import com.idupi.app.data.notification.NotificationPermissionState
+import com.idupi.app.data.notification.POST_NOTIFICATIONS_API
+import com.idupi.app.data.notification.hasPostNotificationsPermission
 import com.idupi.app.domain.model.DeliveryInfo
 import com.idupi.app.domain.model.formatDeliverySize
 import com.idupi.app.domain.model.relativeDeliveryTime
@@ -57,11 +66,41 @@ fun DeliveriesScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
+    // The ping can be blocked by the API 33 runtime permission OR by a muted
+    // channel; both leave deliveries listed here, so the banner explains why
+    // no notification arrived.
+    var notificationsBlocked by remember {
+        mutableStateOf(!DeliveryNotifications(context).canPost())
+    }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {
+        notificationsBlocked = !DeliveryNotifications(context).canPost()
+    }
+    val requestNotifications: () -> Unit = {
+        if (Build.VERSION.SDK_INT >= POST_NOTIFICATIONS_API &&
+            !hasPostNotificationsPermission(context) &&
+            !NotificationPermissionState.wasAsked(context)
+        ) {
+            NotificationPermissionState.markAsked(context)
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            // Already answered, or muted in settings: the system screen is the
+            // only place that can flip it.
+            val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+            runCatching { context.startActivity(intent) }
+        }
+        Unit
+    }
+
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 viewModel.refreshPermission()
                 viewModel.refresh()
+                viewModel.onScreenResumed()
+                notificationsBlocked = !DeliveryNotifications(context).canPost()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -130,6 +169,10 @@ fun DeliveriesScreen(
                 InstallPermissionCard(onOpenSettings = openInstallSettings)
             }
 
+            if (notificationsBlocked) {
+                NotificationPermissionCard(onEnable = requestNotifications)
+            }
+
             when {
                 isLoading && deliveries.isEmpty() -> {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -155,6 +198,69 @@ fun DeliveriesScreen(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Notification gate. Android 13+ needs `POST_NOTIFICATIONS` at runtime (asked
+ * once from MainActivity); before that, or once answered, the system's app
+ * notification settings is the only fix. Deliveries stay listed either way.
+ */
+@Composable
+private fun NotificationPermissionCard(onEnable: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = AppShapes.card,
+        color = SlateCard,
+        border = BorderStroke(1.dp, StatusWorking.copy(alpha = 0.6f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(AppSpacing.md),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(30.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(StatusWorking.copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.NotificationsOff,
+                        contentDescription = null,
+                        tint = StatusWorking,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                Text(
+                    text = "Las notificaciones están desactivadas",
+                    style = AppTypography.bodySmall.copy(fontWeight = FontWeight.Bold, fontSize = 14.sp),
+                    color = TextPrimary
+                )
+            }
+            Text(
+                text = "Las APKs que lleguen desde la PC no van a avisarte. Igual vas a verlas en esta pantalla.",
+                style = AppTypography.labelSmall,
+                color = TextSecondary
+            )
+            OutlinedButton(
+                onClick = onEnable,
+                shape = AppShapes.button,
+                border = BorderStroke(1.dp, StatusWorking.copy(alpha = 0.6f)),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = StatusWorking)
+            ) {
+                Text(
+                    "Activar notificaciones",
+                    style = AppTypography.labelSmall.copy(fontWeight = FontWeight.Bold)
+                )
             }
         }
     }

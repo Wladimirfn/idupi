@@ -1,0 +1,103 @@
+# App redesign: terminals first, deliveries, processes, system dashboard
+
+Locator: `odd/tasks/app-redesign.md` · Engram mirror: `odd/app-redesign/tasks`
+Branch: `feat/app-redesign` (stacked on `feat/apk-delivery`)
+
+## Objective
+
+The live interactive terminals replaced chat, the SDD orchestrator and labs for the owner.
+Reshape the app around what is actually used: keep the same side-drawer app, remove the
+dead surfaces, give terminals and deliveries their own entries, rename the CLI console to
+"Procesos", and turn the Dashboard into a PC health monitor.
+
+## Owner decisions (2026-11-23)
+
+- Keep the current drawer navigation ("la misma app"); no bottom bar.
+- Remove: Chat, Orquestador, Sesiones, and every Dashboard part tied to chat/engines.
+- "Terminales" gets its own drawer entry (list of live PTYs + new; tap opens the terminal).
+- "Entregas" gets its own drawer entry.
+- Console ("Terminal CLI") is renamed "Procesos" and opens directly on the process list.
+- Dashboard redesign: RAM, CPU, GPU usage; power draw (W); CPU/GPU/RAM temperature.
+
+## Constraints / findings
+
+- explore-1 map (2026-11-23): `Screen.CHAT` is the start screen and the universal Back
+  target (`AppNavigation.kt:53,96-105`); Welcome/Connection continue to CHAT; Sessions only
+  resumes chats; the only live-PTY list is `ConsoleViewModel.interactivePtys`.
+- `/api/v1/chat/stream` and `cancelCurrentTask` are still consumed by Console; keep them.
+- Server code for chat/orchestrator routes is NOT deleted in this feature (app-only removal).
+- Sensors on the owner's PC: RTX 3060 via `nvidia-smi` (usage, temp, W, VRAM). Ryzen 5600X
+  exposes no temperature/power through WMI (`MSAcpi_ThermalZoneTemperature` count 0) and no
+  LibreHardwareMonitor is installed. DDR4 has no temperature sensor in general. Metrics are
+  nullable; the UI shows "no disponible" with a hint instead of fake numbers. Optional
+  source: LibreHardwareMonitor web server (`data.json`) when running.
+- RTSS discovery (Engram `hardware/sensor-source`): RTSS's `LHMDataProvider.exe` loads
+  LibreHardwareMonitorLib 0.9.5 and shares sensor XML via `LHMDPSharedMemory`. Probe: the
+  DLL lists Ryzen `Core (Tctl/Tdie)` and `Package` power, but values are 0 without admin.
+  Owner approved an elevated helper (2026-11-23). The elevated task must not run a
+  user-writable script (privilege-escalation vector): install copies it to ProgramData.
+
+## Tasks
+
+- [x] T1 Remove Chat, Orchestrator and Sessions (screens, VMs, chat-only components, tests);
+      new start/Back target; Welcome/Connection continue to Terminales.
+- [x] T2 Drawer entries Terminales (new PTY list screen) and Entregas; Console renamed
+      Procesos, opening directly on the process list (PTY launcher and Entregas card removed).
+- [x] T3 Server `GET /api/v1/system/metrics` (behind auth): CPU %, RAM used/total, GPU via
+      nvidia-smi, optional LibreHardwareMonitor source for CPU temp/W; nulls when unknown.
+- [x] T4 Dashboard redesign on the metrics (polling while visible) + tests.
+- [x] T6 Elevated sensor helper: loads LibreHardwareMonitorLib (same DLL RTSS's
+      LHMDataProvider uses), writes CPU temp/power (+ DIMM temp if any) JSON every 2 s to
+      `%ProgramData%\IDUPI\sensors.json`; installed as logon scheduled task with highest
+      privileges from an admin-only copy in ProgramData; server metrics prefer it.
+- [x] T5 Bump version, build, deliver with `idupi-push`, owner check.
+- [x] T7 Dashboard spacing: no overlapping/cramped text in the metric cards (owner feedback on 1.34).
+- [x] T8 Storage card (4th card): every fixed disk (C:, D:, ...) with used/free/total, swipeable
+      pager between disks; server adds `disks` to `/api/v1/system/metrics`.
+- [x] T9 Settings: rename "Fondo chat"; app theme system (3 color presets, dark, light, custom accent
+      + text colors) applied app-wide; remove auto-approval and other dead chat/orchestrator settings;
+      reorganize sections.
+- [x] T10 Processes: list ALL PC processes (not only server-managed ones) with working category
+      filters (Apps / Segundo plano / Windows / Agentes / IDUPI), memory and CPU %, search, and end
+      process with confirmation (critical system processes protected); server endpoint.
+
+## Acceptance criteria
+
+- No Chat/Orquestador/Sesiones entries or code paths remain in the app; app builds, tests pass.
+- App opens on Terminales; Back from any drawer screen returns to Terminales.
+- Terminales lists every live PTY, creates new ones, opens one full-screen, Back returns.
+- Procesos shows the process list immediately.
+- Dashboard shows live CPU/RAM/GPU usage, GPU temp and W; unavailable sensors are labelled.
+
+## Checks
+
+- App: `./gradlew :app:testDebugUnitTest :app:assembleRelease` (TDD mode: off for server per
+  `openspec/config.yaml:24`; app tests run as ordinary functional checks).
+- Server: `node --test idupi-server/test/<file>`.
+
+## Delivery
+
+- Forecast: large deletion (~5000 lines removed, mostly whole files) + ~800 authored lines.
+  Stacked PRs: PR-H = T1 (deletions), PR-I = T2, PR-J = T3+T4+T5.
+
+## Progress / evidence
+
+| Task | Commit | Checks |
+|------|--------|--------|
+| T1 | 4bbaed1, 4aaaf68 | Writer idu-pi work-1. 33 files, -8812/+50 (16 main + 13 test files deleted). Worker: testDebugUnitTest 250/0 + assembleDebug. Parent: leftover "Orquestador" labels reworded (4aaaf68). IduPiClient chat/orchestrator methods kept on purpose (wire tests; Console still uses connectChat/cancelCurrentTask). |
+| T2 | dd44267 | Writer idu-pi work-1. TerminalsScreen/VM (3 s visible polling, create, open, Back -> Terminales), drawer order Terminales/Entregas/Procesos/Dashboard/Proyectos/Alertas/Remoto/Ajustes, Console -> "Procesos" list-first (log stream behind app-bar toggle). Worker 257/0 (7 new); parent rerun testDebugUnitTest EXIT 0. |
+| T3 | 59f7695 | Writer idu-pi work-1. system-metrics 16/16, delivery-routes 10/10, node --check OK; wired after requireAuth (parent verified index.mjs:3168/3179). Real smoke: Ryzen 5600X 5.9 %, RAM 75 %, RTX 3060 39.7 C 13 W; CPU temp/W null + LibreHardwareMonitor hint. Live server not restarted (owner PTY alive). |
+| T4 | 92ac9ec | Writer idu-pi work-1. DashboardViewModel 2 s visible polling, 2-col cards, thresholds, hints card. testDebugUnitTest 268/0 (11 new). Note: openspec app block says strict_tdd true; tests written alongside, no RED evidence (disclosed). |
+| T6 | afb3677, b8465b5, 654997e, 2c26d41 | Writer idu-pi work-1 (helper, installer, server source, packaging). Parent: elevated path ignores user env (DLL hijack); zero readings -> null + driver hint. Root cause of 0 readings: RTSS's LHM copy (0.9.5-pre392) predates PawnIO. Packaged (owner: "others must use it without problems"): `scripts/sensors-deps.json` pins LHM v0.9.6 zip (sha256 086d9f1b...) and PawnIO 2.2.0 setup (sha256 1f519a22..., Authenticode namazso verified); installer installs PawnIO if missing, extracts 9 DLLs to admin-locked `%ProgramData%\IDUPI\lhm`; nothing binary in the repo; docs `idupi-server/docs/sensors.md`. Live (owner accepted UAC): PawnIO service RUNNING, helper elevated libVersion 0.9.6.0, CPU 60.1 C / 39.2 W; server /system/metrics 200 -> cpu 58.1 C 45 W, gpu 43 C 14.7 W, sources.sensors "sensors-helper", hints 0. system-metrics 22/22. RAM temp null (no DIMM sensor). |
+| T5 | 0ad6b92 | Parent: testDebugUnitTest + assembleRelease EXIT 0, APK 1.34 versionCode 35 same cert, pushed via idupi-push (dlv-55b95ef97aed); owner installed and used the live dashboard (reported 404 before restart, then live RAM values). |
+| T7 | c13fdaa | Writer idu-pi work-1: MetricRow weight+ellipsis, 8/12/16dp spacing, 24sp headline, 1 column below 360dp. Explorer explore-2 mapped causes (explore-1 run returned empty). |
+| T8 | 23423bc, 241a0f5, (SWR) | Server: disks via statfs + cached CIM labels; parent added stale-while-revalidate so the ~3 s CIM query never stalls a poll (28/28). App: Almacenamiento HorizontalPager keyed by mount. Live: C: 87.6 %, D: 51.4 %, E: 55.3 %, F: 54.2 %, G: 20.1 %. |
+| T9 | 0a0ec16 | DataStore theme_mode/preset/custom colors; presets Índigo/Esmeralda/Ámbar; custom swatches + contrast warning; removed auto-approve (+ header plumbing/tests), wallpaper, dead mute toggle. |
+| T10 | 6ab53cd, a93a5d9 | Server GET /api/v1/os/processes (one PowerShell sample, cpu deltas, categories idupi>agents>windows>apps>background, protected list) + POST kill (409 protected / 404 / taskkill). App list with chips/search/sort/details/confirm. Live: 328 processes in 573 ms, kill pid 4 -> 409, no token -> 401. Old /api/v1/terminals client surface removed. |
+| Release 1.35 | 2d4865b | Parent: testDebugUnitTest (285) + assembleRelease EXIT 0, versionCode 36 same cert, server restarted (PID 35340), pushed dlv-83f23c4229e2. Pending: owner on-device check (no device run by workers). |
+| Fix 1.36 | 6de3195 | Owner report: CPU/RAM cards missing on 1.35. Cause (T7 regression): grid rows emitted directly inside BoxWithConstraints (Box semantics) so the GPU row overlapped the CPU/RAM row; unit tests do not cover layout. Parent fix: rows wrapped in a Column. testDebugUnitTest + assembleRelease EXIT 0, versionCode 37 same cert, pushed dlv-55b79002227f. |
+| Pre-publish audit | 8d4fc67, 456f35c, 181ef92, 16f57a5, a66eb31, 666d39e, da6e345 | Docs: README/PRIVACY/server docs rewritten (work-1); LAN IP scrubbed from evidence. Security audit main..HEAD: hunter audit-1 (fragment landed, closing lines present) -> verifier audit-2: 5 confirmed (all correctness: empty-bootstrap delivery not notified, POST_NOTIFICATIONS never requested, start-server -Port, LHM CPU-node/zero values, delivery EEXIST unlink + cpu% >100), 3 needs_validation fixed anyway (sensor install folder owner/reparse/staging LPE, in-memory token after credential clear, install-state race), 4 rejected (token holder already has PTY exec). Fixes by work-1 (timed out after commits; parent verified): server 528/528 excluding 2 files; screen-stream 14/14 alone (timing flake under full-suite load); sessions-runtime 1 env failure = installed OpenCode v2 rejects `db --format json` (pre-existing backlog, test skipped on main worktree without projects DB, file untouched by branch). App testDebugUnitTest 299/0 + assembleDebug EXIT 0. |
+
+## Next step
+
+Push the stacked branches; owner provides 6 screenshots for README; then PRs/merge/release decision. Server still runs pre-audit code until next restart; app fixes ship in the next APK.

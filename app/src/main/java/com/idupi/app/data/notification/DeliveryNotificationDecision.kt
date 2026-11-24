@@ -9,7 +9,8 @@ import com.idupi.app.domain.model.DeliveryInfo
 data class DeliveryNotificationDecision(
     val toNotify: List<DeliveryInfo>,
     val seenIds: Set<String>,
-    val newestCreatedAt: String?
+    val newestCreatedAt: String?,
+    val bootstrapped: Boolean
 )
 
 /** Cap so the persisted id set cannot grow forever across months of use. */
@@ -23,19 +24,32 @@ const val MAX_SEEN_DELIVERY_IDS: Int = 200
  * deliveries stay silent after a restart even when the seen-id set was
  * trimmed; ids seen within the marker's window cover same-instant newcomers.
  *
- * The very first poll (no marker yet) is a bootstrap: everything currently on
- * the PC is treated as old news, and only deliveries pushed afterwards
- * notify. That is what keeps reinstalling the app from replaying the whole
- * list as notifications.
+ * The first poll (no marker and not yet bootstrapped) is a bootstrap:
+ * everything currently on the PC is treated as old news, and only deliveries
+ * pushed afterwards notify. That is what keeps reinstalling the app from
+ * replaying the whole list as notifications.
+ *
+ * `bootstrapped` is an explicit persisted flag, not a magic marker value: an
+ * empty first poll has no delivery to date, so the marker stays `null`, and
+ * the flag is what tells the next poll that the bootstrap already happened.
+ * Without it the first APK pushed after an empty list would be swallowed by a
+ * second bootstrap. A non-null marker also counts as bootstrapped, which is
+ * the migration path for installs that persisted only the marker.
+ *
+ * Seen ids are recorded even when notifications cannot be posted (permission
+ * denied or the channel muted): the Entregas list still shows every delivery,
+ * and a later grant must not replay the whole backlog as notifications.
  *
  * @param deliveries current server list, newest first.
  * @param seenIds ids already observed (persisted).
  * @param newestSeenCreatedAt persisted marker, `null` before the first poll.
+ * @param bootstrapped persisted "the first poll already ran" flag.
  */
 fun deliveryNotificationDecision(
     deliveries: List<DeliveryInfo>,
     seenIds: Set<String>,
-    newestSeenCreatedAt: String?
+    newestSeenCreatedAt: String?,
+    bootstrapped: Boolean = false
 ): DeliveryNotificationDecision {
     val currentIds = deliveries
         .map { it.id }
@@ -52,22 +66,27 @@ fun deliveryNotificationDecision(
         seenIds + currentIds
     }
 
-    if (newestSeenCreatedAt == null) {
+    val alreadyBootstrapped = bootstrapped || newestSeenCreatedAt != null
+    if (!alreadyBootstrapped) {
         return DeliveryNotificationDecision(
             toNotify = emptyList(),
             seenIds = updatedSeenIds,
-            newestCreatedAt = updatedNewest
+            newestCreatedAt = updatedNewest,
+            bootstrapped = true
         )
     }
 
     val toNotify = deliveries.filter { delivery ->
         delivery.id.isNotBlank() &&
             delivery.id !in seenIds &&
-            (delivery.createdAt == null || delivery.createdAt >= newestSeenCreatedAt)
+            (delivery.createdAt == null ||
+                newestSeenCreatedAt == null ||
+                delivery.createdAt >= newestSeenCreatedAt)
     }
     return DeliveryNotificationDecision(
         toNotify = toNotify,
         seenIds = updatedSeenIds,
-        newestCreatedAt = updatedNewest
+        newestCreatedAt = updatedNewest,
+        bootstrapped = true
     )
 }

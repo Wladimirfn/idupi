@@ -48,10 +48,24 @@ foreach ($name in "server.out.log", "server.err.log") {
 }
 
 $node = (Get-Command node -ErrorAction Stop).Source
-$process = Start-Process -FilePath $node -ArgumentList "index.mjs" `
-    -WorkingDirectory $serverDir -WindowStyle Hidden -PassThru `
-    -RedirectStandardOutput (Join-Path $logDir "server.out.log") `
-    -RedirectStandardError (Join-Path $logDir "server.err.log")
+# index.mjs reads PORT from its environment. Start-Process has no per-child
+# environment on PowerShell 5.1, so set it on this process just long enough to
+# spawn the child and restore it afterwards (the script may be dot-sourced or
+# run from a shell that already has PORT set).
+$previousPort = $env:PORT
+$env:PORT = "$Port"
+try {
+    $process = Start-Process -FilePath $node -ArgumentList "index.mjs" `
+        -WorkingDirectory $serverDir -WindowStyle Hidden -PassThru `
+        -RedirectStandardOutput (Join-Path $logDir "server.out.log") `
+        -RedirectStandardError (Join-Path $logDir "server.err.log")
+} finally {
+    if ($null -eq $previousPort) {
+        Remove-Item Env:\PORT -ErrorAction SilentlyContinue
+    } else {
+        $env:PORT = $previousPort
+    }
+}
 
 for ($i = 0; $i -lt 40 -and -not (Get-Listener); $i++) { Start-Sleep -Milliseconds 250 }
 if (Get-Listener) {

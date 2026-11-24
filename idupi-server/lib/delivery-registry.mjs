@@ -120,6 +120,7 @@ async function copyHashed(sourcePath, destPath, maxBytes) {
  *   maxEntries?: number,
  *   maxBytes?: number,
  *   now?: (() => Date | number | string) | Date | number | string,
+ *   newId?: () => string,
  *   log?: { info?: Function, warn?: Function, error?: Function },
  * }} options
  */
@@ -128,6 +129,7 @@ export function createDeliveryRegistry({
     maxEntries = DEFAULT_MAX_ENTRIES,
     maxBytes = DEFAULT_MAX_BYTES,
     now = () => new Date(),
+    newId,
     log = console,
 } = {}) {
     if (typeof storeDir !== "string" || storeDir.length === 0) {
@@ -140,6 +142,9 @@ export function createDeliveryRegistry({
     const maxSize = Number.isFinite(maxBytes) && maxBytes > 0
         ? maxBytes
         : DEFAULT_MAX_BYTES;
+    const generateId = typeof newId === "function"
+        ? newId
+        : () => `dlv-${randomBytes(6).toString("hex")}`;
 
     /** @type {Array<{id:string,name:string,size:number,sha256:string,sourcePath:string,createdAt:string}>} */
     const entries = [];
@@ -282,14 +287,22 @@ export function createDeliveryRegistry({
         let id;
         let stored;
         for (let attempt = 0; ; attempt += 1) {
-            id = `dlv-${randomBytes(6).toString("hex")}`;
+            id = generateId();
             const destPath = join(storeDir, `${id}.apk`);
             try {
                 stored = await copyHashed(sourcePath, destPath, maxSize);
                 break;
             } catch (err) {
+                // "wx" EEXIST means the name was already taken by a file this
+                // attempt did NOT create (another writer, or a pre-created
+                // target). Unlinking it would delete someone else's snapshot;
+                // retry with a new id and only clean up a partial file this
+                // attempt's own pipeline left behind.
+                if (err && err.code === "EEXIST") {
+                    if (attempt < 4) continue;
+                    throw err;
+                }
                 safeUnlink(destPath);
-                if (err && err.code === "EEXIST" && attempt < 4) continue;
                 throw err;
             }
         }

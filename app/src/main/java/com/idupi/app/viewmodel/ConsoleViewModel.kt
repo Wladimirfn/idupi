@@ -4,265 +4,239 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.idupi.app.data.IduPiClientProvider
-import com.idupi.app.domain.model.ChatEvent
-import com.idupi.app.domain.model.PtyInfo
+import com.idupi.app.domain.model.KillProcessOutcome
+import com.idupi.app.domain.model.OS_CATEGORY_AGENTS
+import com.idupi.app.domain.model.OS_CATEGORY_APPS
+import com.idupi.app.domain.model.OS_CATEGORY_BACKGROUND
+import com.idupi.app.domain.model.OS_CATEGORY_IDUPI
+import com.idupi.app.domain.model.OS_CATEGORY_WINDOWS
+import com.idupi.app.domain.model.OsProcess
+import com.idupi.app.domain.model.OsProcessSample
 import com.idupi.app.domain.repository.IduPiClientSource
-import com.idupi.app.domain.repository.TerminalSessionItem
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.isActive
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 
+/**
+ * Category chips of the Procesos screen, in display order. The ids match the
+ * server's classification, so a filter never guesses a category on the client.
+ */
+enum class ProcessCategoryFilter(val categoryId: String?, val label: String) {
+    ALL(null, "Todos"),
+    APPS(OS_CATEGORY_APPS, "Apps"),
+    BACKGROUND(OS_CATEGORY_BACKGROUND, "Segundo plano"),
+    WINDOWS(OS_CATEGORY_WINDOWS, "Windows"),
+    AGENTS(OS_CATEGORY_AGENTS, "Agentes"),
+    IDUPI(OS_CATEGORY_IDUPI, "IDUPI"),
+}
+
+enum class ProcessSort(val label: String) {
+    MEMORY("Memoria"),
+    CPU("CPU"),
+    NAME("Nombre"),
+}
+
+/**
+ * Pure filter/sort used by [ConsoleViewModel.UiState]. Search matches the
+ * process name and the window title, case-insensitively; the CPU sort keeps
+ * processes without a delta (null) at the end instead of treating them as 0 %.
+ */
+internal fun filterProcesses(
+    processes: List<OsProcess>,
+    category: ProcessCategoryFilter,
+    query: String,
+    sort: ProcessSort
+): List<OsProcess> {
+    val needle = query.trim()
+    val filtered = processes.filter { process ->
+        val categoryMatches = category.categoryId == null || process.category == category.categoryId
+        val searchMatches = needle.isEmpty() ||
+            process.name.contains(needle, ignoreCase = true) ||
+            process.title?.contains(needle, ignoreCase = true) == true
+        categoryMatches && searchMatches
+    }
+    return when (sort) {
+        ProcessSort.MEMORY -> filtered.sortedWith(
+            compareByDescending<OsProcess> { it.memoryBytes }
+                .thenBy { it.name.lowercase(Locale.US) }
+                .thenBy { it.pid }
+        )
+        ProcessSort.CPU -> filtered.sortedWith(
+            compareByDescending<OsProcess> { it.cpuPercent ?: -1.0 }
+                .thenByDescending { it.memoryBytes }
+                .thenBy { it.pid }
+        )
+        ProcessSort.NAME -> filtered.sortedWith(
+            compareBy<OsProcess> { it.name.lowercase(Locale.US) }.thenBy { it.pid }
+        )
+    }
+}
+
+/**
+ * "Procesos" (T10): every process on the PC, polled every 3 s while the screen
+ * is visible.
+ *
+ * Polling is owned by the screen lifecycle, exactly like the Dashboard: a
+ * backgrounded app does not keep asking the server to run PowerShell. A
+ * transient failure keeps the last good list on screen; [UiState.errorMessage]
+ * is only the "nothing was ever loaded" state (plus kill failures, which the
+ * list does not hide).
+ */
 class ConsoleViewModel(
-    private val clientSource: IduPiClientSource = IduPiClientProvider
+    private val clientSource: IduPiClientSource = IduPiClientProvider,
+    private val pollIntervalMs: Long = DEFAULT_POLL_INTERVAL_MS,
 ) : ViewModel() {
 
-    private val client get() = clientSource.client
+    data class UiState(
+        val sample: OsProcessSample = OsProcessSample(),
+        val isLoading: Boolean = true,
+        /** Set when nothing loaded yet, or when a kill action failed. */
+        val errorMessage: String? = null,
+        /** True when the newest poll failed but a previous list is on screen. */
+        val refreshFailed: Boolean = false,
+        val category: ProcessCategoryFilter = ProcessCategoryFilter.ALL,
+        val query: String = "",
+        val sort: ProcessSort = ProcessSort.MEMORY,
+        /** PID whose kill request is in flight; buttons disable while non-null. */
+        val killingPid: Int? = null,
+    ) {
+        val processes: List<OsProcess> get() = sample.processes
 
-    private val _logs = MutableStateFlow<List<String>>(emptyList())
-    val logs = _logs.asStateFlow()
+        val filteredProcesses: List<OsProcess>
+            get() = filterProcesses(processes, category, query, sort)
 
-    private val _terminals = MutableStateFlow<List<TerminalSessionItem>>(emptyList())
-    val terminals = _terminals.asStateFlow()
+        fun countFor(filter: ProcessCategoryFilter): Int =
+            if (filter.categoryId == null) processes.size
+            else processes.count { it.category == filter.categoryId }
+    }
 
-    private val _selectedTerminalId = MutableStateFlow<String>("pi-cli")
-    val selectedTerminalId = _selectedTerminalId.asStateFlow()
-
-    private val _activeTask = MutableStateFlow<String?>("Ninguna")
-    val activeTask = _activeTask.asStateFlow()
-
-    private val _queueSize = MutableStateFlow(0)
-    val queueSize = _queueSize.asStateFlow()
-
-    private val _isExecuting = MutableStateFlow(false)
-    val isExecuting = _isExecuting.asStateFlow()
+    private val _state = MutableStateFlow(UiState())
+    val state: StateFlow<UiState> = _state.asStateFlow()
 
     /**
-     * Interactive PTY terminals (ConPTY) listed from `/api/v1/pty`. Kept
-     * separate from the legacy [terminals] poll: those are log streams, these
-     * are attachable full terminals.
+     * Error stream for the navigation shell's shared snackbar. Kept as its own
+     * flow because the shell observes every screen the same way.
      */
-    private val _interactivePtys = MutableStateFlow<List<PtyInfo>>(emptyList())
-    val interactivePtys = _interactivePtys.asStateFlow()
+    val errorMessage: StateFlow<String?> = _state
+        .map { it.errorMessage }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    private val _errorMessage = MutableStateFlow<String?>(null)
-    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+    private var pollJob: Job? = null
+
+    /** Starts the 3 s poll loop; a second call while it runs is a no-op. */
+    fun startPolling() {
+        if (pollJob?.isActive == true) return
+        pollJob = viewModelScope.launch {
+            while (true) {
+                fetchProcesses()
+                delay(pollIntervalMs)
+            }
+        }
+    }
+
+    /** Stops the loop when the screen leaves composition or the app backgrounds. */
+    fun stopPolling() {
+        pollJob?.cancel()
+        pollJob = null
+    }
+
+    /** Top-bar refresh: one immediate sample without touching the loop. */
+    fun refreshNow() {
+        viewModelScope.launch { fetchProcesses() }
+    }
+
+    fun setCategory(category: ProcessCategoryFilter) {
+        _state.update { it.copy(category = category) }
+    }
+
+    fun setQuery(query: String) {
+        _state.update { it.copy(query = query) }
+    }
+
+    fun setSort(sort: ProcessSort) {
+        _state.update { it.copy(sort = sort) }
+    }
 
     fun clearError() {
-        _errorMessage.value = null
-    }
-
-    private var pollingJob: Job? = null
-
-    init {
-        refreshTerminals()
-        observeLogs()
-    }
-
-    fun startPolling() {
-        pollingJob?.cancel()
-        pollingJob = viewModelScope.launch {
-            while (isActive) {
-                try {
-                    val terminalLogs = client.getTerminalLogs(_selectedTerminalId.value)
-                    _logs.value = terminalLogs
-                } catch (e: Exception) {
-                    // Ignore transient network errors during polling
-                }
-                delay(1500)
-            }
-        }
-    }
-
-    fun stopPolling() {
-        pollingJob?.cancel()
-        pollingJob = null
-    }
-
-    fun refreshTerminals() {
-        viewModelScope.launch {
-            try {
-                val list = client.getTerminals()
-                _terminals.value = list
-                if (list.none { it.id == _selectedTerminalId.value } && list.isNotEmpty()) {
-                    _selectedTerminalId.value = list.first().id
-                }
-                loadLogsForSelectedTerminal()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to refresh terminals", e)
-                _errorMessage.value = "No se pudieron cargar las terminales: ${e.localizedMessage}"
-            }
-        }
-    }
-
-    fun selectTerminal(id: String) {
-        _selectedTerminalId.value = id
-        loadLogsForSelectedTerminal()
+        _state.update { it.copy(errorMessage = null) }
     }
 
     /**
-     * Refreshes the interactive-terminal list. Failures stay silent on purpose:
-     * this section is a shortcut, and a server build without the PTY routes
-     * must not spam a snackbar every time the console screen opens. The legacy
-     * terminal polling still surfaces real connectivity errors.
+     * Ends [pid] on the PC. Success and "already gone" both remove the row;
+     * a protected process keeps its row and surfaces the server's refusal.
+     * A successful kill is not re-fetched immediately: the server caches a
+     * process sample for 2 s, so an instant poll could resurrect the row.
      */
-    fun refreshInteractivePtys() {
+    fun killProcess(pid: Int) {
+        if (_state.value.killingPid != null) return
         viewModelScope.launch {
+            _state.update { it.copy(killingPid = pid) }
             try {
-                _interactivePtys.value = client.listPtys()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to list interactive PTYs", e)
-            }
-        }
-    }
-
-    fun loadLogsForSelectedTerminal() {
-        viewModelScope.launch {
-            try {
-                val terminalLogs = client.getTerminalLogs(_selectedTerminalId.value)
-                _logs.value = terminalLogs
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to load logs for terminal ${_selectedTerminalId.value}", e)
-                _errorMessage.value = "No se pudieron cargar los logs: ${e.localizedMessage}"
-            }
-        }
-    }
-
-    fun spawnNewTerminal(customName: String? = null) {
-        viewModelScope.launch {
-            addLog("[System] Creando nueva sesión de terminal PowerShell en tu PC...")
-            try {
-                val newTerm = client.spawnTerminal(customName)
-                if (newTerm != null) {
-                    refreshTerminals()
-                    selectTerminal(newTerm.id)
-                    addLog("[System] Terminal '${newTerm.name}' creada exitosamente.")
-                } else {
-                    addLog("[ERROR] No se pudo crear la nueva terminal.")
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to spawn terminal", e)
-                addLog("[ERROR] No se pudo crear la nueva terminal: ${e.localizedMessage}")
-            }
-        }
-    }
-
-    fun sendTerminalCommand(command: String) {
-        if (command.isBlank()) return
-        viewModelScope.launch {
-            _isExecuting.value = true
-            addLog("\$ $command")
-            try {
-                val result = client.sendTerminalCommand(_selectedTerminalId.value, command)
-                if (result.isNotBlank() && !result.startsWith("Comando enviado")) {
-                    addLog(result)
-                }
-                loadLogsForSelectedTerminal()
-            } catch (e: Exception) {
-                addLog("[ERROR] Falló ejecución: ${e.localizedMessage}")
-            } finally {
-                _isExecuting.value = false
-            }
-        }
-    }
-
-    fun restartServer() {
-        viewModelScope.launch {
-            addLog("[System] Reiniciando servidor/proceso de terminal '${_selectedTerminalId.value}'...")
-            try {
-                val msg = client.restartTerminalServer(_selectedTerminalId.value)
-                addLog("[System] $msg")
-                refreshTerminals()
-            } catch (e: Exception) {
-                addLog("[ERROR] Error al reiniciar: ${e.localizedMessage}")
-            }
-        }
-    }
-
-    fun closeSelectedTerminal() {
-        viewModelScope.launch {
-            val currentId = _selectedTerminalId.value
-            if (currentId == "pi-cli" || currentId == "idupi-server") {
-                addLog("[WARNING] No se puede cerrar la terminal principal del sistema.")
-                return@launch
-            }
-            try {
-                client.closeTerminal(currentId)
-                addLog("[System] Terminal $currentId cerrada.")
-                refreshTerminals()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to close terminal $currentId", e)
-                addLog("[ERROR] No se pudo cerrar la terminal $currentId: ${e.localizedMessage}")
-            }
-        }
-    }
-
-    private fun observeLogs() {
-        viewModelScope.launch {
-            client.connectChat().collect { event ->
-                val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-                when (event) {
-                    is ChatEvent.StatusChanged -> {
-                        _queueSize.value = event.status.queueSize
-                        _activeTask.value = if (event.status.busy) "Procesando en Pi CLI" else "Ninguna"
-                    }
-                    is ChatEvent.ToolStarted -> {
-                        if (_selectedTerminalId.value == "pi-cli") {
-                            addLog("[$time] [TOOL] ${event.toolName}: ${event.message}")
+                when (clientSource.client.killOsProcess(pid)) {
+                    KillProcessOutcome.KILLED, KillProcessOutcome.GONE ->
+                        _state.update { current ->
+                            current.copy(
+                                killingPid = null,
+                                sample = current.sample.copy(
+                                    processes = current.sample.processes.filterNot { it.pid == pid }
+                                )
+                            )
                         }
-                    }
-                    is ChatEvent.ErrorOccurred -> {
-                        addLog("[$time] [ERROR] ${event.error}")
-                    }
-                    else -> {}
+                    KillProcessOutcome.PROTECTED ->
+                        _state.update { it.copy(killingPid = null, errorMessage = "Proceso protegido") }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to end process $pid", e)
+                _state.update {
+                    it.copy(
+                        killingPid = null,
+                        errorMessage = "No se pudo finalizar el proceso: ${e.localizedMessage}"
+                    )
                 }
             }
         }
     }
 
-    fun addLog(message: String) {
-        val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-        val formattedLog = if (message.startsWith("[")) message else "[$time] $message"
-        _logs.value = _logs.value + formattedLog
-    }
-
-    fun clearLogs() {
-        _logs.value = emptyList()
-        addLog("Consola limpia.")
-    }
-
-    fun cancelTask() {
-        viewModelScope.launch {
-            try {
-                client.cancelCurrentTask()
-                addLog("[System] Detención/Cancelación enviada.")
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed to cancel current task", e)
-                addLog("[ERROR] No se pudo cancelar la tarea: ${e.localizedMessage}")
+    private suspend fun fetchProcesses() {
+        try {
+            val sample = clientSource.client.getOsProcesses()
+            _state.update {
+                it.copy(
+                    sample = sample,
+                    isLoading = false,
+                    errorMessage = null,
+                    refreshFailed = false,
+                )
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to refresh OS processes", e)
+            val current = _state.value
+            _state.value = if (current.processes.isNotEmpty()) {
+                current.copy(isLoading = false, refreshFailed = true)
+            } else {
+                current.copy(
+                    isLoading = false,
+                    errorMessage = "No se pudieron cargar los procesos: ${e.localizedMessage}",
+                )
             }
         }
     }
 
     companion object {
+        const val DEFAULT_POLL_INTERVAL_MS = 3_000L
         private const val TAG = "ConsoleViewModel"
     }
 }

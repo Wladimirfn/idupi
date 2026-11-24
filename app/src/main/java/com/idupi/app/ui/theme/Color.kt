@@ -5,6 +5,17 @@ import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
+/**
+ * Palette the app renders with. Built per [com.idupi.app.domain.model.ThemeSettings]
+ * by [ThemePalettes]; the public colour names below resolve through
+ * [LocalAppColors], so screens never hold a static palette (theme changes apply
+ * immediately, without recreating the screens).
+ *
+ * [isLight] is the M3 scheme branch. [terminalBg] stays dark on purpose: the
+ * PTY/xterm surface keeps the terminal's own colours regardless of the app
+ * theme (see PtyTerminalScreen), because light-on-dark ANSI output is what the
+ * shells on the PC produce.
+ */
 data class AppColors(
     val bg: Color,
     val card: Color,
@@ -17,13 +28,10 @@ data class AppColors(
     val statusWorking: Color = Color(0xFFF59E0B),
     val statusError: Color = Color(0xFFEF4444),
     val statusTerminal: Color = Color(0xFF38BDF8),
-    // Wallpaper-specific colors (centralized, not hardcoded in screens)
-    val matrixGreen: Color = Color(0xFF22C55E),
-    val matrixBg: Color = Color(0xFF020617),
-    val wallpaperTelegramStart: Color = Color(0xFF1E293B),
-    val wallpaperTelegramEnd: Color = Color(0xFF0F172A),
-    val gradientIndigo: Color = Color(0xFF4338CA),
-    val gradientPurple: Color = Color(0xFF6D28D9)
+    val isLight: Boolean = false,
+    // Terminal chrome (xterm background), NOT a chat wallpaper: it must stay
+    // dark even when the app theme is light.
+    val terminalBg: Color = Color(0xFF020617)
 )
 
 val DarkAppColors = AppColors(
@@ -31,7 +39,8 @@ val DarkAppColors = AppColors(
     card = Color(0xFF161E2E),
     border = Color(0xFF242F41),
     textPrimary = Color(0xFFF8FAFC),
-    textSecondary = Color(0xFF94A3B8)
+    textSecondary = Color(0xFF94A3B8),
+    isLight = false
 )
 
 val LightAppColors = AppColors(
@@ -39,7 +48,8 @@ val LightAppColors = AppColors(
     card = Color(0xFFFFFFFF),
     border = Color(0xFFCBD5E1),
     textPrimary = Color(0xFF0F172A),
-    textSecondary = Color(0xFF475569)
+    textSecondary = Color(0xFF475569),
+    isLight = true
 )
 
 val LocalAppColors = staticCompositionLocalOf { DarkAppColors }

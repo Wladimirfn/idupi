@@ -32,12 +32,10 @@ enum class Screen(val title: String) {
     WELCOME("Bienvenido"),
     CONNECTION("Conexión"),
     DASHBOARD("Dashboard"),
-    CHAT("Chat Directo"),
     ALERTS("Alertas Supervisor"),
-    ORCHESTRATOR("Orquestador SDD"),
     PROJECTS("Proyectos"),
-    SESSIONS("Sesiones"),
-    CONSOLE("Terminal"),
+    TERMINALS("Terminales"),
+    CONSOLE("Procesos"),
     PTY_TERMINAL("Terminal interactiva"),
     DELIVERIES("Entregas"),
     REMOTE("Escritorio Remoto"),
@@ -48,26 +46,27 @@ enum class Screen(val title: String) {
 @Composable
 fun AppNavigation() {
     val mainViewModel: MainViewModel = viewModel()
-    val darkThemeEnabled by mainViewModel.darkThemeEnabled.collectAsState()
+    val themeSettings by mainViewModel.themeSettings.collectAsState()
+    val appColors = remember(themeSettings) { ThemePalettes.resolve(themeSettings) }
 
-    var currentScreen by remember { mutableStateOf(Screen.CHAT) }
+    var currentScreen by remember { mutableStateOf(Screen.TERMINALS) }
     var previousScreen by remember { mutableStateOf<Screen?>(null) }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
 
     val connectionViewModel: ConnectionViewModel = viewModel()
-    val chatViewModel: ChatViewModel = viewModel()
     val alertsViewModel: AlertsViewModel = viewModel()
-    val orchestratorViewModel: OrchestratorViewModel = viewModel()
     val projectsViewModel: ProjectsViewModel = viewModel()
-    val sessionsViewModel: SessionsViewModel = viewModel()
+    val terminalsViewModel: TerminalsViewModel = viewModel()
     val consoleViewModel: ConsoleViewModel = viewModel()
     val ptyTerminalViewModel: PtyTerminalViewModel = viewModel()
     val remoteViewModel: RemoteScreenViewModel = viewModel()
     val deliveriesViewModel: DeliveriesViewModel = viewModel()
+    val dashboardViewModel: DashboardViewModel = viewModel()
 
-    // Interactive terminal target chosen from the Console screen: null means
-    // "create a new PTY"; an id attaches to one already running on the PC.
+    // Interactive terminal target chosen from the Terminals screen. The
+    // Terminals screen creates the PTY first and passes its id; null would
+    // mean "create a new one" for callers that navigate directly.
     var ptyTerminalTargetId by remember { mutableStateOf<String?>(null) }
 
     // Notification taps arrive before/after Compose starts; MainActivity parks
@@ -85,24 +84,23 @@ fun AppNavigation() {
     val snackbarHostState = remember { SnackbarHostState() }
     ObserveViewModelError(mainViewModel.errorMessage, snackbarHostState, mainViewModel::clearError)
     ObserveViewModelError(connectionViewModel.errorMessage, snackbarHostState, connectionViewModel::clearError)
-    ObserveViewModelError(chatViewModel.errorMessage, snackbarHostState, chatViewModel::clearError)
     ObserveViewModelError(alertsViewModel.errorMessage, snackbarHostState, alertsViewModel::clearError)
     ObserveViewModelError(projectsViewModel.errorMessage, snackbarHostState, projectsViewModel::clearError)
-    ObserveViewModelError(sessionsViewModel.errorMessage, snackbarHostState, sessionsViewModel::clearError)
+    ObserveViewModelError(terminalsViewModel.errorMessage, snackbarHostState, terminalsViewModel::clearError)
     ObserveViewModelError(consoleViewModel.errorMessage, snackbarHostState, consoleViewModel::clearError)
     ObserveViewModelError(deliveriesViewModel.errorMessage, snackbarHostState, deliveriesViewModel::clearError)
 
     // Manejo de BackButton del sistema
-    androidx.activity.compose.BackHandler(enabled = drawerState.isOpen || currentScreen != Screen.CHAT) {
+    androidx.activity.compose.BackHandler(enabled = drawerState.isOpen || currentScreen != Screen.TERMINALS) {
         if (drawerState.isOpen) {
             scope.launch { drawerState.close() }
         } else if (currentScreen == Screen.CONNECTION) {
             currentScreen = previousScreen ?: Screen.WELCOME
         } else if (currentScreen == Screen.PTY_TERMINAL) {
             // Back leaves the PTY running on the PC; return to its launcher.
-            currentScreen = Screen.CONSOLE
-        } else if (currentScreen != Screen.CHAT && currentScreen != Screen.WELCOME) {
-            currentScreen = Screen.CHAT
+            currentScreen = Screen.TERMINALS
+        } else if (currentScreen != Screen.TERMINALS && currentScreen != Screen.WELCOME) {
+            currentScreen = Screen.TERMINALS
         }
     }
 
@@ -112,7 +110,7 @@ fun AppNavigation() {
         scope.launch { drawerState.close() }
     }
 
-    IDUPITheme(darkTheme = darkThemeEnabled) {
+    IDUPITheme(colors = appColors) {
         Box(modifier = Modifier.fillMaxSize()) {
         androidx.compose.animation.AnimatedContent(
             targetState = currentScreen,
@@ -126,7 +124,7 @@ fun AppNavigation() {
                 Screen.WELCOME -> WelcomeScreen(
                     onEnterDemo = {
                         mainViewModel.refreshStatus()
-                        navigateTo(Screen.CHAT)
+                        navigateTo(Screen.TERMINALS)
                     },
                     onConfigureConnection = {
                         navigateTo(Screen.CONNECTION)
@@ -137,7 +135,7 @@ fun AppNavigation() {
                     onBack = { currentScreen = previousScreen ?: Screen.WELCOME },
                     onContinue = {
                         mainViewModel.refreshStatus()
-                        navigateTo(Screen.CHAT)
+                        navigateTo(Screen.TERMINALS)
                     }
                 )
                 else -> {
@@ -183,7 +181,7 @@ fun AppNavigation() {
                                                 .background(StatusConnected)
                                         )
                                         Text(
-                                            text = "Orquestador Activo",
+                                            text = "Servidor PC conectado",
                                             color = StatusConnected,
                                             style = AppTypography.labelSmall
                                         )
@@ -193,21 +191,17 @@ fun AppNavigation() {
                                 HorizontalDivider(color = SlateBorder, modifier = Modifier.padding(horizontal = 20.dp))
                                 Spacer(modifier = Modifier.height(10.dp))
 
-                                // Drawer order documented in tasks.md §5.3: [Pantalla Remota, Chat,
-                                // Proyectos, Orquestador SDD, Configuracion]. Keeping that subset in the
-                                // exact relative order shown there; the additional items (Alerts,
-                                // Dashboard, Sessions, Console) stay in their slots and are not part
-                                // of the documented order.
+                                // Drawer destination order for the reshaped app:
+                                // live terminals first, then the surfaces that
+                                // replaced chat.
                                 val navItems = listOf(
-                                    Screen.REMOTE to Icons.AutoMirrored.Filled.ScreenShare,
-                                    Screen.CHAT to Icons.Default.Chat,
-                                    Screen.PROJECTS to Icons.Default.Folder,
-                                    Screen.ORCHESTRATOR to Icons.Default.AccountTree,
-                                    Screen.ALERTS to Icons.Default.Notifications,
-                                    Screen.DASHBOARD to Icons.Default.Dashboard,
-                                    Screen.SESSIONS to Icons.Default.History,
-                                    Screen.CONSOLE to Icons.Default.Terminal,
+                                    Screen.TERMINALS to Icons.Default.Terminal,
                                     Screen.DELIVERIES to Icons.Default.FileDownload,
+                                    Screen.CONSOLE to Icons.Default.List,
+                                    Screen.DASHBOARD to Icons.Default.Dashboard,
+                                    Screen.PROJECTS to Icons.Default.Folder,
+                                    Screen.ALERTS to Icons.Default.Notifications,
+                                    Screen.REMOTE to Icons.AutoMirrored.Filled.ScreenShare,
                                     Screen.SETTINGS to Icons.Default.Settings
                                 )
 
@@ -258,68 +252,34 @@ fun AppNavigation() {
                     ) {
                         when (targetScreen) {
                             Screen.DASHBOARD -> DashboardScreen(
-                                viewModel = mainViewModel,
-                                onMenuClick = { scope.launch { drawerState.open() } },
-                                onNavigateToChat = { navigateTo(Screen.CHAT) },
-                                onNavigateToConsole = { navigateTo(Screen.CONSOLE) }
-                            )
-                            Screen.CHAT -> ChatScreen(
-                                viewModel = chatViewModel,
                                 mainViewModel = mainViewModel,
+                                viewModel = dashboardViewModel,
                                 onMenuClick = { scope.launch { drawerState.open() } }
+                            )
+                            Screen.TERMINALS -> TerminalsScreen(
+                                viewModel = terminalsViewModel,
+                                onMenuClick = { scope.launch { drawerState.open() } },
+                                onOpenTerminal = { id ->
+                                    ptyTerminalTargetId = id
+                                    navigateTo(Screen.PTY_TERMINAL)
+                                }
                             )
                             Screen.ALERTS -> AlertsScreen(
                                 viewModel = alertsViewModel,
-                                onMenuClick = { scope.launch { drawerState.open() } }
-                            )
-                            Screen.ORCHESTRATOR -> OrchestratorScreen(
-                                viewModel = orchestratorViewModel,
                                 onMenuClick = { scope.launch { drawerState.open() } }
                             )
                             Screen.PROJECTS -> ProjectsScreen(
                                 viewModel = projectsViewModel,
                                 onMenuClick = { scope.launch { drawerState.open() } }
                             )
-                            Screen.SESSIONS -> SessionsScreen(
-                                viewModel = sessionsViewModel,
-                                onMenuClick = { scope.launch { drawerState.open() } },
-                                onSessionSelect = { sessionId, engine ->
-                                    chatViewModel.loadSessionHistory(sessionId) {
-                                        // POST /sessions/resume switches the
-                                        // server's activeEngine to the resumed
-                                        // session's engine, so a fresh GET
-                                        // /status AFTER the resume is the
-                                        // authoritative read. Sync the shared
-                                        // selector state + chat model list so
-                                        // entering a Pi session while the
-                                        // dashboard selector says Claude
-                                        // auto-switches selector and models
-                                        // to Pi (pre-test audit).
-                                        mainViewModel.refreshStatus()
-                                        orchestratorViewModel.refreshStatus()
-                                        chatViewModel.refreshModels()
-                                    }
-                                    // Optimistic local flip from the session's
-                                    // known engine: the orchestrator selector
-                                    // is never stale, even before the
-                                    // post-resume status refresh lands.
-                                    orchestratorViewModel.syncEngine(engine)
-                                    navigateTo(Screen.CHAT)
-                                }
-                            )
                             Screen.CONSOLE -> ConsoleScreen(
                                 viewModel = consoleViewModel,
-                                onMenuClick = { scope.launch { drawerState.open() } },
-                                onOpenPtyTerminal = { targetId ->
-                                    ptyTerminalTargetId = targetId
-                                    navigateTo(Screen.PTY_TERMINAL)
-                                },
-                                onOpenDeliveries = { navigateTo(Screen.DELIVERIES) }
+                                onMenuClick = { scope.launch { drawerState.open() } }
                             )
                             Screen.PTY_TERMINAL -> PtyTerminalScreen(
                                 viewModel = ptyTerminalViewModel,
                                 ptyId = ptyTerminalTargetId,
-                                onBack = { currentScreen = Screen.CONSOLE }
+                                onBack = { currentScreen = Screen.TERMINALS }
                             )
                             Screen.DELIVERIES -> DeliveriesScreen(
                                 viewModel = deliveriesViewModel,
