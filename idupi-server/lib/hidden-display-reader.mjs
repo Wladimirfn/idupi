@@ -214,14 +214,15 @@ export function createHiddenDisplayReader({
         return parseNewDisplayId(output.text);
     }
 
-    async function catRemote(adbPath, serial, remotePath) {
+    async function catRemote(adbPath, serial, remotePath, deadline) {
+        const bounded = (stepMs) => Math.max(1, Math.min(stepMs, deadline - nowMs()));
         for (const args of [
             ["-s", serial, "exec-out", "cat", remotePath],
             ["-s", serial, "shell", "cat", remotePath],
         ]) {
             try {
                 const result = await run(adbPath, args, {
-                    timeout: CAT_TIMEOUT_MS,
+                    timeout: bounded(CAT_TIMEOUT_MS),
                     maxBuffer: MAX_XML_BYTES,
                 });
                 const xml = String(result?.stdout ?? "");
@@ -234,18 +235,19 @@ export function createHiddenDisplayReader({
     }
 
     async function dumpOnce({ adbPath, serial, displayId, remoteXml, deadline }) {
+        const bounded = (stepMs) => Math.max(1, Math.min(stepMs, deadline - nowMs()));
         await run(
             adbPath,
             ["-s", serial, "shell", "input", "-d", String(displayId), "keyevent", "KEYCODE_WAKEUP"],
-            { timeout: WAKE_TIMEOUT_MS },
+            { timeout: bounded(WAKE_TIMEOUT_MS) },
         ).catch(() => null);
         if (!(await pause(wakeDelayMs, deadline))) return { ok: false, reason: "timeout" };
         await run(
             adbPath,
             ["-s", serial, "shell", "uiautomator", "dump", "--display", String(displayId), remoteXml],
-            { timeout: DUMP_TIMEOUT_MS },
+            { timeout: bounded(DUMP_TIMEOUT_MS) },
         ).catch(() => null);
-        const xml = await catRemote(adbPath, serial, remoteXml);
+        const xml = await catRemote(adbPath, serial, remoteXml, deadline);
         return { ok: true, xml };
     }
 

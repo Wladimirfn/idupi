@@ -162,6 +162,17 @@ test("a bedtime block fills bedtimeGoal when the screen has one", () => {
     assert.equal(metrics.bedtimeGoal, "23:00");
 });
 
+test("a split steps block pairs the value and goal nodes", () => {
+    rowCounter = 0;
+    const metrics = parseHuaweiHealthHoy([
+        node({ id: "title_text", text: "Pasos", y: 0 }),
+        node({ id: "value_text", text: "2,444", y: 0, x: 200 }),
+        node({ id: "goal_text", text: "10,000", y: 0, x: 350 }),
+    ]);
+    assert.equal(metrics.steps, 2444);
+    assert.equal(metrics.stepsGoal, 10000);
+});
+
 test("Honor Health reuses the Huawei ids and is marked tentative", () => {
     const parsed = parseHealthApp(HONOR, huaweiHoy(HONOR));
     assert.equal(parsed.source, "huawei_health");

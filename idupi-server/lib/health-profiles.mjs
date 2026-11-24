@@ -251,7 +251,11 @@ export function parseHuaweiHealthHoy(nodes) {
         const texts = block.values.map((value) => value.text).filter(Boolean);
 
         if (block.kind === "step_text" || label.includes("paso")) {
-            const steps = parseStepsValue([block.title, ...texts].join(" "));
+            const valueText = firstValue(block, "value_text");
+            const goalText = firstValue(block, "goal_text");
+            const steps = valueText
+                ? { value: parseHealthNumber(valueText), goal: parseHealthNumber(goalText) }
+                : parseStepsValue([block.title, ...texts].join(" "));
             if (steps.value !== null) metrics.steps = Math.round(steps.value);
             if (steps.goal !== null) metrics.stepsGoal = Math.round(steps.goal);
             continue;

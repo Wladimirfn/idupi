@@ -418,7 +418,7 @@ export function createHealthStore({ dataDir, now = () => new Date(), log } = {})
         });
     }
 
-    function validateSample(raw, { tzOffsetMinutes, floorDate }) {
+    function validateSample(raw, { floorDate }) {
         if (!isPlainObject(raw)) {
             throw typedError("INVALID_SAMPLE", "each sample must be an object");
         }
@@ -447,7 +447,6 @@ export function createHealthStore({ dataDir, now = () => new Date(), log } = {})
             sourceApp: clipText(raw.sourceApp, 120) || null,
             metrics,
             capturedAt,
-            tzOffsetMinutes,
         };
     }
 
@@ -511,10 +510,7 @@ export function createHealthStore({ dataDir, now = () => new Date(), log } = {})
             if (list.length > MAX_SAMPLES_PER_POST) {
                 throw typedError("INVALID_SAMPLE", `samples is capped at ${MAX_SAMPLES_PER_POST}`);
             }
-            const normalized = list.map((sample) => validateSample(sample, {
-                tzOffsetMinutes: offset ?? tzOffset(),
-                floorDate,
-            }));
+            const normalized = list.map((sample) => validateSample(sample, { floorDate }));
 
             let stored = 0;
             let merged = 0;
@@ -545,7 +541,7 @@ export function createHealthStore({ dataDir, now = () => new Date(), log } = {})
     function mergeDay(dateKey) {
         const entries = state.samples
             .filter((entry) => entry.date === dateKey)
-            .sort((a, b) => String(a.capturedAt).localeCompare(String(b.capturedAt)));
+            .sort((a, b) => String(a.capturedAt || "").localeCompare(String(b.capturedAt || "")));
         if (entries.length === 0) {
             return { date: dateKey, metrics: {}, sources: {}, capturedAt: null };
         }
