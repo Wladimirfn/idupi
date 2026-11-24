@@ -138,3 +138,9 @@ commits by task.
   cert d8ba0fc9, delivered dlv-365d557daa7e; server restarted (no PTYs);
   `idupi-phone calendar` answers "Sin datos del calendario todavía" until the
   owner installs and grants the calendar permission. Pending: live check.
+- Live bug (parent): the app omits false booleans (kotlinx encodeDefaults =
+  false), so `writable:false`/`allDay:false` were missing and the server 400ed
+  every snapshot ("No se pudo enviar la agenda"). dd0a318 treats omitted
+  calendar booleans as false (store test added); 3b-prior commit logs the
+  rejection reason without content. 28cc57b CLI accepts `calendar --days N`.
+  Server restarted; pending the owner re-sending from Ajustes.
