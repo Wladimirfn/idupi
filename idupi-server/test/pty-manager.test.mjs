@@ -173,7 +173,11 @@ test("create defaults cwd to the home directory and shell per platform", async (
 });
 
 test("create resolves a relative cwd and stores the absolute path", async (t) => {
-    const dir = tempDir(t);
+    // The fixture lives under the working directory, not the OS temp dir: on CI
+    // the checkout (D:) and %TEMP% (C:) are on different drives, where no
+    // relative path exists between them.
+    const dir = mkdtempSync(join(process.cwd(), ".idupi-pty-test-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
     const rel = relative(process.cwd(), dir);
     assert.ok(rel && !isAbsolute(rel), "fixture must be reachable relatively");
 
