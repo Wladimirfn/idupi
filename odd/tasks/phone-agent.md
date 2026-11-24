@@ -49,7 +49,7 @@ server wrapper, acting on lock screen / unlocking.
 - [x] T1 Server + CLI: `lib/phone-store.mjs`, `lib/phone-routes.mjs`
   (status POST/GET, commands POST, phone long-poll `next`, result POST, PC
   result wait), `bin/idupi-phone.mjs` + `.cmd`, `docs/phone.md`, tests.
-- [ ] T2 App status: pure mappers + Android collectors (battery, signal,
+- [x] T2 App status: pure mappers + Android collectors (battery, signal,
   network, memory, storage, usage stats, foreground app), reporter every 60 s
   from a persistent service, usage-access permission UI.
 - [ ] T3 App control: AccessibilityService + config XML, command executor
@@ -92,3 +92,24 @@ stacked PRs (same as #18 → #19 → #20).
   against an isolated server on port 18788 (status/screen/tap/open/log and a
   failed tap exiting 1); the live server on 8788 was not restarted.
   Next: T2 app status collectors and reporter.
+- T2 done (54addc4): pure wire model and rules in `data/phone/` (`PhoneStatus`
+  matching the status contract, `UsageAggregation`, `SignalMapping`/
+  `NetworkMapping`/`BatteryMapping`, local-midnight window), thin collectors
+  (battery sticky intent, `signalStrength` + operator, data network type only
+  when READ_PHONE_STATE is already granted, `NetworkCapabilities` kind without
+  SSID, `MemoryInfo`, `StatFs`, `UsageStatsManager` events + PackageManager
+  labels behind the PACKAGE_USAGE_STATS app-op check), `PhoneStatusReporter`
+  (60 s loop + `reportNow`, skips when disabled or no profile, never logs
+  values) hosted process-wide from `InboxNotificationListener` with idempotent
+  `start`/`stop` for T3, `postPhoneStatus` on the client trio, `phone_status_enabled`
+  DataStore key (default on), and Ajustes > "ASISTENTE DEL TELÉFONO" (switch,
+  usage-access status rechecked on resume with its system-settings button,
+  "Enviar ahora") with `PhoneAgentSettingsViewModel`.
+  Verification: `.\gradlew.bat :app:testDebugUnitTest :app:assembleRelease -q`
+  exit 0; 493 unit tests, 0 failures (50 new across
+  UsageAggregation/PhoneStatusMappers/PhoneStatusSerialization/
+  PhoneStatusReporter/PhoneStatusSettingDataStore/PhoneAgentSettingsViewModel).
+  Unverified on a device: real collector values (no instrumentation here), and
+  `signal.networkType` is expected null because READ_PHONE_STATE is not
+  declared or requested.
+  Next: T3 accessibility service and command executor.
