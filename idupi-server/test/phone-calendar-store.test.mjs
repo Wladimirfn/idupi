@@ -16,8 +16,29 @@ import {
     createPhoneCalendarStore,
     findOverlapPairs,
     freeSlots,
+    isCancelledTitle,
     normalizeSnapshot,
 } from "../lib/phone-calendar-store.mjs";
+
+test("meetings kept with a cancelled title prefix are dropped from the snapshot", () => {
+    assert.equal(isCancelledTitle("Cancelada: Cancelada: Planificación Área Técnica"), true);
+    assert.equal(isCancelledTitle("  Canceled: Weekly sync"), true);
+    assert.equal(isCancelledTitle("Cancelled: Review"), true);
+    assert.equal(isCancelledTitle("Planificación cancelación de turnos"), false);
+    assert.equal(isCancelledTitle(undefined), false);
+
+    const normalized = normalizeSnapshot({
+        capturedAt: "2026-11-24T12:00:00.000Z",
+        rangeStart: "2026-11-24T00:00:00.000Z",
+        rangeEnd: "2026-12-08T00:00:00.000Z",
+        calendars: [{ id: "c", name: "Calendar", writable: true }],
+        events: [
+            { id: "a", calendarId: "c", title: "Cancelada: Reunión", start: "2026-11-25T14:00:00.000Z", end: "2026-11-25T15:00:00.000Z" },
+            { id: "b", calendarId: "c", title: "Reunión", start: "2026-11-25T14:00:00.000Z", end: "2026-11-25T15:00:00.000Z" },
+        ],
+    });
+    assert.deepEqual(normalized.events.map((entry) => entry.id), ["b"]);
+});
 
 const silentLog = { log() {}, info() {}, warn() {}, error() {} };
 

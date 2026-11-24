@@ -53,7 +53,7 @@ object CalendarSnapshotMapping {
     const val MAX_LOCATION_CHARS = 200
     const val MAX_DESCRIPTION_CHARS = 500
     const val MAX_CALENDAR_NAME_CHARS = 120
-    const val MAX_ACCOUNT_TYPE_CHARS = 40
+    const val MAX_ACCOUNT_TYPE_CHARS = 120
     const val MAX_ACCOUNT_NAME_CHARS = 120
     const val MAX_COLOR_CHARS = 32
 
@@ -65,6 +65,17 @@ object CalendarSnapshotMapping {
 
     const val REPORT_DAYS = 14L
     private const val DAY_MS = 24L * 60L * 60L * 1000L
+
+    private val CANCELLED_TITLE =
+        Regex("^\\s*(?:cancelad[oa]s?|cancell?ed|annul[ée]e?)\\s*:", RegexOption.IGNORE_CASE)
+
+    /**
+     * Outlook/Exchange keep a meeting the organizer cancelled as a normal event
+     * whose title starts with "Cancelada:" / "Canceled:" instead of setting
+     * [STATUS_CANCELED]; it must not count as busy time.
+     */
+    fun isCancelledTitle(title: String?): Boolean =
+        title != null && CANCELLED_TITLE.containsMatchIn(title)
 
     /** The owner may write when the provider grants contributor or better. */
     fun isWritable(accessLevel: Int): Boolean = accessLevel >= CAL_ACCESS_CONTRIBUTOR
@@ -107,6 +118,7 @@ object CalendarSnapshotMapping {
         .filter { row ->
             !row.deleted &&
                 row.status != STATUS_CANCELED &&
+                !isCancelledTitle(row.title) &&
                 row.endMillis >= row.beginMillis &&
                 (calendarIds.isEmpty() || row.calendarId in calendarIds)
         }

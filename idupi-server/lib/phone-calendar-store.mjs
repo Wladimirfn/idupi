@@ -26,7 +26,7 @@ export const MAX_EVENT_TITLE_CHARS = 200;
 export const MAX_EVENT_LOCATION_CHARS = 200;
 export const MAX_EVENT_DESCRIPTION_CHARS = 500;
 export const MAX_CALENDAR_NAME_CHARS = 120;
-export const MAX_ACCOUNT_TYPE_CHARS = 40;
+export const MAX_ACCOUNT_TYPE_CHARS = 120;
 export const MAX_ACCOUNT_NAME_CHARS = 120;
 export const MAX_COLOR_CHARS = 32;
 export const MAX_ID_CHARS = 200;
@@ -218,8 +218,22 @@ export function normalizeSnapshot(input) {
         rangeEnd: new Date(rangeEnd).toISOString(),
         tzOffsetMinutes,
         calendars: body.calendars.map(normalizeCalendar),
-        events: body.events.map(normalizeEvent),
+        // Validate every event first, then drop meetings the organizer
+        // cancelled: Outlook keeps them with a "Cancelada:" title prefix.
+        events: body.events.map(normalizeEvent).filter((entry) => !isCancelledTitle(entry.title)),
     };
+}
+
+const CANCELLED_TITLE = /^\s*(?:cancelad[oa]s?|cancell?ed|annul[ée]e?)\s*:/i;
+
+/**
+ * True for titles of meetings the organizer cancelled. Outlook (and Exchange
+ * through the Android calendar provider) keeps such a meeting as a normal
+ * event whose title starts with "Cancelada:" / "Canceled:" instead of
+ * setting STATUS_CANCELED, so it would otherwise count as busy time.
+ */
+export function isCancelledTitle(title) {
+    return CANCELLED_TITLE.test(String(title ?? ""));
 }
 
 /** Ordered event reference used in conflicts and proposal warnings. */

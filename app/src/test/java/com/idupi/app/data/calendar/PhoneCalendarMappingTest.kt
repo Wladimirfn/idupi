@@ -115,6 +115,21 @@ class PhoneCalendarMappingTest {
     }
 
     @Test
+    fun `meetings Outlook keeps with a cancelled title prefix are skipped`() {
+        val rows = listOf(
+            instance(eventId = "ok", title = "Planificación cancelación de turnos"),
+            instance(eventId = "es", title = "Cancelada: Cancelada: Planificación Área Técnica"),
+            instance(eventId = "en", title = "  Canceled: Weekly sync"),
+            instance(eventId = "uk", title = "Cancelled: Review"),
+        )
+
+        val events = CalendarSnapshotMapping.toEvents(rows, setOf("1"))
+
+        assertEquals(listOf("ok@${start}"), events.map { it.id })
+        assertFalse(CalendarSnapshotMapping.isCancelledTitle(null))
+    }
+
+    @Test
     fun `free text is clipped to the server caps`() {
         val event = CalendarSnapshotMapping.toEvents(
             listOf(
