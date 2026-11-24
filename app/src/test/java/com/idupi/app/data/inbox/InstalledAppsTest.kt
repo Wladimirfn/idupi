@@ -104,6 +104,24 @@ class InstalledAppsTest {
     }
 
     @Test
+    fun `collapsed followed subset keeps preset-first order and drops unknown ids`() {
+        val inventory = InstalledApps.inventory(
+            listOf(
+                "com.example.chat" to "Chat Vecinal",
+                "com.whatsapp" to "WhatsApp",
+                "com.spotify.music" to "Spotify"
+            )
+        )
+
+        assertEquals(
+            listOf("WhatsApp", "Chat Vecinal"),
+            inventory.followed(setOf("com.example.chat", "whatsapp", "ya.no.existe"))
+                .map { it.displayLabel },
+        )
+        assertTrue(inventory.followed(emptySet()).isEmpty())
+    }
+
+    @Test
     fun `search matches labels and package names case-insensitively`() {
         val apps = InstalledApps.inventory(
             listOf(
