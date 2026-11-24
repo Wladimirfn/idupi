@@ -135,11 +135,14 @@ export function createInboxRoutes({
     maxJsonBytes = DEFAULT_MAX_JSON_BYTES,
 } = {}) {
     // One agent process at a time. The chain never rejects: analyze() owns its
-    // failures and stores them on the item.
+    // failures and stores them on the item, and a persistence failure must not
+    // become an unhandled rejection (Node exits on those by default).
     let queueTail = Promise.resolve();
 
     function enqueueAnalysis(id) {
-        queueTail = queueTail.then(() => analyze(id), () => analyze(id));
+        queueTail = queueTail
+            .then(() => analyze(id), () => analyze(id))
+            .catch(() => {});
     }
 
     function stamp() {
@@ -147,27 +150,36 @@ export function createInboxRoutes({
     }
 
     async function analyze(id) {
-        const item = store.get(id);
-        if (!item) return;
-        const related = store.related(item, RELATED_CONTEXT_LIMIT);
-        const config = store.getConfig();
         try {
-            const result = await runner.run(config, item, related);
-            store.update(id, {
-                status: "ready",
-                importance: result?.importance ?? null,
-                category: result?.category ?? "",
-                summary: result?.summary ?? "",
-                suggestedReply: result?.suggestedReply ?? "",
-                error: null,
-                updatedAt: stamp(),
-            });
-        } catch (err) {
-            store.update(id, {
-                status: "failed",
-                error: shortError(err),
-                updatedAt: stamp(),
-            });
+            const item = store.get(id);
+            if (!item) return;
+            const related = store.related(item, RELATED_CONTEXT_LIMIT);
+            const config = store.getConfig();
+            try {
+                const result = await runner.run(config, item, related);
+                store.update(id, {
+                    status: "ready",
+                    importance: result?.importance ?? null,
+                    category: result?.category ?? "",
+                    summary: result?.summary ?? "",
+                    suggestedReply: result?.suggestedReply ?? "",
+                    error: null,
+                    updatedAt: stamp(),
+                });
+            } catch (err) {
+                try {
+                    store.update(id, {
+                        status: "failed",
+                        error: shortError(err),
+                        updatedAt: stamp(),
+                    });
+                } catch {
+                    // The JSON file could not be written; the in-memory item
+                    // still shows "analyzing" and the phone can retry later.
+                }
+            }
+        } catch {
+            // Fire-and-forget: one broken item must never stall the queue.
         }
     }
 
@@ -304,11 +316,17 @@ export function createInboxRoutes({
             sendError(res, 404, "inbox item not found", "NOT_FOUND");
             return;
         }
-        const item = store.update(id, {
-            status: "analyzing",
-            error: null,
-            updatedAt: stamp(),
-        });
+        let item;
+        try {
+            item = store.update(id, {
+                status: "analyzing",
+                error: null,
+                updatedAt: stamp(),
+            });
+        } catch (err) {
+            sendError(res, 500, shortError(err), "INTERNAL");
+            return;
+        }
         enqueueAnalysis(id);
         sendJson(res, 202, { item });
     }
