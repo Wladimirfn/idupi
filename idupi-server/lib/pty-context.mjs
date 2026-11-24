@@ -8,7 +8,7 @@
 //     (the running agent when there is one, the shell otherwise) by the Go
 //     helper's `proc-cwd` subcommand;
 //   - the git project and branch of that cwd (`git rev-parse`);
-//   - the deepest agent CLI running under the PTY host, recognised with the
+//   - the outermost agent CLI running under the PTY host, recognised with the
 //     same process-name list the Procesos screen uses.
 //
 // Why the agent process and not the shell: PowerShell's `cd` changes its
@@ -280,17 +280,16 @@ function directShell(hostPid, childrenByParent) {
 }
 
 /**
- * Deepest agent below the host. BFS keeps depth non-decreasing, so the last
- * entry at the maximum depth wins a tie: the newest nested agent is the one
- * actually in the foreground.
+ * Outermost agent below the host: the CLI the user launched in the shell.
+ * Agents routinely spawn other agents as workers (Claude Code delegating to an
+ * OpenCode worker, for example); the nested one must not relabel the terminal.
+ * BFS keeps depth non-decreasing, so the first agent seen is the outermost.
  */
-function deepestAgent(descendants) {
-    let best = null;
+function outermostAgent(descendants) {
     for (const entry of descendants) {
-        if (!entry.agent) continue;
-        if (!best || entry.depth >= best.depth) best = entry;
+        if (entry.agent) return entry;
     }
-    return best;
+    return null;
 }
 
 /**
@@ -403,7 +402,7 @@ export function createPtyContext({
             const key = terminal.id ?? `pid-${terminal.pid}`;
             const descendants = descendantsOf(terminal.pid, childrenByParent);
             const shell = directShell(terminal.pid, childrenByParent);
-            const agent = deepestAgent(descendants);
+            const agent = outermostAgent(descendants);
             const contextPid = agent ? agent.row.pid : shell ? shell.pid : null;
             if (contextPid) cwdPids.add(contextPid);
             if (shell) cwdPids.add(shell.pid);

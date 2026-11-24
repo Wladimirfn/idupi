@@ -100,16 +100,18 @@ test("parses the PowerShell process sample and helper JSON", () => {
 
 // --- tree walking -----------------------------------------------------------
 
-test("walks the tree, skips console hosts and picks the deepest agent", async () => {
+test("walks the tree, skips console hosts and picks the agent the user launched", async () => {
+    // Real case: Claude Code started in the shell delegates to an OpenCode
+    // worker. The terminal is Claude's; the nested worker must not relabel it.
     const rows = [
         row(500, 1, "idupi-screen.exe"),
         row(600, 500, "conhost.exe"),
         row(700, 500, "powershell.exe", "powershell.exe -NoLogo"),
-        row(800, 700, "node.exe", "node C:\\npm\\node_modules\\@openai\\codex\\bin\\codex.js"),
-        row(810, 800, "node.exe", "node C:\\npm\\node_modules\\opencode-ai\\bin\\opencode"),
+        row(800, 700, "node.exe", "node C:\\npm\\node_modules\\opencode-ai\\bin\\opencode"),
+        row(810, 800, "node.exe", "node C:\\npm\\node_modules\\@openai\\codex\\bin\\codex.js"),
         row(820, 810, "conhost.exe"),
     ];
-    const readCwds = cwdReader({ 810: "C:\\work\\alpha", 700: "C:\\Users\\elmas" });
+    const readCwds = cwdReader({ 800: "C:\\work\\alpha", 700: "C:\\Users\\elmas" });
     const provider = createPtyContext({
         sampleProcesses: sample(rows),
         readCwds,
@@ -124,8 +126,8 @@ test("walks the tree, skips console hosts and picks the deepest agent", async ()
     assert.equal(context.project, "alpha");
     assert.equal(context.branch, "main");
     assert.equal(context.detached, false);
-    assert.deepEqual(context.agent, { id: "opencode", name: "OpenCode", pid: 810 });
-    assert.deepEqual([...readCwds.calls[0]].sort((a, b) => a - b), [700, 810]);
+    assert.deepEqual(context.agent, { id: "opencode", name: "OpenCode", pid: 800 });
+    assert.deepEqual([...readCwds.calls[0]].sort((a, b) => a - b), [700, 800]);
 });
 
 test("no agent: the shell pid provides the cwd, never conhost", async () => {
