@@ -41,35 +41,59 @@ function node({ packageName = HUAWEI, id = "", text = "", y = null, x = 0 } = {}
     };
 }
 
-/** The Huawei Health "Hoy" screen, using only the ids recorded in the task. */
+/** Synthetic node with an explicit rectangle (`[0,0][0,0]` = laid out off screen). */
+function at(packageName, id, text, x1, y1, x2, y2) {
+    return {
+        text,
+        resourceId: id ? `${packageName}:id/${id}` : "",
+        contentDesc: "",
+        packageName,
+        bounds: `[${x1},${y1}][${x2},${y2}]`,
+        rect: { x1, y1, x2, y2 },
+    };
+}
+
+/**
+ * The Huawei Health "Hoy" screen with the real layout recorded live on
+ * 2026-11-24 (four rings in columns, two cards per row, cards below the fold
+ * dumped with zero rectangles) and invented values.
+ */
 function huaweiHoy(packageName = HUAWEI) {
-    rowCounter = 0;
+    const n = (id, text, x1, y1, x2, y2) => at(packageName, id, text, x1, y1, x2, y2);
     return [
-        node({ packageName, id: "step_text", text: "2,444/10,000 pasos", y: 0 }),
-        node({ packageName, id: "title_text", text: "Levantarse", y: 100 }),
-        node({ packageName, id: "value_text", text: "07:15", y: 100, x: 200 }),
-        node({ packageName, id: "goal_text", text: "07:00", y: 100, x: 350 }),
-        node({ packageName, id: "title_text", text: "Ejercicio", y: 200 }),
-        node({ packageName, id: "value_text", text: "15.42 min", y: 200, x: 200 }),
-        node({ packageName, id: "goal_text", text: "30 min", y: 200, x: 350 }),
-        node({ packageName, id: "title_text", text: "Estrés", y: 300 }),
-        node({ packageName, id: "value_text", text: "35", y: 300, x: 200 }),
-        node({ packageName, id: "goal_text", text: "<60", y: 300, x: 350 }),
-        node({ packageName, id: "title_text", text: "Consumo de agua", y: 400 }),
-        node({ packageName, id: "value_text", text: "2,000 ml", y: 400, x: 200 }),
-        node({ packageName, id: "goal_text", text: "3,000 ml", y: 400, x: 350 }),
-        node({ packageName, id: "function_set_items_title", text: "Registros de ejercicio", y: 500 }),
-        node({ packageName, id: "function_set_items_data", text: "45 min", y: 500, x: 200 }),
-        node({ packageName, id: "function_set_items_unit", text: "Caminar", y: 500, x: 350 }),
-        node({ packageName, id: "function_set_items_title", text: "Corazón", y: 600 }),
-        node({ packageName, id: "function_set_items_data", text: "72", y: 600, x: 200 }),
-        node({ packageName, id: "function_set_items_unit", text: "p. p. m.", y: 600, x: 350 }),
-        node({ packageName, id: "function_set_items_title", text: "Peso", y: 700 }),
-        node({ packageName, id: "function_set_items_data", text: "75,5", y: 700, x: 200 }),
-        node({ packageName, id: "function_set_items_unit", text: "kg", y: 700, x: 350 }),
-        node({ packageName, id: "function_set_items_title", text: "Sueño", y: 800 }),
-        node({ packageName, id: "function_set_items_data", text: "8 h 29 min", y: 800, x: 200 }),
-        node({ packageName, id: "function_set_items_unit", text: "", y: 800, x: 350 }),
+        n("action_bar_title", "Hoy", 44, 136, 177, 211),
+        n("step_text", "2,444/10,000 pasos", 105, 254, 499, 313),
+        n("title_text", "Levantarse", 95, 835, 258, 918),
+        n("value_text", "07:15", 73, 926, 252, 992),
+        n("goal_text", "07:00", 120, 1007, 204, 1046),
+        n("title_text", "Ejercicio", 365, 835, 490, 918),
+        n("value_text", "12", 393, 926, 433, 992),
+        n("goal_text", "/30 min", 356, 1007, 471, 1046),
+        n("title_text", "Estrés", 632, 835, 725, 918),
+        n("value_text", "35", 567, 926, 647, 992),
+        n("value_des", "Normal", 647, 950, 756, 989),
+        n("goal_text", "<60", 637, 1007, 692, 1046),
+        n("title_text", "Consumo de agua", 825, 835, 1036, 918),
+        n("value_text", "450", 896, 926, 936, 992),
+        n("goal_text", "2,000 ml", 852, 1007, 980, 1046),
+        n("quick_entry_text", "Hora de acostarse: 22:30", 155, 1156, 651, 1255),
+        n("function_set_items_title", "Registros de ejercicio", 66, 1365, 427, 1417),
+        n("function_set_items_data", "45 min", 66, 1423, 263, 1504),
+        n("function_set_bottom_left", "20/11", 68, 1853, 158, 1899),
+        n("function_set_bottom_right", "Caminar", 180, 1853, 441, 1899),
+        n("theme", "Plan de entrenamiento", 121, 1868, 463, 1912),
+        n("function_set_items_title", "Corazón", 66, 2011, 208, 2063),
+        n("function_set_items_data", "Frecuencia cardíaca: 72 p. p. m.", 66, 2069, 491, 2185),
+        n("function_set_bottom_left", "FC en reposo promedio reciente: 58 p. p. m.", 0, 0, 0, 0),
+        n("function_set_items_title", "Peso", 589, 2011, 675, 2063),
+        n("function_set_items_data", "75,5", 589, 2069, 726, 2144),
+        n("function_set_items_unit", "kg", 737, 2089, 773, 2133),
+        n("function_set_items_title", "Sueño", 0, 0, 0, 0),
+        n("function_set_items_data", "7 h 32 min", 0, 0, 0, 0),
+        n("function_set_items_title", "SpO₂", 0, 0, 0, 0),
+        n("function_set_items_data", "97%", 0, 0, 0, 0),
+        n("function_set_bottom_left", "24/11", 0, 0, 0, 0),
+        n("content", "Hoy", 83, 2218, 132, 2262),
     ];
 }
 
@@ -120,7 +144,7 @@ test("buildItemBlocks pairs a title with its value/goal nodes", () => {
     assert.ok(agua);
     assert.deepEqual(
         agua.values.map((value) => value.text),
-        ["2,000 ml", "3,000 ml"],
+        ["450", "2,000 ml"],
     );
     assert.equal(blocks.filter((block) => block.kind === "title_text").length, 4);
 });
@@ -131,17 +155,21 @@ test("parseHuaweiHealthHoy extracts the whole Hoy screen", () => {
     assert.equal(metrics.stepsGoal, 10000);
     assert.equal(metrics.wakeTime, "07:15");
     assert.equal(metrics.wakeGoal, "07:00");
-    assert.equal(metrics.exerciseMinutes, 15);
+    assert.equal(metrics.exerciseMinutes, 12);
     assert.equal(metrics.exerciseGoalMinutes, 30);
     assert.equal(metrics.stress, 35);
-    assert.equal(metrics.stressLabel, "bajo");
-    assert.equal(metrics.waterMl, 2000);
-    assert.equal(metrics.waterGoalMl, 3000);
+    assert.equal(metrics.stressLabel, "Normal");
+    assert.equal(metrics.waterMl, 450);
+    assert.equal(metrics.waterGoalMl, 2000);
+    assert.equal(metrics.bedtimeGoal, "22:30");
+    // Two-column cards: the heart value must not leak into the weight card.
     assert.equal(metrics.heartRateBpm, 72);
+    assert.equal(metrics.restingHeartRateBpm, 58);
     assert.equal(metrics.weightKg, 75.5);
-    assert.equal(metrics.sleepMinutes, 509);
-    assert.deepEqual(metrics.lastWorkout, { minutes: 45, type: "Caminar", date: null });
-    assert.equal(metrics.bedtimeGoal, null);
+    // Off-screen cards ([0,0][0,0]) are paired in document order.
+    assert.equal(metrics.sleepMinutes, 452);
+    assert.equal(metrics.spo2Pct, 97);
+    assert.deepEqual(metrics.lastWorkout, { minutes: 45, type: "Caminar", date: "20/11" });
 });
 
 test("parseHuaweiHealthHoy never throws on an empty or unrelated dump", () => {
@@ -191,6 +219,8 @@ test("toStoreMetrics drops profile-only fields and maps lastWorkout to workouts"
     const stored = toStoreMetrics(metrics);
     assert.equal("lastWorkout" in stored, false);
     assert.deepEqual(stored.workouts, [{ type: "Caminar", minutes: 45 }]);
+    assert.equal(stored.spo2Pct, 97);
+    assert.equal(stored.restingHeartRateBpm, 58);
     assert.equal(stored.steps, 2444);
     assert.equal("wakeTime" in stored, true);
     assert.equal(hasAnyMetric(stored), true);

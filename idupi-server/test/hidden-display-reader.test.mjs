@@ -192,7 +192,7 @@ test("scrcpyArguments is the verified fixed argv", () => {
         [
             "-s",
             SERIAL,
-            "--new-display=1080x2340/440",
+            "--new-display=1080x4200/440",
             `--start-app=${PKG}`,
             "--no-window",
             "--no-audio",
@@ -253,7 +253,7 @@ test("readApp retries wake+dump once when the app is not visible yet", async (t)
     assert.equal(harness.dumpCount(), 2);
 });
 
-test("readApp fails app_not_visible after the retry and still cleans up", async (t) => {
+test("readApp fails app_not_visible after the retries and still cleans up", async (t) => {
     const harness = makeHarness(t, {
         xmls: [nodeXml("com.android.systemui"), nodeXml("com.android.systemui")],
     });
@@ -262,7 +262,7 @@ test("readApp fails app_not_visible after the retry and still cleans up", async 
         { ok: result.ok, reason: result.reason },
         { ok: false, reason: "app_not_visible" },
     );
-    assert.equal(harness.dumpCount(), 2);
+    assert.equal(harness.dumpCount(), 3);
     assert.equal(harness.calls.unlink.length, 1);
     assert.ok(harness.calls.run.some((call) => call.args[3] === "rm"));
     assert.equal(harness.children[0].killed, true);

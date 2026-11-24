@@ -4,7 +4,7 @@
 // Health tentative) without lighting the owner's screen. The verified flow on
 // the owner's device:
 //
-//   scrcpy --new-display=1080x2340/440 --start-app=<pkg> --no-window
+//   scrcpy --new-display=1080x4200/440 --start-app=<pkg> --no-window
 //          --no-audio --record=<temp.mkv> --max-fps=5 --video-bit-rate=500K
 //   adb shell input -d <id> keyevent KEYCODE_WAKEUP   (wakes only that display)
 //   adb shell uiautomator dump --display <id> <file>
@@ -43,14 +43,15 @@ export const UNLINK_RETRY_MS = 300;
 
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_DISPLAY_POLLS = 120;
-const MAX_ATTEMPTS = 2;
+// A taller display takes the app longer to lay out on a cold start.
+const MAX_ATTEMPTS = 3;
 
 /** Fixed argv for the virtual display; never built from user input. */
 export function scrcpyArguments({ serial, packageName, recordPath }) {
     return [
         "-s",
         serial,
-        "--new-display=1080x2340/440",
+        "--new-display=1080x4200/440",
         `--start-app=${packageName}`,
         "--no-window",
         "--no-audio",

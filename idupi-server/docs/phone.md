@@ -414,7 +414,7 @@ Requirements on the PC:
   finally a bounded TCP probe of the saved hosts (ports 30000-49999).
 
 Flow per read (one at a time, 60 s cap): create the virtual display with
-`scrcpy --new-display=1080x2340/440 --start-app=<pkg> --no-window --no-audio
+`scrcpy --new-display=1080x4200/440 --start-app=<pkg> --no-window --no-audio
 --record=<temp.mkv> --max-fps=5 --video-bit-rate=500K`, wait for
 `New display: ... (id=N)`, wake only that display with
 `adb shell input -d N keyevent KEYCODE_WAKEUP`, `uiautomator dump --display N`,

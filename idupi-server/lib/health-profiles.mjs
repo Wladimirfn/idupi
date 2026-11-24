@@ -47,6 +47,8 @@ const VALUE_IDS = new Set([
     "value_des",
     "function_set_items_data",
     "function_set_items_unit",
+    "function_set_bottom_left",
+    "function_set_bottom_right",
 ]);
 
 /** Last path segment of a resource id (`pkg:id/name` -> `name`). */
@@ -86,34 +88,83 @@ export function sortNodesInReadingOrder(nodes) {
 }
 
 /**
- * Groups the dump into item blocks. A block starts at a title-ish node and
- * collects the value/goal/description nodes that follow it until the next
- * block starts.
+ * True when the node has a real on-screen rectangle. Items the app laid out
+ * outside the visible area are dumped with `[0,0][0,0]` and must not be placed
+ * by geometry.
+ */
+function hasGeometry(node) {
+    const rect = node && node.rect;
+    return Boolean(
+        rect &&
+            [rect.x1, rect.y1, rect.x2, rect.y2].every(Number.isFinite) &&
+            rect.x2 > rect.x1 &&
+            rect.y2 > rect.y1,
+    );
+}
+
+/** How far below its title a value may sit and still belong to it (px). */
+const MAX_VALUE_DROP_PX = 560;
+
+/**
+ * Groups the dump into item blocks. Huawei lays items out in columns (four
+ * rings in a row, two cards per row), so reading order alone pairs a title with
+ * its neighbour's value. A value with geometry joins the title that sits above
+ * it (within MAX_VALUE_DROP_PX) and is horizontally closest. A value without
+ * geometry (`[0,0][0,0]`, laid out off screen) joins the nearest preceding
+ * title in document order, which is how the app nests each card. Only known
+ * value ids join a block: decorative texts (plan banners, tabs) are ignored.
  */
 export function buildItemBlocks(nodes) {
-    const ordered = sortNodesInReadingOrder(nodes);
+    const list = Array.isArray(nodes) ? nodes : [];
     const blocks = [];
-    let current = null;
-    for (const node of ordered) {
-        const name = resourceIdName(node.resourceId);
-        if (BLOCK_START_IDS.has(name)) {
-            current = { kind: name, title: typeof node.text === "string" ? node.text : "", values: [] };
-            blocks.push(current);
-            continue;
-        }
-        if (!current) continue;
-        if (VALUE_IDS.has(name)) {
-            current.values.push({ id: name, text: typeof node.text === "string" ? node.text : "" });
-            continue;
-        }
-        // Decorative nodes that carry a short text right after a title belong
-        // to the same item; a block never grows past six of them.
-        const text = typeof node.text === "string" ? node.text.trim() : "";
-        if (text && current.values.length < 6) {
-            current.values.push({ id: name || "text", text });
-        }
+    const byNode = new Map();
+    let lastInDocument = null;
+    for (const node of list) {
+        if (!BLOCK_START_IDS.has(resourceIdName(node.resourceId))) continue;
+        const block = {
+            kind: resourceIdName(node.resourceId),
+            title: typeof node.text === "string" ? node.text : "",
+            geometry: hasGeometry(node),
+            top: hasGeometry(node) ? node.rect.y1 : null,
+            centerX: hasGeometry(node) ? (node.rect.x1 + node.rect.x2) / 2 : null,
+            values: [],
+        };
+        blocks.push(block);
+        byNode.set(node, block);
     }
-    return blocks;
+
+    for (const node of list) {
+        const name = resourceIdName(node.resourceId);
+        if (byNode.has(node)) {
+            lastInDocument = byNode.get(node);
+            continue;
+        }
+        if (!VALUE_IDS.has(name)) continue;
+        const value = { id: name, text: typeof node.text === "string" ? node.text : "" };
+        let owner = null;
+        if (hasGeometry(node)) {
+            const top = node.rect.y1;
+            const centerX = (node.rect.x1 + node.rect.x2) / 2;
+            let best = Infinity;
+            for (const block of blocks) {
+                if (!block.geometry || block.top > top) continue;
+                if (top - block.top > MAX_VALUE_DROP_PX) continue;
+                const distance = Math.abs(block.centerX - centerX);
+                if (distance < best) {
+                    best = distance;
+                    owner = block;
+                }
+            }
+        }
+        (owner || lastInDocument)?.values.push(value);
+    }
+
+    // Reading order for the result keeps the parse deterministic; blocks laid
+    // out off screen keep their document order after the visible ones.
+    const visible = blocks.filter((block) => block.geometry)
+        .sort((left, right) => left.top - right.top || left.centerX - right.centerX);
+    const offscreen = blocks.filter((block) => !block.geometry);
+    return [...visible, ...offscreen].map(({ kind, title, values }) => ({ kind, title, values }));
 }
 
 // --- number and unit parsing ----------------------------------------------
@@ -214,6 +265,8 @@ const EMPTY_METRICS = () => ({
     waterGoalMl: null,
     bedtimeGoal: null,
     heartRateBpm: null,
+    restingHeartRateBpm: null,
+    spo2Pct: null,
     weightKg: null,
     sleepMinutes: null,
     lastWorkout: null,
@@ -293,23 +346,32 @@ export function parseHuaweiHealthHoy(nodes) {
         }
 
         if (label.includes("registros de ejercicio") || label.includes("registro de ejercicio")) {
-            const minutes = parseSleepMinutes(texts.find((text) => /\d/.test(text)) || "");
-            const type = texts.find(
-                (text) => !/[\d]/.test(text) && !UNIT_WORDS.test(text.trim()),
-            );
+            const minutes = parseSleepMinutes(firstValue(block, "function_set_items_data") || "");
+            // The card footer holds the workout date (left) and type (right).
+            const type = firstValue(block, "function_set_bottom_right");
             if (minutes !== null || type) {
                 metrics.lastWorkout = {
                     minutes,
-                    type: type ? type.trim() : null,
-                    date: null,
+                    type: type && !UNIT_WORDS.test(type) ? type : null,
+                    date: firstValue(block, "function_set_bottom_left"),
                 };
             }
             continue;
         }
 
         if (label.startsWith("corazon")) {
-            const number = firstNumber(block);
+            const number = parseHealthNumber(firstValue(block, "function_set_items_data"));
             metrics.heartRateBpm = number === null ? null : Math.round(number);
+            // Footer: "FC en reposo promedio reciente: 62 p. p. m."
+            const resting = texts.find((text) => /reposo/i.test(text));
+            const restingValue = resting ? parseHealthNumber(resting) : null;
+            metrics.restingHeartRateBpm = restingValue === null ? null : Math.round(restingValue);
+            continue;
+        }
+
+        if (label.startsWith("spo")) {
+            const number = parseHealthNumber(firstValue(block, "function_set_items_data"));
+            metrics.spo2Pct = number === null ? null : Math.round(number);
             continue;
         }
 
@@ -332,7 +394,9 @@ export function parseHuaweiHealthHoy(nodes) {
         }
 
         if (label.includes("dormir") || label.includes("acostarse")) {
-            const times = texts.map(parseClock).filter(Boolean);
+            // The shortcut row carries the clock in its own title
+            // ("Hora de acostarse: 23:00").
+            const times = [block.title, ...texts].map(parseClock).filter(Boolean);
             const clock = parseClock(firstValue(block, "value_text")) || times[0] || null;
             if (clock) metrics.bedtimeGoal = clock;
         }
