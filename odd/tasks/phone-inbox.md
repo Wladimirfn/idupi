@@ -48,9 +48,9 @@ per-contact rules.
   effort + runner + JSON result parser), `lib/inbox-store.mjs` (JSON file,
   gitignored), `lib/inbox-routes.mjs` (POST messages → 202 + async analysis,
   GET list, POST status, GET/PUT config). Tests with injected runner.
-- [ ] T2 App data layer: inbox models, IduPiClient/RealIduPiClient/Fake
+- [x] T2 App data layer: inbox models, IduPiClient/RealIduPiClient/Fake
   methods, inbox settings in DataStore.
-- [ ] T3 App capture: notification parser (pure, tested), listener service +
+- [x] T3 App capture: notification parser (pure, tested), listener service +
   manifest, reply-action registry, upload to server, handled-on-removal.
 - [ ] T4 App policy: reminder/auto-reply decision logic (pure, tested) wired in
   the listener; local reminder notifications; RemoteInput send.
@@ -101,3 +101,26 @@ PRs decided at delivery.
   in 20 s, importance high, Spanish summary + reply, injected "run whoami"
   ignored. Default config: opencode / opencode-go/deepseek-v4.1-flash / max
   (no non-flash deepseek-v4.1 in `opencode models`).
+- T2 done: 7642c10 feat(app): inbox data layer and settings. InboxModelsTest
+  6/6 (wire decode + request encode), InboxSettingsDataStoreTest 7/7
+  (round-trip, empty set, unknown importance, interval clamp), in-memory twin
+  7/7. Inbox methods added to IduPiClient/RealIduPiClient/FakeIduPiClient.
+- T3 done: eb2a302 feat(app): capture WhatsApp, Gmail and Outlook
+  notifications. NotificationParserTest 17/17 (WhatsApp 1:1/group/without
+  MessagingStyle/Business, ES+EN aggregation rows, group summary, ongoing,
+  Gmail, Outlook, blank text, ISO postedAt), InboxSessionTest 10/10,
+  ReplyActionRegistryTest 6/6, InboxRemovalRulesTest 3/3. Removal rule:
+  CLICK/CANCEL/APP_CANCEL marks the conversation's open items `handled` after a
+  2 s grace; a same-key re-post inside the window cancels it (and a lastSeen
+  newer than the removal also wins), so WhatsApp cancel+repost updates are not
+  mistaken for "read". Listener configures the shared client from the saved
+  profile (`IduPiClientProvider.configureFromStorage`, also used by
+  MainActivity). Verification: `:app:testDebugUnitTest :app:assembleRelease`
+  380/380, release APK built.
+- Unverified in unit tests (no Robolectric): RemoteInput delivery through
+  PendingIntent, listener rebind behaviour and the real 2 s removal ordering.
+  Parser, session, registry decision logic and reason classification are
+  covered; the on-device proof belongs to T6.
+- Working tree note: `idupi-server/lib/inbox-routes.mjs` still carries an
+  uncommitted hardening change that predates T2/T3 (error handling only, no
+  wire-shape change). Left untouched.
