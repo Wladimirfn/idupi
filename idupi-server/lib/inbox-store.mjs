@@ -104,6 +104,37 @@ function isValidItem(candidate) {
     return true;
 }
 
+/** The extracted calendar event, revalidated on load; malformed becomes null. */
+function sanitizeStoredEvent(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const title = singleLine(value.title, 120);
+    if (title.length === 0) return null;
+    const start = toIso(value.start, null);
+    const end = toIso(value.end, null);
+    if (!start || !end) return null;
+    return {
+        title,
+        start,
+        end,
+        allDay: value.allDay === true,
+        location: singleLine(value.location, 200),
+    };
+}
+
+/** Deterministic overlap warnings attached after the analysis. */
+function sanitizeEventConflicts(value) {
+    if (!Array.isArray(value)) return [];
+    const conflicts = [];
+    for (const entry of value.slice(0, 20)) {
+        if (!entry || typeof entry !== "object") continue;
+        const start = toIso(entry.start, null);
+        const end = toIso(entry.end, null);
+        if (!start || !end) continue;
+        conflicts.push({ title: singleLine(entry.title, 120), start, end });
+    }
+    return conflicts;
+}
+
 /**
  * @param {{
  *   dataDir: string,
@@ -243,6 +274,8 @@ export function createInboxStore({
                 category: singleLine(candidate.category, MAX_CATEGORY_CHARS),
                 summary: clip(candidate.summary, 600),
                 suggestedReply: clip(candidate.suggestedReply, 1200),
+                event: sanitizeStoredEvent(candidate.event),
+                eventConflicts: sanitizeEventConflicts(candidate.eventConflicts),
                 error: candidate.error ? clip(candidate.error, MAX_ERROR_CHARS) : null,
                 state: INBOX_STATES.includes(candidate.state) ? candidate.state : "open",
                 updatedAt: toIso(candidate.updatedAt, candidate.receivedAt),
@@ -342,6 +375,8 @@ export function createInboxStore({
             category: digestOnly ? DIGEST_ONLY_CATEGORY : "",
             summary: "",
             suggestedReply: "",
+            event: null,
+            eventConflicts: [],
             error: null,
             state: "open",
             updatedAt: receivedAt,
@@ -475,6 +510,10 @@ export function createInboxStore({
         if ("category" in patch) item.category = singleLine(patch.category, MAX_CATEGORY_CHARS);
         if ("summary" in patch) item.summary = clip(patch.summary, 600);
         if ("suggestedReply" in patch) item.suggestedReply = clip(patch.suggestedReply, 1200);
+        if ("event" in patch) item.event = sanitizeStoredEvent(patch.event);
+        if ("eventConflicts" in patch) {
+            item.eventConflicts = sanitizeEventConflicts(patch.eventConflicts);
+        }
         if ("error" in patch) item.error = patch.error ? clip(String(patch.error), MAX_ERROR_CHARS) : null;
         item.updatedAt = toIso(patch.updatedAt, clock());
 
