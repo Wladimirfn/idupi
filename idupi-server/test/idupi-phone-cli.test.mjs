@@ -15,6 +15,11 @@ import {
     formatCommandList,
     formatCommandResult,
     formatDuration,
+    formatHealthAdb,
+    formatHealthMetrics,
+    formatHealthRefresh,
+    formatHealthSources,
+    formatHealthSummary,
     formatPhoneStatus,
     formatProposalCreated,
     parseArgs,
@@ -462,3 +467,164 @@ test("proposal formatters show the pending state, conflicts and status labels", 
 
     assert.equal(formatCalendarProposals({ proposals: [] }), "No hay propuestas.");
 });
+
+// --- health CLI (phone-health, T1) ----------------------------------------
+
+test("parseArgs handles health summary, sources, refresh and adb", () => {
+    assert.deepEqual(parseArgs(["health"]), {
+        command: "health",
+        action: "summary",
+        days: 7,
+        json: false,
+    });
+    assert.deepEqual(parseArgs(["health", "summary", "--days", "30", "--json"]), {
+        command: "health",
+        action: "summary",
+        days: 30,
+        json: true,
+    });
+    assert.deepEqual(parseArgs(["health", "--days", "3"]), {
+        command: "health",
+        action: "summary",
+        days: 3,
+        json: false,
+    });
+    assert.deepEqual(parseArgs(["health", "sources"]), {
+        command: "health",
+        action: "sources",
+        json: false,
+    });
+    assert.deepEqual(parseArgs(["health", "refresh", "--wait"]), {
+        command: "health",
+        action: "refresh",
+        wait: true,
+        json: false,
+    });
+    assert.deepEqual(parseArgs(["health", "adb"]), {
+        command: "health",
+        action: "adb",
+        adbAction: "status",
+    });
+    assert.deepEqual(parseArgs(["health", "adb", "pair", "192.168.1.50:37123", "123456"]), {
+        command: "health",
+        action: "adb",
+        adbAction: "pair",
+        hostPort: "192.168.1.50:37123",
+        code: "123456",
+    });
+    assert.deepEqual(parseArgs(["health", "adb", "connect", "100.101.1.2:41000"]), {
+        command: "health",
+        action: "adb",
+        adbAction: "connect",
+        hostPort: "100.101.1.2:41000",
+    });
+});
+
+test("parseArgs rejects malformed health commands", () => {
+    for (const argv of [
+        ["health", "summary", "--days", "0"],
+        ["health", "summary", "--days", "500"],
+        ["health", "summary", "--nope"],
+        ["health", "sources", "extra"],
+        ["health", "refresh", "--nope"],
+        ["health", "adb", "pair", "192.168.1.50:37123"],
+        ["health", "adb", "pair", "not-a-host", "123456"],
+        ["health", "adb", "pair", "192.168.1.50:37123", "12ab"],
+        ["health", "adb", "connect"],
+        ["health", "adb", "connect", "bad host:1"],
+        ["health", "adb", "unknown"],
+        ["health", "unknown"],
+    ]) {
+        const parsed = parseArgs(argv);
+        assert.equal(parsed.command, "help", argv.join(" "));
+        assert.ok(parsed.error, argv.join(" "));
+    }
+});
+
+test("formatHealthSummary renders days with units and goals", () => {
+    const payload = {
+        rangeDays: 7,
+        tzOffsetMinutes: -180,
+        days: [
+            { date: "2026-11-23", metrics: {}, sources: {}, capturedAt: null },
+            {
+                date: "2026-11-24",
+                metrics: {
+                    steps: 2444,
+                    stepsGoal: 10000,
+                    sleepMinutes: 509,
+                    heartRateBpm: 72,
+                    exerciseMinutes: 15,
+                    exerciseGoalMinutes: 30,
+                    waterMl: 2000,
+                    waterGoalMl: 3000,
+                    stress: 35,
+                    stressLabel: "bajo",
+                    weightKg: 75.5,
+                    screenTimeMinutes: 200,
+                    unlocks: 40,
+                },
+                sources: { steps: "huawei_health" },
+                capturedAt: "2026-11-24T10:00:00.000Z",
+            },
+        ],
+        latest: null,
+    };
+    const text = formatHealthSummary(payload, Date.parse("2026-11-24T15:00:00.000Z"));
+    assert.match(text, /^Salud \(7 días\):$/m);
+    assert.match(text, /^Hoy \(2026-11-24\)$/m);
+    assert.ok(text.includes("Pasos: 2,444 de 10,000"));
+    assert.ok(text.includes("Sueño: 8 h 29 min"));
+    assert.ok(text.includes("Frecuencia cardíaca: 72 lpm"));
+    assert.ok(text.includes("Ejercicio: 15 min de 30 min"));
+    assert.ok(text.includes("Agua: 2,000 de 3,000 ml"));
+    assert.ok(text.includes("Estrés: 35 (bajo)"));
+    assert.ok(text.includes("Peso: 75.5 kg"));
+    assert.ok(text.includes("Pantalla: 3 h 20 min · 40 desbloqueos"));
+
+    assert.equal(
+        formatHealthSummary({ days: [] }),
+        "Sin datos de salud todavía. Ejecuta: idupi-phone health refresh",
+    );
+    assert.deepEqual(formatHealthMetrics({}), []);
+});
+
+test("formatHealthSources lists sources and installed apps", () => {
+    const text = formatHealthSources({
+        sources: [
+            { id: "huawei_health", label: "Huawei Health", lastCaptureAt: "2026-11-24T10:00:00.000Z" },
+            { id: "health_connect", label: "Health Connect", lastCaptureAt: null },
+        ],
+        installedApps: [
+            { packageName: "com.huawei.health", label: "Huawei Health", route: "hidden_display" },
+        ],
+    });
+    assert.match(text, /^Fuentes de salud:$/m);
+    assert.ok(text.includes("huawei_health (Huawei Health): última captura"));
+    assert.ok(text.includes("health_connect (Health Connect): sin datos"));
+    assert.ok(text.includes("com.huawei.health — Huawei Health (hidden_display)"));
+});
+
+test("formatHealthRefresh and formatHealthAdb summarize the PC state", () => {
+    const refresh = formatHealthRefresh({
+        id: "hgj-0123456789ab",
+        status: "done",
+        results: [{ source: "huawei_health", ok: true, metrics: 8, sourceApp: "com.huawei.health" }],
+    });
+    assert.ok(refresh.includes("Actualización de salud: listo"));
+    assert.ok(refresh.includes("huawei_health: 8 métricas (com.huawei.health)"));
+
+    const adb = formatHealthAdb({
+        adb: { path: "C:\\sdk\\adb.exe", found: true },
+        scrcpy: { path: "C:\\tools\\scrcpy.exe", found: true, version: "5.0.1" },
+        connected: true,
+        serial: "192.168.1.50:37123",
+        via: "cached",
+        targets: [{ serial: "192.168.1.50:37123", network: "lan", model: "SM-S928B" }],
+    });
+    assert.ok(adb.includes("ADB: encontrado"));
+    assert.ok(adb.includes("scrcpy: 5.0.1"));
+    assert.ok(adb.includes("Conexión: 192.168.1.50:37123 (cached)"));
+    assert.ok(adb.includes("192.168.1.50:37123 · lan · SM-S928B"));
+});
+
