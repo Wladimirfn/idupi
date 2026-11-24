@@ -171,8 +171,11 @@ function sanitizeUntrusted(value) {
 
 function formatUntrustedItem(item) {
     const text = sanitizeUntrusted(String(item?.text ?? "").slice(0, MAX_PROMPT_ITEM_CHARS));
+    // The phone's PackageManager label is display metadata and is untrusted
+    // like the rest of the item; the app id is the fallback when it is absent.
+    const appName = String(item?.appLabel || item?.app || "unknown");
     return sanitizeUntrusted([
-        `App: ${item?.app ?? "unknown"}`,
+        `App: ${appName}`,
         `Sender: ${item?.sender ?? ""}`,
         `Conversation: ${item?.conversation ?? ""}`,
         `Posted at: ${item?.postedAt ?? ""}`,

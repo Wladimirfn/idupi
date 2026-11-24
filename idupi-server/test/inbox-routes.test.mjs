@@ -29,6 +29,7 @@ const RESULT = {
 function message(overrides = {}) {
     return {
         app: "whatsapp",
+        appLabel: "WhatsApp",
         packageName: "com.whatsapp",
         sender: "Ana",
         conversation: "Equipo",
@@ -192,6 +193,63 @@ test("the analysis queue never runs two agent processes at once", async (t) => {
 
     await waitReady(base, first.body.item.id);
     await waitReady(base, second.body.item.id);
+});
+
+test("a followed package name is accepted and its label round-trips through GET", async (t) => {
+    const { base } = await startHarness(t);
+
+    const { res, body } = await postMessage(base, {
+        app: "org.telegram.messenger",
+        appLabel: "  Telegram  ",
+        packageName: "org.telegram.messenger",
+        notificationKey: "tg-1",
+    });
+
+    assert.equal(res.status, 202);
+    assert.equal(body.item.app, "org.telegram.messenger");
+    assert.equal(body.item.appLabel, "Telegram");
+
+    const listed = await (await fetch(base + "/api/v1/inbox")).json();
+    assert.equal(listed.items[0].app, "org.telegram.messenger");
+    assert.equal(listed.items[0].appLabel, "Telegram");
+});
+
+test("missing or malformed app ids are rejected; appLabel is optional and clipped", async (t) => {
+    const { base } = await startHarness(t);
+
+    for (const app of ["", "Telegram", "telegram!", "x".repeat(121)]) {
+        const { res, body } = await postMessage(base, {
+            app,
+            notificationKey: `bad-${app.length}`,
+        });
+        assert.equal(res.status, 400, `app=${JSON.stringify(app)} must be rejected`);
+        assert.equal(body.code, "INVALID_APP");
+    }
+
+    const missing = await postJson(base, "/api/v1/inbox/messages", {
+        text: "hola",
+        notificationKey: "no-app",
+    });
+    assert.equal(missing.status, 400);
+    assert.equal((await missing.json()).code, "INVALID_APP");
+
+    const noLabel = await postMessage(base, { appLabel: "", notificationKey: "no-label" });
+    assert.equal(noLabel.res.status, 202);
+    assert.equal(noLabel.body.item.appLabel, "");
+
+    const longLabel = await postMessage(base, {
+        appLabel: "L".repeat(90),
+        notificationKey: "long-label",
+    });
+    assert.equal(longLabel.res.status, 202);
+    assert.equal(longLabel.body.item.appLabel.length, 60);
+
+    const badLabel = await postJson(base, "/api/v1/inbox/messages", {
+        ...message({ notificationKey: "bad-label" }),
+        appLabel: 42,
+    });
+    assert.equal(badLabel.status, 400);
+    assert.equal((await badLabel.json()).code, "INVALID_MESSAGE");
 });
 
 test("state changes persist, validate and 404 unknown ids", async (t) => {

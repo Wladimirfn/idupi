@@ -142,6 +142,20 @@ test("prompt wraps the message as untrusted data and states the exact JSON contr
     assert.match(prompt, /\nnone$/);
 });
 
+test("prompt shows the phone label with the app id as fallback", () => {
+    const labelled = buildInboxPrompt(
+        { ...ITEM, app: "org.telegram.messenger", appLabel: "Telegram" },
+        [],
+    );
+    assert.ok(labelled.includes("App: Telegram"));
+
+    const unlabelled = buildInboxPrompt(
+        { ...ITEM, app: "org.telegram.messenger", appLabel: "" },
+        [],
+    );
+    assert.ok(unlabelled.includes("App: org.telegram.messenger"));
+});
+
 test("prompt requires neutral Latin American Spanish with no voseo", () => {
     const prompt = buildInboxPrompt(ITEM, []);
 

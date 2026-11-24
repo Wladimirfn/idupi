@@ -37,6 +37,7 @@ function tickingClock() {
 function message(overrides = {}) {
     return {
         app: "whatsapp",
+        appLabel: "WhatsApp",
         packageName: "com.whatsapp",
         sender: "Ana",
         conversation: "Equipo",
@@ -58,6 +59,7 @@ test("add persists the full item shape and a new store reloads it", async (t) =>
     assert.deepEqual(
         {
             app: item.app,
+            appLabel: item.appLabel,
             packageName: item.packageName,
             sender: item.sender,
             conversation: item.conversation,
@@ -74,6 +76,7 @@ test("add persists the full item shape and a new store reloads it", async (t) =>
         },
         {
             app: "whatsapp",
+            appLabel: "WhatsApp",
             packageName: "com.whatsapp",
             sender: "Ana",
             conversation: "Equipo",
@@ -127,6 +130,50 @@ test("text is capped at 4000 characters", async (t) => {
 
     assert.equal(item.text.length, DEFAULT_MAX_TEXT_CHARS);
     assert.equal(item.text.length, 4000);
+});
+
+test("any followed package name is accepted and its label is persisted", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: tickingClock() });
+
+    const { item } = store.add(message({
+        app: "org.telegram.messenger",
+        appLabel: "  Telegram  ",
+        packageName: "org.telegram.messenger",
+    }));
+
+    assert.equal(item.app, "org.telegram.messenger");
+    assert.equal(item.appLabel, "Telegram");
+
+    const reloaded = createInboxStore({ dataDir: dir, log: silentLog });
+    assert.equal(reloaded.get(item.id).appLabel, "Telegram");
+});
+
+test("app ids outside the lowercase id/package alphabet are rejected", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog });
+
+    assert.throws(() => store.add(message({ app: "Telegram" })), /invalid app/);
+    assert.throws(() => store.add(message({ app: "telegram!" })), /invalid app/);
+    assert.throws(() => store.add(message({ app: "" })), /invalid app/);
+    assert.throws(() => store.add(message({ app: "x".repeat(121) })), /invalid app/);
+});
+
+test("an appLabel is clipped to 60 characters on write and on load", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: tickingClock() });
+
+    const { item } = store.add(message({ appLabel: "L".repeat(100) }));
+    assert.equal(item.appLabel.length, 60);
+
+    await writeItemsFile(dir, [
+        storedItem("inb-000000000009", "open", "2026-11-24T10:00:00.000Z", {
+            appLabel: "  Etiqueta   con   espacios  ",
+        }),
+    ]);
+    const loaded = createInboxStore({ dataDir: dir, log: silentLog })
+        .get("inb-000000000009");
+    assert.equal(loaded.appLabel, "Etiqueta con espacios");
 });
 
 test("the store keeps only the newest maxItems rows", async (t) => {

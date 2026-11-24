@@ -17,7 +17,21 @@ import { AGENTS, EFFORTS } from "./inbox-agent.mjs";
 
 export const ITEM_ID_PATTERN = /^inb-[0-9a-f]{12}$/;
 
-export const INBOX_APPS = ["whatsapp", "whatsapp_business", "gmail", "outlook"];
+/**
+ * App ids the inbox accepts: a preset id ("whatsapp_business") or the package
+ * name of any app the owner follows ("org.telegram.messenger"). Both are
+ * lowercase; anything else is refused so a malformed client cannot store an
+ * arbitrary string that later reaches the agent prompt.
+ */
+export const APP_ID_PATTERN = /^[a-z0-9_.]{1,120}$/;
+
+/** The optional display label the phone captures from PackageManager. */
+export const MAX_APP_LABEL_CHARS = 60;
+
+export function isValidAppId(value) {
+    return typeof value === "string" && APP_ID_PATTERN.test(value);
+}
+
 export const INBOX_STATUSES = ["analyzing", "ready", "failed"];
 export const INBOX_IMPORTANCES = ["high", "medium", "low"];
 export const INBOX_STATES = ["open", "handled", "replied", "auto_replied", "dismissed"];
@@ -76,7 +90,7 @@ function singleLine(value, maxChars) {
 function isValidItem(candidate) {
     if (!candidate || typeof candidate !== "object") return false;
     if (!ITEM_ID_PATTERN.test(String(candidate.id ?? ""))) return false;
-    if (!INBOX_APPS.includes(candidate.app)) return false;
+    if (!isValidAppId(candidate.app)) return false;
     if (typeof candidate.text !== "string") return false;
     if (!Number.isFinite(Date.parse(String(candidate.receivedAt ?? "")))) return false;
     return true;
@@ -208,6 +222,7 @@ export function createInboxStore({
             items.push({
                 id: candidate.id,
                 app: candidate.app,
+                appLabel: singleLine(candidate.appLabel, MAX_APP_LABEL_CHARS),
                 packageName: clip(candidate.packageName, MAX_FIELD_CHARS),
                 sender: clip(candidate.sender, MAX_FIELD_CHARS),
                 conversation: clip(candidate.conversation, MAX_FIELD_CHARS),
@@ -279,8 +294,8 @@ export function createInboxStore({
      */
     function add(input = {}) {
         const app = String(input.app ?? "");
-        if (!INBOX_APPS.includes(app)) {
-            throw new Error(`unknown app: ${app}`);
+        if (!isValidAppId(app)) {
+            throw new Error("invalid app");
         }
         const text = clip(typeof input.text === "string" ? input.text : String(input.text ?? ""), maxText);
         if (text.trim().length === 0) {
@@ -302,6 +317,7 @@ export function createInboxStore({
         const item = {
             id: `inb-${randomBytes(6).toString("hex")}`,
             app,
+            appLabel: singleLine(input.appLabel, MAX_APP_LABEL_CHARS),
             packageName: clip(input.packageName, MAX_FIELD_CHARS),
             sender: clip(input.sender, MAX_FIELD_CHARS),
             conversation: clip(input.conversation, MAX_FIELD_CHARS),

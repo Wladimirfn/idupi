@@ -13,9 +13,10 @@ import {
 } from "./inbox-agent.mjs";
 import {
     DEFAULT_MAX_TEXT_CHARS,
-    INBOX_APPS,
     INBOX_STATES,
     ITEM_ID_PATTERN,
+    MAX_APP_LABEL_CHARS,
+    isValidAppId,
 } from "./inbox-store.mjs";
 
 const PREFIX = "/api/v1/inbox";
@@ -200,9 +201,14 @@ export function createInboxRoutes({
             return;
         }
 
-        const app = String(body.app ?? "");
-        if (!INBOX_APPS.includes(app)) {
-            sendError(res, 400, "app must be one of: " + INBOX_APPS.join(", "), "INVALID_APP");
+        const app = typeof body.app === "string" ? body.app : "";
+        if (!isValidAppId(app)) {
+            sendError(
+                res,
+                400,
+                "app must be a lowercase id or package name (a-z, 0-9, _ and ., at most 120)",
+                "INVALID_APP",
+            );
             return;
         }
         const text = typeof body.text === "string" ? body.text : "";
@@ -232,6 +238,9 @@ export function createInboxRoutes({
         try {
             input = {
                 app,
+                appLabel: optionalString(body.appLabel, "appLabel")
+                    .trim()
+                    .slice(0, MAX_APP_LABEL_CHARS),
                 packageName: optionalString(body.packageName, "packageName"),
                 sender: optionalString(body.sender, "sender"),
                 conversation: optionalString(body.conversation, "conversation"),
