@@ -168,3 +168,11 @@ PRs decided at delivery.
 - Working tree note: the `idupi-server/lib/inbox-routes.mjs` hardening change
   that predated T2/T3 was committed as 8ff3044 (error handling only, no
   wire-shape change); the tree was clean when T4 started.
+- Parent review: 8ff3044 fix(server) (unhandled-rejection hardening found
+  uncommitted after T1). 995a64f fix(app): per-conversation 6 h auto-reply
+  cooldown (the per-tick rule allowed one template per tick to a bursting
+  sender); InboxReminderPolicyTest 33/33.
+- T6 (partial): 2c7f223 version 41 / 1.40-alertas-inbox; app 443 tests /
+  0 failures, release APK cert d8ba0fc9, delivered dlv-7b17e5b82afb; server
+  restarted on feat/phone-inbox (no live PTYs). Pending: on-device proof
+  (listener access, real WhatsApp capture, RemoteInput send, reminders).
