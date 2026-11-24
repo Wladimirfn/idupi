@@ -38,6 +38,8 @@ export const DUMP_TIMEOUT_MS = 20_000;
 export const CAT_TIMEOUT_MS = 15_000;
 export const REMOVE_TIMEOUT_MS = 10_000;
 export const MAX_XML_BYTES = 8 * 1024 * 1024;
+export const UNLINK_ATTEMPTS = 10;
+export const UNLINK_RETRY_MS = 300;
 
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const MAX_DISPLAY_POLLS = 120;
@@ -234,13 +236,45 @@ export function createHiddenDisplayReader({
         return "";
     }
 
-    async function dumpOnce({ adbPath, serial, displayId, remoteXml, deadline }) {
+    /**
+     * `package/.Activity` launcher component, or null. Validated against the
+     * allowlisted package so nothing else can reach `am start`.
+     */
+    async function resolveLauncher(adbPath, serial, packageName, deadline) {
         const bounded = (stepMs) => Math.max(1, Math.min(stepMs, deadline - nowMs()));
+        try {
+            const result = await run(
+                adbPath,
+                ["-s", serial, "shell", "cmd", "package", "resolve-activity", "--brief", packageName],
+                { timeout: bounded(WAKE_TIMEOUT_MS) },
+            );
+            const lines = String(result?.stdout ?? "").trim().split(/\r?\n/);
+            const component = (lines[lines.length - 1] || "").trim();
+            const escaped = packageName.replace(/\./g, "\\.");
+            return new RegExp(`^${escaped}/[A-Za-z0-9_.$]+$`).test(component) ? component : null;
+        } catch {
+            return null;
+        }
+    }
+
+    async function dumpOnce({ adbPath, serial, displayId, remoteXml, deadline, launcher }) {
+        const bounded = (stepMs) => Math.max(1, Math.min(stepMs, deadline - nowMs()));
+        // Wake only this display's power group: the real screen stays off.
         await run(
             adbPath,
             ["-s", serial, "shell", "input", "-d", String(displayId), "keyevent", "KEYCODE_WAKEUP"],
             { timeout: bounded(WAKE_TIMEOUT_MS) },
         ).catch(() => null);
+        // With the phone locked, scrcpy's --start-app lands while the display
+        // sleeps and the launcher stays on top; starting the activity on the
+        // woken display brings the app's task to the front (verified live).
+        if (launcher) {
+            await run(
+                adbPath,
+                ["-s", serial, "shell", "am", "start", "--display", String(displayId), "-n", launcher],
+                { timeout: bounded(WAKE_TIMEOUT_MS) },
+            ).catch(() => null);
+        }
         if (!(await pause(wakeDelayMs, deadline))) return { ok: false, reason: "timeout" };
         await run(
             adbPath,
@@ -318,6 +352,7 @@ export function createHiddenDisplayReader({
                 return { ok: false, reason: "timeout" };
             }
 
+            const launcher = await resolveLauncher(adbPath, serial, packageName, deadline);
             let nodes = [];
             for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
                 if (attempt > 0 && !(await pause(retryDelayMs, deadline))) {
@@ -329,6 +364,7 @@ export function createHiddenDisplayReader({
                     displayId,
                     remoteXml,
                     deadline,
+                    launcher,
                 });
                 dumpAttempted = true;
                 if (!dump.ok) return { ok: false, reason: dump.reason };
@@ -357,10 +393,17 @@ export function createHiddenDisplayReader({
             }
             await killTree(child);
             if (recordPath) {
-                try {
-                    unlink(recordPath);
-                } catch {
-                    // The temp file may never have been created.
+                // On Windows the recording stays locked until scrcpy has fully
+                // exited, so a single unlink right after the kill can fail and
+                // leave the file behind; retry briefly.
+                for (let attempt = 0; attempt < UNLINK_ATTEMPTS; attempt += 1) {
+                    try {
+                        unlink(recordPath);
+                        break;
+                    } catch (err) {
+                        if (err?.code === "ENOENT") break;
+                        await sleep(UNLINK_RETRY_MS);
+                    }
                 }
             }
         }

@@ -271,12 +271,16 @@ export function createHealthRoutes({ store, adb, collector, now = () => new Date
                 });
             } catch (err) {
                 failures += 1;
+                // The collector's message names packages and reader reasons
+                // ("com.huawei.health:app_not_visible"), never health values.
+                const detail = typeof err?.message === "string" ? err.message.slice(0, 300) : null;
                 job.results.push({
                     source,
                     ok: false,
                     reason: (err && err.code) || "collect_failed",
+                    detail,
                 });
-                log?.warn?.(`[health] refresh ${source} failed: ${(err && err.code) || "error"}`);
+                log?.warn?.(`[health] refresh ${source} failed: ${(err && err.code) || "error"}${detail ? ` (${detail})` : ""}`);
             }
         }
         job.status = failures === job.sources.length ? "failed" : "done";

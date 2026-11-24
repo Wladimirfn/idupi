@@ -65,6 +65,7 @@ function makeHarness(t, {
     connected = true,
     clock = null,
     displayWaitMs,
+    launcherOutput = "",
 } = {}) {
     const calls = { run: [], spawn: [], unlink: [] };
     let dumpCount = 0;
@@ -73,6 +74,9 @@ function makeHarness(t, {
     async function run(command, args) {
         calls.run.push({ command, args: [...args] });
         if (command === "taskkill") return { stdout: "", stderr: "" };
+        if (args[0] === "-s" && args[2] === "shell" && args[3] === "cmd") {
+            return { stdout: launcherOutput, stderr: "" };
+        }
         if (args[0] === "-s" && args[2] === "shell" && args[3] === "input") {
             return { stdout: "", stderr: "" };
         }
@@ -120,6 +124,28 @@ function makeHarness(t, {
     });
     return { reader, calls, dumpCount: () => dumpCount, children };
 }
+
+// --- launcher relaunch (locked phone) --------------------------------------
+
+test("the resolved launcher is started on the woken hidden display", async (t) => {
+    const { reader, calls } = makeHarness(t, {
+        launcherOutput: "priority=0 preferredOrder=0\ncom.huawei.health/.MainActivity\n",
+    });
+    const result = await reader.readApp({ packageName: PKG });
+    assert.equal(result.ok, true);
+    const start = calls.run.find((call) => call.args[3] === "am");
+    assert.deepEqual(start.args, ["-s", SERIAL, "shell", "am", "start", "--display", "3", "-n", "com.huawei.health/.MainActivity"]);
+    const wakeIndex = calls.run.findIndex((call) => call.args[3] === "input");
+    const startIndex = calls.run.findIndex((call) => call.args[3] === "am");
+    const dumpIndex = calls.run.findIndex((call) => call.args[3] === "uiautomator");
+    assert.ok(wakeIndex < startIndex && startIndex < dumpIndex, "wake, then start, then dump");
+});
+
+test("a launcher outside the allowlisted package is never started", async (t) => {
+    const { reader, calls } = makeHarness(t, { launcherOutput: "com.evil.app/.Main\n" });
+    await reader.readApp({ packageName: PKG });
+    assert.equal(calls.run.some((call) => call.args[3] === "am"), false);
+});
 
 // --- pure helpers ----------------------------------------------------------
 
