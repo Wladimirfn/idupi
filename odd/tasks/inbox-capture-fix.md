@@ -107,3 +107,5 @@ Forecast ~400-600 authored lines; one PR stacked on #21.
 - T2 (partial): 4858678 version 43 / 1.42-inbox-capture; app 594 tests / 0
   failures, release APK cert d8ba0fc9, delivered dlv-55e70f495107. Pending:
   owner installs, checks "Estado de captura" and confirms items in Alertas.
+- Confirmed on the device (2026-11-24, 1.43+): real Gmail, Outlook, WhatsApp
+  and Instagram notifications reach the server inbox.

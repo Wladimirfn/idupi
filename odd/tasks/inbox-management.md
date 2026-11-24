@@ -154,3 +154,12 @@ commits by task.
   PendingIntent still firing after that cancel, real group notification shapes,
   and digest summary quality with the live agent (tests use the injected
   runner). Next: T5 delivery (version bump, APK, server restart).
+- Parent review: fix(server) sanitizer also strips spaced/attributed
+  delimiter tags (digest uses `<untrusted_message index=...>`);
+  inbox-sanitize 3/3, inbox suite 78/78.
+- T5 (partial): version 45 / 1.44-inbox-digest, app 643 tests / 0 failures,
+  cert d8ba0fc9, delivered dlv-57401be7d3a7; server restarted (no PTYs).
+  Live evidence: the server inbox holds 15 real items from Gmail, Outlook,
+  WhatsApp and Instagram, some already replied/handled/dismissed by the owner
+  (capture fix confirmed on the device). Pending: owner tries silence-but-read
+  and the group digest on the phone. Next: phase 2 calendar.
