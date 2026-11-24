@@ -173,7 +173,7 @@ class InboxSettingsViewModelTest {
 
         assertNull(fake.lastInboxConfigUpdate)
         assertNotNull(viewModel.agentConfig.value.errorMessage)
-        assertTrue(viewModel.agentConfig.value.errorMessage!!.contains("Completá"))
+        assertTrue(viewModel.agentConfig.value.errorMessage!!.contains("Completa"))
     }
 
     @Test

@@ -885,7 +885,7 @@ private fun RemoteImageArea(
                 ) {
                     Text(
                         text = if (state.streaming) "Esperando el primer frame..."
-                        else "Elegí un monitor y tocá Ver pantalla",
+                        else "Elige un monitor y toca Ver pantalla",
                         style = MaterialTheme.typography.bodyMedium
                     )
                 }
@@ -1441,7 +1441,7 @@ private fun Trackpad(
                 if (!compact) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            text = if (enabled) "Deslizá para mover el cursor"
+                            text = if (enabled) "Desliza para mover el cursor"
                             else "Input apagado en el server",
                             style = MaterialTheme.typography.titleSmall,
                             color = if (enabled) MaterialTheme.colorScheme.onSurface

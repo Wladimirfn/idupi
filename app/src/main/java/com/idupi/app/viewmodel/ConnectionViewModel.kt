@@ -153,7 +153,7 @@ class ConnectionViewModel : ViewModel() {
             // was dropped. Reporting success here would be a lie.
             Log.w(TAG, "Connection profile saved without its token: encryption failed")
             _errorMessage.value =
-                "El perfil se guardó, pero el token no pudo cifrarse. Volvé a ingresarlo."
+                "El perfil se guardó, pero el token no pudo cifrarse. Vuelve a ingresarlo."
             return
         }
 

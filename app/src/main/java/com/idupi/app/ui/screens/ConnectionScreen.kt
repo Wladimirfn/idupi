@@ -81,7 +81,7 @@ fun ConnectionScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             Text(
-                text = "Ingresá los datos de tu servidor local",
+                text = "Ingresa los datos de tu servidor local",
                 color = TextSecondary,
                 fontSize = 14.sp
             )
@@ -156,7 +156,7 @@ fun ConnectionScreen(
                             fontSize = 12.sp
                         )
                         Text(
-                            text = "Asegurate de tener la app de Tailscale activa en Android. Ingresá la IP 100.x.y.z o el nombre MagicDNS de tu máquina (ej: mi-pc.tailnet.ts.net).",
+                            text = "Asegúrate de tener la app de Tailscale activa en Android. Ingresa la IP 100.x.y.z o el nombre MagicDNS de tu máquina (ej: mi-pc.tailnet.ts.net).",
                             color = TextSecondary,
                             fontSize = 11.sp
                         )
@@ -217,7 +217,7 @@ fun ConnectionScreen(
                     modifier = Modifier.fillMaxWidth()
                 )
                 Text(
-                    text = "🔑 Es la clave de acceso de tu servidor. Si estás en modo demo o local sin contraseña, podés dejar la clave por defecto.",
+                    text = "🔑 Es la clave de acceso de tu servidor. Si estás en modo demo o local sin contraseña, puedes dejar la clave por defecto.",
                     color = TextSecondary,
                     fontSize = 11.sp
                 )

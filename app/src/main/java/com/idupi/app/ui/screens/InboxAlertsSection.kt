@@ -277,7 +277,7 @@ private fun CaptureStatusCard(
             if (!status.listenerConnected) {
                 Text(
                     text = if (enabled) {
-                        "Android desconectó el lector; tocá Reconectar"
+                        "Android desconectó el lector; toca Reconectar"
                     } else {
                         "Sin acceso a notificaciones, el lector no puede escuchar."
                     },

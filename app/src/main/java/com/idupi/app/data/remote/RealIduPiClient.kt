@@ -212,7 +212,7 @@ class RealIduPiClient : IduPiClient {
 
     private fun describeHttpFailure(statusCode: Int): String = when (statusCode) {
         401, 403 -> "El servidor respondió $statusCode en $baseUrl: token inválido o ausente. " +
-            "Revisá el token en Conexión — tiene que ser el que imprime el servidor al arrancar."
+            "Revisa el token en Conexión — tiene que ser el que imprime el servidor al arrancar."
         404 -> "El servidor respondió 404 en $baseUrl: la ruta no existe. ¿Puerto correcto?"
         else -> "El servidor respondió $statusCode en $baseUrl."
     }

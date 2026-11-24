@@ -392,7 +392,7 @@ private fun PhoneControlCard(
             }
             if (!accessibilityEnabled) {
                 Text(
-                    text = "Habilitá IDUPI en Accesibilidad para que la PC pueda controlar el teléfono.",
+                    text = "Habilita IDUPI en Accesibilidad para que la PC pueda controlar el teléfono.",
                     style = AppTypography.bodySmall,
                     color = TextSecondary
                 )

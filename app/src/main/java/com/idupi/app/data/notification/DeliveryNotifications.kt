@@ -64,7 +64,7 @@ class DeliveryNotifications(private val context: Context) {
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download_done)
             .setContentTitle("APK lista: ${delivery.name}")
-            .setContentText("Tocá para instalar en este teléfono")
+            .setContentText("Toca para instalar en este teléfono")
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)

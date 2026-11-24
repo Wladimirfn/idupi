@@ -379,7 +379,7 @@ private fun TerminalEndedOverlay(
                     text = error ?: if (state == PtyConnectionState.EXITED) {
                         "El proceso en tu PC ya no está corriendo."
                     } else {
-                        "Revisá la conexión y el token, o volvé atrás."
+                        "Revisa la conexión y el token, o vuelve atrás."
                     },
                     style = AppTypography.bodySmall,
                     color = TextSecondary

@@ -219,7 +219,7 @@ private fun ColumnScope.EmptyState() {
                 modifier = Modifier.size(40.dp)
             )
             Text(
-                "No hay terminales abiertas.\nCreá una con \"Nueva terminal\".",
+                "No hay terminales abiertas.\nCrea una con \"Nueva terminal\".",
                 style = AppTypography.labelSmall,
                 color = TextSecondary.copy(alpha = 0.7f),
                 textAlign = TextAlign.Center

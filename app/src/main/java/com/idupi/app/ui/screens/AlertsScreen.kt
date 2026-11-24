@@ -204,7 +204,7 @@ fun AlertsScreen(
                     value = editText,
                     onValueChange = { editText = it },
                     minLines = 3,
-                    placeholder = { Text("Escribí tu respuesta", color = TextSecondary) },
+                    placeholder = { Text("Escribe tu respuesta", color = TextSecondary) },
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedTextColor = TextPrimary,
                         unfocusedTextColor = TextPrimary,
@@ -461,7 +461,7 @@ private fun InboxItemCard(
                 }
                 if (!canReply) {
                     Text(
-                        text = "Respondé desde la app original",
+                        text = "Responde desde la app original",
                         style = AppTypography.labelSmall,
                         color = TextSecondary
                     )

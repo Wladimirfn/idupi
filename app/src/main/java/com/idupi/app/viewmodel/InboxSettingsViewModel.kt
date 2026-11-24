@@ -213,7 +213,7 @@ class InboxSettingsViewModel(
         if (agent.isEmpty() || model.isEmpty() || effort.isEmpty()) {
             _agentConfig.update {
                 it.copy(
-                    errorMessage = "Completá agente, modelo y esfuerzo",
+                    errorMessage = "Completa agente, modelo y esfuerzo",
                     successMessage = null
                 )
             }

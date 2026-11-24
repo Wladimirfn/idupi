@@ -142,13 +142,13 @@ class AlertsViewModel(
 
     private fun sendReplyText(item: InboxItem, text: String) {
         if (text.isEmpty()) {
-            _errorMessage.value = "Escribí un texto antes de enviar"
+            _errorMessage.value = "Escribe un texto antes de enviar"
             return
         }
         val conversationKey = conversationKeyFor(item)
         if (!hasReplyAction(conversationKey)) {
             _errorMessage.value =
-                "La notificación original ya no está disponible. Respondé desde la app."
+                "La notificación original ya no está disponible. Responde desde la app."
             return
         }
         viewModelScope.launch {
@@ -162,7 +162,7 @@ class AlertsViewModel(
             }
             if (!sent) {
                 _errorMessage.value =
-                    "No se pudo enviar la respuesta. Respondé desde la app original."
+                    "No se pudo enviar la respuesta. Responde desde la app original."
                 return@launch
             }
             try {
