@@ -253,6 +253,13 @@ test("parseArgs handles the calendar subcommands and their options", () => {
         days: 3,
         json: true,
     });
+    // "agenda" is optional before flags.
+    assert.deepEqual(parseArgs(["calendar", "--days", "3"]), {
+        command: "calendar",
+        action: "agenda",
+        days: 3,
+        json: false,
+    });
     assert.deepEqual(parseArgs(["calendar", "free"]), {
         command: "calendar",
         action: "free",

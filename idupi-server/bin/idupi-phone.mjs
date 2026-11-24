@@ -230,6 +230,8 @@ function parseCalendarArgs(rest) {
         return { command: "calendar", action: "agenda", days: 7, json: false };
     }
     const [sub, ...tail] = args;
+    // "agenda" is optional: `calendar --days 3` means `calendar agenda --days 3`.
+    if (sub.startsWith("--")) return parseAgendaArgs(args);
     if (sub === "agenda") return parseAgendaArgs(tail);
     if (sub === "free") return parseFreeArgs(tail);
     if (sub === "propose") return parseProposeArgs(tail);
