@@ -186,3 +186,6 @@ commits by task.
   themes, and provider Instances across month navigation (JVM tests use a
   fake store). No `idupi-server/` changes, no push, no version bump, no
   install.
+- Delivery: 48 / 1.47-agenda-views (dlv-8a2194e51f35), 767 tests. PR slices
+  (stacked, size:exception, task-sized commits): #22 fix/inbox-capture on
+  #21, #23 feat/inbox-management on #22, #24 feat/phone-calendar on #23.
