@@ -57,7 +57,7 @@ integration (after registration), ARTEMIS integration (next feature).
 
 ## Tasks
 
-- [ ] T1 Server: ADB connection manager (saved targets, mDNS connect discovery,
+- [x] T1 Server: ADB connection manager (saved targets, mDNS connect discovery,
   last-known LAN/Tailscale host:port, reconnect, status) + hidden-display
   reader (scrcpy discovery, launch, wake display, dump, parse, cleanup, lock,
   timeouts) with per-app profiles (Huawei Health; Honor Health tentative) +
@@ -105,3 +105,30 @@ then the owner wants the whole chain merged to main.
 
 - Branch created from feat/phone-calendar a8ef150. Wireless ADB paired and
   connected; scrcpy installed (winget Genymobile.scrcpy 5.0.1).
+- T1 done in seven commits: a2aee2f (ADB manager + reader), 4bc1442 (profiles),
+  f7784c6 (store + routes + scheduler), 12b0d40 (CLI), e2435c9 (wiring),
+  31c9ea3 (docs), fb735ac (deadline + split step block follow-up).
+  - `lib/adb-connection.mjs`: `IDUPI_ADB` > SDK path > PATH; scrcpy via
+    `IDUPI_SCRCPY` > PATH > newest winget copy; targets in
+    `data/adb-targets.json` (max 8); ensureConnected order devices -> mDNS
+    `_adb-tls-connect` -> saved serials -> 30000-49999 probe on saved hosts
+    (200 sockets, 300 ms, 45 s cap); pair/connect/status; execFile only.
+  - `lib/hidden-display-reader.mjs`: fixed scrcpy argv, `New display ... id=N`
+    parse, wake with `-d N`, dump+cat+rm, one retry, global mutex, 60 s cap,
+    temp `.mkv` and remote `.xml` deleted in `finally`; allowlist
+    `com.huawei.health` + `com.hihonor.health`.
+  - `lib/health-profiles.mjs`: Huawei "Hoy" parser (`step_text`,
+    `title_text/value_text/goal_text/value_des`, `function_set_items_*`),
+    localized numbers, units, missing -> null; Honor reuses it tentative.
+  - `lib/health-store.mjs` + `lib/health-routes.mjs`: metric schema + ranges,
+    latest capture per source/day wins, 120-day retention, summary with
+    per-metric sources, sources + installedApps, in-memory refresh jobs,
+    ADB routes, 3 h scheduler with no overlap and quiet ADB skips.
+  - App wire shape (T2) documented in `idupi-server/docs/phone.md`
+    (`POST /api/v1/health/samples` + `installedApps`).
+  - Tests: new suites for adb-connection, hidden-display-reader,
+    health-profiles, health-store, health-routes + CLI cases. Full server
+    suite: 72 files, 0 failures; `node --check idupi-server/index.mjs` OK.
+  - Still to verify live (T5/owner): real pair/connect through
+    `idupi-phone health adb`, a hidden-display read with the phone locked, and
+    a stored real "Hoy" sample; Honor prefix on a real Honor device.
