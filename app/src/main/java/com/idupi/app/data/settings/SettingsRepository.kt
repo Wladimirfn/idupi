@@ -39,6 +39,16 @@ interface SettingsRepository {
      */
     val phoneControlEnabled: Flow<Boolean>
 
+    /**
+     * Observed "share my agenda with the PC" switch (phone-calendar T2).
+     * Missing value means ON: reporting starts as soon as the calendar
+     * permission is granted, matching the status-reporting default.
+     */
+    val calendarShareEnabled: Flow<Boolean>
+
+    /** Last calendar the owner saved an event in; empty when none. */
+    val calendarLastUsedId: Flow<String>
+
     suspend fun setThemeMode(mode: ThemeMode)
 
     suspend fun setThemePreset(preset: ThemePreset)
@@ -71,6 +81,10 @@ interface SettingsRepository {
     suspend fun setPhoneStatusEnabled(enabled: Boolean)
 
     suspend fun setPhoneControlEnabled(enabled: Boolean)
+
+    suspend fun setCalendarShareEnabled(enabled: Boolean)
+
+    suspend fun setCalendarLastUsedId(calendarId: String)
 }
 
 /** In-memory [SettingsRepository] backed by [MutableStateFlow]s. */
@@ -79,12 +93,16 @@ class InMemorySettingsRepository(
     initialInbox: InboxSettings = InboxSettings(),
     initialPhoneStatusEnabled: Boolean = true,
     initialPhoneControlEnabled: Boolean = false,
+    initialCalendarShareEnabled: Boolean = true,
+    initialCalendarLastUsedId: String = "",
 ) : SettingsRepository {
 
     private val _themeSettings = MutableStateFlow(initial)
     private val _inboxSettings = MutableStateFlow(initialInbox)
     private val _phoneStatusEnabled = MutableStateFlow(initialPhoneStatusEnabled)
     private val _phoneControlEnabled = MutableStateFlow(initialPhoneControlEnabled)
+    private val _calendarShareEnabled = MutableStateFlow(initialCalendarShareEnabled)
+    private val _calendarLastUsedId = MutableStateFlow(initialCalendarLastUsedId)
 
     override val themeSettings: Flow<ThemeSettings> = _themeSettings.asStateFlow()
 
@@ -93,6 +111,10 @@ class InMemorySettingsRepository(
     override val phoneStatusEnabled: Flow<Boolean> = _phoneStatusEnabled.asStateFlow()
 
     override val phoneControlEnabled: Flow<Boolean> = _phoneControlEnabled.asStateFlow()
+
+    override val calendarShareEnabled: Flow<Boolean> = _calendarShareEnabled.asStateFlow()
+
+    override val calendarLastUsedId: Flow<String> = _calendarLastUsedId.asStateFlow()
 
     override suspend fun setThemeMode(mode: ThemeMode) {
         _themeSettings.update { it.copy(mode = mode) }
@@ -142,5 +164,13 @@ class InMemorySettingsRepository(
 
     override suspend fun setPhoneControlEnabled(enabled: Boolean) {
         _phoneControlEnabled.value = enabled
+    }
+
+    override suspend fun setCalendarShareEnabled(enabled: Boolean) {
+        _calendarShareEnabled.value = enabled
+    }
+
+    override suspend fun setCalendarLastUsedId(calendarId: String) {
+        _calendarLastUsedId.value = calendarId
     }
 }

@@ -15,6 +15,12 @@
          Ajustes requests it. -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
 
+    <!-- Phone calendar (phone-calendar T2/T3): read the phone's calendars and
+         write an event only after the owner confirms it in the app. Both are
+         runtime permissions; Ajustes > CALENDARIO requests them. -->
+    <uses-permission android:name="android.permission.READ_CALENDAR" />
+    <uses-permission android:name="android.permission.WRITE_CALENDAR" />
+
     <!-- Phone control enumerates launchable apps to resolve `open <label>`.
          Without this package-visibility declaration Android 11+ hides them. -->
     <queries>

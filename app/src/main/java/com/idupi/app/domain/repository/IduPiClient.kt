@@ -151,6 +151,30 @@ interface IduPiClient {
     // contract in idupi-server/docs/phone.md ("Status snapshot contract").
     suspend fun postPhoneStatus(status: PhoneStatus)
 
+    // Phone calendar reporting (phone-calendar T2). The phone owns the
+    // calendars; this replaces the PC's snapshot of the next 14 days.
+    suspend fun postPhoneCalendar(snapshot: PhoneCalendarSnapshot)
+
+    /**
+     * Pending PC proposals, newest first (phone-calendar T3). The PC never
+     * writes to a calendar: the owner approves or rejects each one here.
+     */
+    suspend fun getPhoneCalendarProposals(
+        status: String = PhoneCalendarProposalStatus.PENDING,
+        limit: Int = 50,
+    ): PhoneCalendarProposalsResponse
+
+    /**
+     * Reports the owner's decision. Throws [com.idupi.app.data.remote.IduPiHttpException]
+     * with 409 when the proposal was already decided or expired, and 404 when
+     * it no longer exists.
+     */
+    suspend fun decidePhoneCalendarProposal(
+        id: String,
+        decision: String,
+        eventId: String? = null,
+    ): PhoneCalendarProposal
+
     /**
      * Phone long-poll for the next PC command (phone-agent T3).
      *

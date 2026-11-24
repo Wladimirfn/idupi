@@ -137,6 +137,22 @@ class DataStoreSettingsRepository(
         dataStore.edit { prefs -> prefs[PHONE_CONTROL_ENABLED_KEY] = enabled }
     }
 
+    // Missing key means ON: sharing the agenda is opt-out, like the phone
+    // status report. Without READ_CALENDAR the reporter still sends nothing.
+    override val calendarShareEnabled: Flow<Boolean> =
+        dataStore.data.map { prefs -> prefs[CALENDAR_SHARE_ENABLED_KEY] ?: true }
+
+    override suspend fun setCalendarShareEnabled(enabled: Boolean) {
+        dataStore.edit { prefs -> prefs[CALENDAR_SHARE_ENABLED_KEY] = enabled }
+    }
+
+    override val calendarLastUsedId: Flow<String> =
+        dataStore.data.map { prefs -> prefs[CALENDAR_LAST_USED_ID_KEY].orEmpty() }
+
+    override suspend fun setCalendarLastUsedId(calendarId: String) {
+        dataStore.edit { prefs -> prefs[CALENDAR_LAST_USED_ID_KEY] = calendarId }
+    }
+
     private inline fun <reified T : Enum<T>> enumValue(raw: String?, fallback: T): T =
         raw?.let { stored -> enumValues<T>().firstOrNull { it.name == stored } } ?: fallback
 
@@ -182,5 +198,13 @@ class DataStoreSettingsRepository(
         /** phone-agent T3: execute PC commands through accessibility; default OFF. */
         val PHONE_CONTROL_ENABLED_KEY: Preferences.Key<Boolean> =
             booleanPreferencesKey("phone_control_enabled")
+
+        /** phone-calendar T2: share the agenda with the PC; default ON. */
+        val CALENDAR_SHARE_ENABLED_KEY: Preferences.Key<Boolean> =
+            booleanPreferencesKey("calendar_share_enabled")
+
+        /** phone-calendar T3: last calendar chosen in the add-event sheet. */
+        val CALENDAR_LAST_USED_ID_KEY: Preferences.Key<String> =
+            stringPreferencesKey("calendar_last_used_id")
     }
 }
