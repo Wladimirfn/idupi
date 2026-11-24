@@ -104,3 +104,6 @@ Forecast ~400-600 authored lines; one PR stacked on #21.
   `requestRebind` after an APK update; OEM battery-kill recovery while the
   permission still reads granted; queue drain across a real PC outage and a
   process restart. T2's phone install and owner confirmation cover these.
+- T2 (partial): 4858678 version 43 / 1.42-inbox-capture; app 594 tests / 0
+  failures, release APK cert d8ba0fc9, delivered dlv-55e70f495107. Pending:
+  owner installs, checks "Estado de captura" and confirms items in Alertas.
