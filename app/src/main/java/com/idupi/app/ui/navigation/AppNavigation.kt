@@ -32,7 +32,7 @@ enum class Screen(val title: String) {
     WELCOME("Bienvenido"),
     CONNECTION("Conexión"),
     DASHBOARD("Dashboard"),
-    ALERTS("Alertas Supervisor"),
+    ALERTS("Alertas"),
     PROJECTS("Proyectos"),
     TERMINALS("Terminales"),
     CONSOLE("Procesos"),

@@ -110,8 +110,8 @@ class AlertsViewModel(
     fun triggerTestNotification(context: Context) {
         val testAlert = SupervisorAlert(
             id = "test-${System.currentTimeMillis()}",
-            title = "Alerta de Prueba del Supervisor",
-            description = "El sistema de notificaciones de IDUPI funciona correctamente. Recibirás alertas del orquestador en tiempo real.",
+            title = "Alerta de prueba",
+            description = "El sistema de notificaciones de IDUPI funciona correctamente. Recibirás alertas en tiempo real.",
             severity = AlertSeverity.WARNING,
             category = com.idupi.app.domain.model.AlertCategory.GOVERNANCE_GATE,
             timestamp = "Ahora",

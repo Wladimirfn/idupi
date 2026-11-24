@@ -18,7 +18,7 @@ class SupervisorNotificationManager(private val context: Context) {
 
     companion object {
         const val CHANNEL_ID = "idupi_supervisor_alerts"
-        const val CHANNEL_NAME = "Alertas Idu-Pi Supervisor"
+        const val CHANNEL_NAME = "Alertas IDUPI"
     }
 
     init {
@@ -29,7 +29,7 @@ class SupervisorNotificationManager(private val context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val importance = NotificationManager.IMPORTANCE_HIGH
             val channel = NotificationChannel(CHANNEL_ID, CHANNEL_NAME, importance).apply {
-                description = "Notificaciones en tiempo real del supervisor Idu-pi para la app IDUPI"
+                description = "Alertas en tiempo real de la app IDUPI"
                 enableVibration(true)
             }
             notificationManager.createNotificationChannel(channel)
