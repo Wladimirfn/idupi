@@ -73,6 +73,11 @@ import { createOsProcessesRoutes } from "./lib/os-processes-routes.mjs";
 import { createInboxAgentRunner } from "./lib/inbox-agent.mjs";
 import { createInboxStore } from "./lib/inbox-store.mjs";
 import { createInboxRoutes } from "./lib/inbox-routes.mjs";
+// Phone agent (phone-agent, T1): status ingest plus the PC-to-phone command
+// queue and its two long polls. Status is persisted in data/, commands are
+// memory-only so a restart never replays a stale tap.
+import { createPhoneStore } from "./lib/phone-store.mjs";
+import { createPhoneRoutes } from "./lib/phone-routes.mjs";
 // Browser view of those same PTYs (live-shared-terminals T2): loopback-only
 // static files, served before auth because they hold no secrets.
 import { createTerminalWebRoutes } from "./lib/terminal-web-routes.mjs";
@@ -1309,6 +1314,13 @@ const handleInboxRoute = createInboxRoutes({
     runner: inboxRunner,
     openCodeModels: () => openCodeCli.listAllModels(),
 });
+
+// Phone agent: the phone reports status and collects queued commands here; the
+// PC CLI asks for status and enqueues actions. Same data dir as the inbox.
+const phoneStore = createPhoneStore({
+    dataDir: fileURLToPath(new URL("./data", import.meta.url)),
+});
+const handlePhoneRoute = createPhoneRoutes({ store: phoneStore });
 
 /**
  * Resolves WHAT to spawn for an inbox agent without a shell. Mirrors the
@@ -3254,6 +3266,8 @@ const handleRequest = async (req, res) => {
     if (await handleOsProcessesRoute(req, res, pathname)) return;
     // Phone inbox items, agent config and model catalog (lib/inbox-routes.mjs).
     if (await handleInboxRoute(req, res, pathname)) return;
+    // Phone agent status and command queue (lib/phone-routes.mjs).
+    if (await handlePhoneRoute(req, res, pathname)) return;
 
     // 0. Stream de eventos del chat (SSE). Long-lived: no responde y sigue abierto.
     if (pathname === "/api/v1/chat/stream" && req.method === "GET") {
