@@ -50,7 +50,8 @@ private enum class TerminalFilter(val label: String, val icon: ImageVector) {
 fun ConsoleScreen(
     viewModel: ConsoleViewModel,
     onMenuClick: () -> Unit,
-    onOpenPtyTerminal: (String?) -> Unit
+    onOpenPtyTerminal: (String?) -> Unit,
+    onOpenDeliveries: () -> Unit
 ) {
     val logs by viewModel.logs.collectAsState()
     val terminals by viewModel.terminals.collectAsState()
@@ -196,6 +197,11 @@ fun ConsoleScreen(
                     onOpenNew = { onOpenPtyTerminal(null) },
                     onAttach = { id -> onOpenPtyTerminal(id) }
                 )
+
+                // Shortcut to the APK deliveries pushed from the PC: the
+                // notification lands here too, this card is for when the
+                // owner is already in the console.
+                DeliveriesShortcutCard(onOpen = onOpenDeliveries)
 
                 // Selected terminal info card (compact)
                 selectedTerminal?.let { term ->
@@ -682,6 +688,74 @@ fun ConsoleScreen(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Entry point to the APK deliveries screen, styled like the interactive
+ * terminal card above it: one line of what it is, one button to the list.
+ */
+@Composable
+private fun DeliveriesShortcutCard(onOpen: () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = AppShapes.card,
+        color = SlateCard,
+        border = androidx.compose.foundation.BorderStroke(1.dp, PrimaryIndigo.copy(alpha = 0.45f))
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(AppSpacing.md),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(PrimaryIndigo.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.FileDownload,
+                    contentDescription = null,
+                    tint = PrimaryIndigo,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "Entregas",
+                    style = AppTypography.bodySmall.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    ),
+                    color = TextPrimary
+                )
+                Text(
+                    "APKs enviadas desde la PC con idupi-push",
+                    style = AppTypography.labelSmall.copy(fontSize = 10.sp),
+                    color = TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Button(
+                onClick = onOpen,
+                shape = AppShapes.button,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = PrimaryIndigo,
+                    contentColor = Color.White
+                ),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                Text(
+                    "Abrir",
+                    style = AppTypography.labelSmall.copy(fontWeight = FontWeight.Bold)
+                )
             }
         }
     }

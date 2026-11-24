@@ -323,6 +323,36 @@ class FakeIduPiClient : IduPiClient {
         return killPtyResult
     }
 
+    // --- APK deliveries ---
+
+    var deliveriesToReturn: List<com.idupi.app.domain.model.DeliveryInfo> = emptyList()
+    var deliveryDownloadChunks: Map<String, List<ByteArray>> = emptyMap()
+    var failDeliveryDownloadWith: Exception? = null
+    var deleteDeliveryResult: Boolean = true
+    var listDeliveriesCalls: Int = 0
+    val deletedDeliveryIds = mutableListOf<String>()
+
+    override suspend fun listDeliveries(): List<com.idupi.app.domain.model.DeliveryInfo> {
+        maybeFail()
+        listDeliveriesCalls++
+        return deliveriesToReturn
+    }
+
+    override fun downloadDelivery(id: String): Flow<ByteArray> {
+        val chunks = deliveryDownloadChunks[id] ?: emptyList()
+        val failure = failDeliveryDownloadWith ?: failWith
+        return flow {
+            failure?.let { throw it }
+            chunks.forEach { emit(it) }
+        }
+    }
+
+    override suspend fun deleteDelivery(id: String): Boolean {
+        maybeFail()
+        deletedDeliveryIds.add(id)
+        return deleteDeliveryResult
+    }
+
     override fun connectChat(): Flow<ChatEvent> = chatEvents.asSharedFlow()
 
     override suspend fun sendMessage(message: String) {

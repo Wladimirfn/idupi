@@ -65,6 +65,19 @@ interface IduPiClient {
     suspend fun ptyResize(id: String, cols: Int, rows: Int)
     suspend fun killPty(id: String): Boolean
 
+    // APK deliveries pushed from the PC (`idupi-push <archivo.apk>`).
+    suspend fun listDeliveries(): List<DeliveryInfo>
+
+    /**
+     * Streams one delivery's APK bytes. Chunked like [ptyStream] so the
+     * installer can write straight into a PackageInstaller session instead of
+     * buffering the whole APK in memory.
+     */
+    fun downloadDelivery(id: String): Flow<ByteArray>
+
+    /** `false` when the server reports 404 (already gone). */
+    suspend fun deleteDelivery(id: String): Boolean
+
     fun connectChat(): Flow<ChatEvent>
     suspend fun sendMessage(message: String)
 

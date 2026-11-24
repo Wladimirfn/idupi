@@ -50,3 +50,5 @@ idupi-server/drivers/
 
 # Detached server logs (scripts/start-server.ps1)
 idupi-server/logs/
+# APK snapshots registered by idupi-push (lib/delivery-registry.mjs)
+idupi-server/deliveries/

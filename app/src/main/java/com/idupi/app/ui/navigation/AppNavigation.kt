@@ -39,6 +39,7 @@ enum class Screen(val title: String) {
     SESSIONS("Sesiones"),
     CONSOLE("Terminal"),
     PTY_TERMINAL("Terminal interactiva"),
+    DELIVERIES("Entregas"),
     REMOTE("Escritorio Remoto"),
     SETTINGS("Ajustes")
 }
@@ -63,10 +64,21 @@ fun AppNavigation() {
     val consoleViewModel: ConsoleViewModel = viewModel()
     val ptyTerminalViewModel: PtyTerminalViewModel = viewModel()
     val remoteViewModel: RemoteScreenViewModel = viewModel()
+    val deliveriesViewModel: DeliveriesViewModel = viewModel()
 
     // Interactive terminal target chosen from the Console screen: null means
     // "create a new PTY"; an id attaches to one already running on the PC.
     var ptyTerminalTargetId by remember { mutableStateOf<String?>(null) }
+
+    // Notification taps arrive before/after Compose starts; MainActivity parks
+    // the requested screen here and this effect routes to it once.
+    val requestedScreen by AppNavigationIntents.pending.collectAsState()
+    LaunchedEffect(requestedScreen) {
+        val target = requestedScreen ?: return@LaunchedEffect
+        AppNavigationIntents.clear()
+        previousScreen = currentScreen
+        currentScreen = target
+    }
 
     // Central error surface: every ViewModel's errorMessage is observed here and
     // shown via a single shared snackbar, instead of wiring it in each screen.
@@ -78,6 +90,7 @@ fun AppNavigation() {
     ObserveViewModelError(projectsViewModel.errorMessage, snackbarHostState, projectsViewModel::clearError)
     ObserveViewModelError(sessionsViewModel.errorMessage, snackbarHostState, sessionsViewModel::clearError)
     ObserveViewModelError(consoleViewModel.errorMessage, snackbarHostState, consoleViewModel::clearError)
+    ObserveViewModelError(deliveriesViewModel.errorMessage, snackbarHostState, deliveriesViewModel::clearError)
 
     // Manejo de BackButton del sistema
     androidx.activity.compose.BackHandler(enabled = drawerState.isOpen || currentScreen != Screen.CHAT) {
@@ -130,6 +143,11 @@ fun AppNavigation() {
                 else -> {
                     ModalNavigationDrawer(
                         drawerState = drawerState,
+                        // Swipe-to-open hijacked ordinary horizontal drags
+                        // (terminal pan, chip rows, lists). Every screen has a
+                        // menu button, so the drawer opens only from it; once
+                        // open, swiping still closes it.
+                        gesturesEnabled = drawerState.isOpen,
                         drawerContent = {
                             ModalDrawerSheet(
                                 drawerContainerColor = SlateCard,
@@ -189,6 +207,7 @@ fun AppNavigation() {
                                     Screen.DASHBOARD to Icons.Default.Dashboard,
                                     Screen.SESSIONS to Icons.Default.History,
                                     Screen.CONSOLE to Icons.Default.Terminal,
+                                    Screen.DELIVERIES to Icons.Default.FileDownload,
                                     Screen.SETTINGS to Icons.Default.Settings
                                 )
 
@@ -294,12 +313,17 @@ fun AppNavigation() {
                                 onOpenPtyTerminal = { targetId ->
                                     ptyTerminalTargetId = targetId
                                     navigateTo(Screen.PTY_TERMINAL)
-                                }
+                                },
+                                onOpenDeliveries = { navigateTo(Screen.DELIVERIES) }
                             )
                             Screen.PTY_TERMINAL -> PtyTerminalScreen(
                                 viewModel = ptyTerminalViewModel,
                                 ptyId = ptyTerminalTargetId,
                                 onBack = { currentScreen = Screen.CONSOLE }
+                            )
+                            Screen.DELIVERIES -> DeliveriesScreen(
+                                viewModel = deliveriesViewModel,
+                                onMenuClick = { scope.launch { drawerState.open() } }
                             )
                             Screen.REMOTE -> RemoteScreen(
                                 viewModel = remoteViewModel,

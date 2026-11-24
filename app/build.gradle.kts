@@ -32,8 +32,8 @@ android {
         // "which APK am I running" is answerable from the system settings.
         // Same-versionCode installs get silently skipped by some phone
         // installers -- that is how a stale build masqueraded as the new one.
-        versionCode = 32
-        versionName = "1.31-terminal-scroll"
+        versionCode = 34
+        versionName = "1.33-drawer-swipe"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
