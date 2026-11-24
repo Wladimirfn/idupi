@@ -148,3 +148,6 @@ stacked PRs (same as #18 → #19 → #20).
 - T4 (partial): version 42 / 1.41-phone-agent; app 563 tests / 0 failures,
   release APK cert d8ba0fc9, delivered to the phone. Server restart pending the
   owner's OK (a live PTY was open), then live e2e with idupi-phone.
+  2026-11-24: server started on feat/phone-agent after the PC reboot (no live
+  PTYs); branch pushed and stacked PR #21 opened on #20. Pending: the phone
+  has not reported status yet (`idupi-phone status`: no data); live e2e.
