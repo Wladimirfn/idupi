@@ -113,6 +113,41 @@ object IdupiCommandCatalog {
             )
         ),
         IdupiCommandSection(
+            title = "Teléfono (idupi-phone)",
+            commands = listOf(
+                IdupiCommand(
+                    title = "Estado del teléfono",
+                    command = "idupi-phone status",
+                    description = "Batería, señal, red y uso de hoy."
+                ),
+                IdupiCommand(
+                    title = "Leer la pantalla",
+                    command = "idupi-phone screen",
+                    description = "Devuelve la pantalla visible como texto."
+                ),
+                IdupiCommand(
+                    title = "Abrir una app",
+                    command = "idupi-phone open whatsapp",
+                    description = "Abre una app por nombre o paquete."
+                ),
+                IdupiCommand(
+                    title = "Tocar un elemento",
+                    command = "idupi-phone tap \"Enviar\"",
+                    description = "Toca un elemento por su texto visible."
+                ),
+                IdupiCommand(
+                    title = "Escribir y enviar",
+                    command = "idupi-phone type \"hola\" --submit",
+                    description = "Escribe en el campo activo y presiona enviar."
+                ),
+                IdupiCommand(
+                    title = "Volver atrás",
+                    command = "idupi-phone back",
+                    description = "Ejecuta el botón Atrás del sistema."
+                )
+            )
+        ),
+        IdupiCommandSection(
             title = "Compilar la app",
             commands = listOf(
                 IdupiCommand(
