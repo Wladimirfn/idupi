@@ -134,3 +134,7 @@ commits by task.
   rendering on the owner's phone, runtime permission dialogs and the insert
   dialog, ContentObserver delivery on the real provider, and the notification
   channel. No `idupi-server/` changes, no push, no version bump, no install.
+- T4 (partial): version 46 / 1.45-calendar, app 725 tests / 0 failures,
+  cert d8ba0fc9, delivered dlv-365d557daa7e; server restarted (no PTYs);
+  `idupi-phone calendar` answers "Sin datos del calendario todavía" until the
+  owner installs and grants the calendar permission. Pending: live check.
