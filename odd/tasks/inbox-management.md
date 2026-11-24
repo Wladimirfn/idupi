@@ -44,11 +44,11 @@ provider), mail API search.
 
 ## Tasks
 
-- [ ] T1 Neutral Spanish: agent prompt rule (neutral Latin American Spanish,
+- [x] T1 Neutral Spanish: agent prompt rule (neutral Latin American Spanish,
   tú, no voseo/regionalisms, match the sender's formality) + server test; every
   voseo string in `app/` rewritten neutral; a unit test that fails on voseo
   forms in app Kotlin string literals.
-- [ ] T2 Alertas cleanup: closed items (replied, auto_replied, handled,
+- [x] T2 Alertas cleanup: closed items (replied, auto_replied, handled,
   dismissed) leave the Alertas list; server prunes closed items after 24 h;
   remove the "Alerta de prueba" action and its code.
 - [ ] T3 Installed apps + follow list: phone lists launchable apps; Ajustes
@@ -81,3 +81,15 @@ commits by task.
 ## Progress
 
 - Branch created from fix/inbox-capture eec0cc4.
+- T1 done in cb143f9: `buildInboxPrompt` now requires neutral Latin American
+  Spanish, tú/usted by the sender's formality, never voseo or regional slang,
+  with the JSON contract unchanged; 18 voseo strings rewritten across 17 Kotlin
+  files; `NeutralSpanishCopyTest` walks `src/main/java` and `src/main/res` and
+  fails on the explicit voseo word list. Checks: inbox-agent 18/18; app
+  595/595 tests and assembleRelease.
+- T2 done in 01019ef: closed states never enter the Alertas list, Atendida,
+  Descartar and replies remove the card optimistically and restore it with an
+  inline error when the live send or state update fails; "Todas", the closed
+  state labels and the "Alerta de prueba" action are gone; `inbox-store` prunes
+  closed items older than 24 h on load, write and list with an injectable clock.
+  Checks: inbox suites 18 + 11 + 15 pass; app 596/596 tests and assembleRelease.
