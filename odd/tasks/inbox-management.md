@@ -121,3 +121,9 @@ commits by task.
   notification shapes, PackageManager label and visibility behavior on the
   owner's Android build, and the DataStore upgrade over a set saved by an older
   build.
+- Parent review: fix(server) accept uppercase letters in package names (Android
+  allows them; a 400 would make the retry queue drop the message silently).
+- Interim delivery (T1-T3): version 44 / 1.43-inbox-apps, app 616 tests /
+  0 failures, cert d8ba0fc9, delivered dlv-f4f867dfd334; server restarted on
+  feat/inbox-management (no live PTYs). Next: T4 needs the owner decision on
+  muted groups; then phase 2 calendar.
