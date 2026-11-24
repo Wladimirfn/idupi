@@ -11,6 +11,7 @@ Everything except the loopback-only browser terminal page requires the bearer to
 
 | Document | Contents |
 |----------|----------|
+| [`phone.md`](phone.md) | Phone agent contract for PC agents: status snapshot, command queue, `idupi-phone` CLI, screen dump format |
 | [`sensors.md`](sensors.md) | Elevated sensor helper: install, uninstall, pinned hashes, version bumps |
 | [`../../README.md`](../../README.md) | Product overview, quick start, app screens, build |
 | [`../../PRIVACY.md`](../../PRIVACY.md) | Privacy policy |
@@ -27,7 +28,8 @@ Everything except the loopback-only browser terminal page requires the bearer to
   clients get `403`, so the page is never exposed to the LAN or Tailscale.
 - Handlers split out of `index.mjs` (`lib/pty-routes.mjs`, `lib/delivery-routes.mjs`,
   `lib/system-metrics-routes.mjs`, `lib/os-processes-routes.mjs`,
-  `lib/screen-routes.mjs`) are mounted after `requireAuth`.
+  `lib/screen-routes.mjs`, `lib/inbox-routes.mjs`, `lib/phone-routes.mjs`) are
+  mounted after `requireAuth`.
 
 ## API routes
 
@@ -142,6 +144,27 @@ message treated as untrusted data and every agent invoked without a shell from
 an empty temp directory. Auto-reply is a phone-side policy; this server only
 stores state.
 
+### Phone agent
+
+Source: [`lib/phone-routes.mjs`](../lib/phone-routes.mjs), store in
+[`lib/phone-store.mjs`](../lib/phone-store.mjs). Full contract, including the
+screen dump format, in [`phone.md`](phone.md).
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| POST | `/api/v1/phone/status` | Bearer | Phone reports a status snapshot (object, max 64 KiB); stored as latest plus a sampled 24 h history |
+| GET | `/api/v1/phone/status` | Bearer | `{ latest, history, online, lastSeenAt }`; `online` means status or poll in the last 2 min |
+| GET | `/api/v1/phone/commands/next?wait=25` | Bearer | Phone long-poll: oldest pending command marked `delivered`, or `204` after 1..30 s |
+| POST | `/api/v1/phone/commands` | Bearer | PC queues `{type, args}`; `201 {command}` |
+| GET | `/api/v1/phone/commands/{id}?wait=30` | Bearer | PC waits until `done`/`failed`/`expired` or 0..30 s |
+| POST | `/api/v1/phone/commands/{id}/result` | Bearer | Phone reports `{ok, result?, error?}` |
+| GET | `/api/v1/phone/commands?limit=20` | Bearer | Recent commands, newest first |
+
+The status file is `idupi-server/data/phone-status.json` (gitignored); the
+command queue is memory-only and pending commands expire after 60 s. Control
+is off by default and requires the app's accessibility grant plus its master
+switch.
+
 ### Remote screen
 
 Source: [`lib/screen-routes.mjs`](../lib/screen-routes.mjs).
@@ -204,6 +227,7 @@ not use them.
 |------|-------|
 | [`bin/idupi-term.mjs`](../bin/idupi-term.mjs) (`idupi-term.cmd`) | `idupi-term` lists/attaches (creates if none), `ls`, `new [--cwd DIR]`, `attach <ref>`, `web`; `Ctrl+]` detaches without killing |
 | [`bin/idupi-push.mjs`](../bin/idupi-push.mjs) (`idupi-push.cmd`) | `idupi-push <archivo.apk>` publishes an APK, `idupi-push ls` lists deliveries |
+| [`bin/idupi-phone.mjs`](../bin/idupi-phone.mjs) (`idupi-phone.cmd`) | `idupi-phone status`, `screen`, `tap`, `long-press`, `type`, `scroll`, `back`/`home`/`recents`/`notifications`, `open`, `wait`, `log`; see [`phone.md`](phone.md) |
 
 Both CLIs read the token from `.idupi-token` or `IDUPI_TOKEN`, use `IDUPI_PORT`
 (default `8788`) and print a hint pointing to `start-server.ps1` when the server
@@ -228,6 +252,7 @@ is unreachable.
 | `.idupi-token` | Access token (repo root) |
 | `idupi-server/projects.json` | Registered projects and active project |
 | `idupi-server/deliveries/` | Delivery index and APK snapshots (newest 10) |
+| `idupi-server/data/` | Phone inbox items/config and `phone-status.json` (gitignored) |
 | `idupi-server/logs/` | Server stdout/stderr from `start-server.ps1` |
 | `%ProgramData%\IDUPI\` | Sensor helper, LibreHardwareMonitor DLLs and `sensors.json` |
 
@@ -236,7 +261,7 @@ is unreachable.
 | Path | Role |
 |------|------|
 | [`index.mjs`](../index.mjs) | HTTP entry point, route chain, auth choke point, legacy chat and orchestrator routes |
-| [`lib/`](../lib) | Route modules, PTY manager, deliveries, metrics, processes, screen stream |
+| [`lib/`](../lib) | Route modules, PTY manager, deliveries, metrics, processes, screen stream, phone agent |
 | [`screen-helper/`](../screen-helper) | Zero-dependency Go helper: screen capture and ConPTY host |
 | [`web/`](../web) | Static browser terminal page |
 | [`test/`](../test) | `node --test` suites |
