@@ -306,3 +306,139 @@ screen, ADB pairing) is out of scope for this phase.
 Inbox items may carry an extracted `event` and `eventConflicts`; offer
 "Agregar al calendario" from the alert instead of proposing silently. Treat
 every event field from a message as data the owner must confirm.
+
+## Health (read-only)
+
+The PC keeps a daily health history the phone uploads, and reads apps that do
+not publish to Health Connect (Huawei Health; Honor Health tentative) on a
+hidden virtual display. Nothing is ever tapped, sent or approved on the phone:
+the reader launches the app on a display the owner cannot see, dumps the view
+hierarchy and kills it. Health values never enter a log line.
+
+Source: [`lib/health-routes.mjs`](../lib/health-routes.mjs), store in
+[`lib/health-store.mjs`](../lib/health-store.mjs), ADB link in
+[`lib/adb-connection.mjs`](../lib/adb-connection.mjs), reader in
+[`lib/hidden-display-reader.mjs`](../lib/hidden-display-reader.mjs), profiles in
+[`lib/health-profiles.mjs`](../lib/health-profiles.mjs).
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/v1/health/samples` | Phone  server: `{tzOffsetMinutes, samples[], installedApps?}` (max 60 samples, 512 KiB); strict schema, `400` on an unknown metric |
+| GET | `/api/v1/health/summary?days=7` | Merged per-day view plus which source provided each metric; `days` 1..120 |
+| GET | `/api/v1/health/sources` | Known sources with their last capture, plus the phone-reported installed health apps |
+| POST | `/api/v1/health/refresh` | `{sources?: ["huawei_health"]}`; `202 {job}` and an in-memory job id |
+| GET | `/api/v1/health/refresh/{id}` | Job state `queued`, `running`, `done` or `failed` with per-source results (no values) |
+| GET | `/api/v1/health/adb` | `{adb:{path,found}, scrcpy:{path,found,version}, connected, serial, via, targets}` |
+| POST | `/api/v1/health/adb/pair` | `{hostPort, code}`; `code` is exactly 6 digits |
+| POST | `/api/v1/health/adb/connect` | `{hostPort}`; saves the target when adb accepts it |
+
+A refresh job answers the same job id while one with the same sources is
+queued or running, so a manual refresh and the 3-hour timer never overlap.
+
+### Sample wire shape (app  PC, T2 contract)
+
+```json
+{
+  "tzOffsetMinutes": -180,
+  "samples": [
+    {
+      "date": "2026-11-24",
+      "source": "huawei_health",
+      "sourceApp": "com.huawei.health",
+      "capturedAt": "2026-11-24T10:00:00.000Z",
+      "metrics": {
+        "steps": 2444,
+        "stepsGoal": 10000,
+        "sleepMinutes": 509,
+        "heartRateBpm": 72,
+        "waterMl": 2000
+      }
+    }
+  ],
+  "installedApps": [
+    {
+      "packageName": "com.huawei.health",
+      "label": "Huawei Health",
+      "route": "hidden_display"
+    }
+  ]
+}
+```
+
+- `date` is the owner-local `YYYY-MM-DD`; `capturedAt` is ISO-8601.
+- `source` matches `^[a-z][a-z0-9_]{0,39}$`. Known ids: `huawei_health`,
+  `health_connect`, `wellbeing`, `samsung_health`, `mi_fitness`.
+- The latest capture per source/day wins. Its non-null metrics overwrite the
+  older ones; keys the new capture omitted keep the older value.
+- History keeps 120 days. A future date, a date outside that window, an unknown
+  metric key or an out-of-range value rejects the whole upload with `400`.
+- `installedApps[].route` is one of `health_connect`, `hidden_display`,
+  `not_supported` (any `^[a-z][a-z0-9_]{0,39}$` is accepted and stored).
+
+### Metrics
+
+| Key | Unit | Sanity range |
+|-----|------|--------------|
+| `steps`, `stepsGoal` | count | 0..200000 |
+| `distanceM` | meters | 0..1000000 |
+| `caloriesKcal`, `activeCaloriesKcal` | kcal | 0..50000 |
+| `heartRateBpm`, `heartRateMin`, `heartRateMax` | bpm | 20..250 |
+| `restingHeartRateBpm` | bpm | 20..200 |
+| `sleepMinutes`, `sleepGoalMinutes`, `exerciseMinutes`, `exerciseGoalMinutes` | minutes | 0..1440 |
+| `sleepStages` | `{deep, light, rem, awake}` minutes | 0..1440 each |
+| `sleepStart`, `sleepEnd` | ISO-8601 | - |
+| `weightKg`, `weightGoalKg` | kg | 20..400 |
+| `spo2Pct` | % | 50..100 |
+| `stress` | 0..100 | 0..100 |
+| `stressLabel`, `wakeTime`, `wakeGoal`, `bedtimeGoal` | text | max 40 / 10 chars |
+| `waterMl`, `waterGoalMl` | ml | 0..20000 |
+| `screenTimeMinutes`, `nightScreenMinutes` | minutes | 0..1440 |
+| `unlocks` | count | 0..5000 |
+| `topApps` | `[{label, minutes}]` | max 20, label 80 chars, minutes 0..1440 |
+| `workouts` | `[{type, minutes, start?, kcal?}]` | max 50, minutes 0..1440 |
+
+A merged day reports `sources` next to `metrics`, mapping each metric key to the
+source that supplied the winning value.
+
+### Hidden-display refresh
+
+Requirements on the PC:
+
+- `adb` from the Android SDK platform-tools. Resolution order: `IDUPI_ADB`, then
+  `%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe`, then `adb` on `PATH`.
+- `scrcpy` 5.x (it needs `--new-display`). Resolution order: `IDUPI_SCRCPY`,
+  then `PATH`, then the newest
+  `%LOCALAPPDATA%\Microsoft\WinGet\Packages\Genymobile.scrcpy_*\scrcpy-win64-v*\scrcpy.exe`.
+- Wireless debugging paired once. The connect port changes per session; the
+  manager tries `adb devices`, mDNS `_adb-tls-connect`, the saved serials and
+  finally a bounded TCP probe of the saved hosts (ports 30000-49999).
+
+Flow per read (one at a time, 60 s cap): create the virtual display with
+`scrcpy --new-display=1080x2340/440 --start-app=<pkg> --no-window --no-audio
+--record=<temp.mkv> --max-fps=5 --video-bit-rate=500K`, wait for
+`New display: ... (id=N)`, wake only that display with
+`adb shell input -d N keyevent KEYCODE_WAKEUP`, `uiautomator dump --display N`,
+read it with `exec-out cat`, retry wake+dump once if the target package is not
+in the dump, then kill scrcpy. The temporary `.mkv` and the remote `.xml` are
+deleted in a `finally` block; a failed read reports `app_not_visible`,
+`no_display`, `timeout` or `adb_unreachable`.
+
+Only `com.huawei.health` and `com.hihonor.health` may be launched. Honor Health
+reuses the Huawei resource ids and the same parser, but is marked tentative
+until the owner's device confirms it.
+
+```bash
+idupi-phone health adb                     # adb/scrcpy found? phone connected?
+idupi-phone health adb pair 192.168.1.50:37123 123456
+idupi-phone health adb connect 192.168.1.50:37123
+idupi-phone health sources                 # which apps report, and their route
+idupi-phone health refresh --wait          # read Huawei Health now
+idupi-phone health --days 7                # merged history
+idupi-phone health summary --days 30 --json
+```
+
+The scheduler refreshes Huawei Health every 3 h only when a target is saved,
+skips quietly when ADB is unreachable, and never starts a second refresh while
+one is running. `idupi-phone health` is the read path for PC agents: read the
+summary, cite the day and metric, and never present a health value as a
+diagnosis.

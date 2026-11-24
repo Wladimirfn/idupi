@@ -11,7 +11,7 @@ Everything except the loopback-only browser terminal page requires the bearer to
 
 | Document | Contents |
 |----------|----------|
-| [`phone.md`](phone.md) | Phone agent contract for PC agents: status snapshot, command queue, `idupi-phone` CLI, screen dump format |
+| [`phone.md`](phone.md) | Phone agent contract for PC agents: status snapshot, command queue, `idupi-phone` CLI, screen dump format, calendar and health |
 | [`sensors.md`](sensors.md) | Elevated sensor helper: install, uninstall, pinned hashes, version bumps |
 | [`../../README.md`](../../README.md) | Product overview, quick start, app screens, build |
 | [`../../PRIVACY.md`](../../PRIVACY.md) | Privacy policy |
@@ -29,7 +29,8 @@ Everything except the loopback-only browser terminal page requires the bearer to
 - Handlers split out of `index.mjs` (`lib/pty-routes.mjs`, `lib/delivery-routes.mjs`,
   `lib/system-metrics-routes.mjs`, `lib/os-processes-routes.mjs`,
   `lib/screen-routes.mjs`, `lib/inbox-routes.mjs`, `lib/phone-routes.mjs`,
-  `lib/phone-calendar-routes.mjs`) are mounted after `requireAuth`.
+  `lib/phone-calendar-routes.mjs`, `lib/health-routes.mjs`) are mounted after
+  `requireAuth`.
 
 ## API routes
 
@@ -193,6 +194,31 @@ the PC can read and propose only. Event text from notifications is untrusted:
 the inbox analysis fills an `event` field and the server validates it, but the
 owner confirms it on the phone.
 
+### Phone health
+
+Source: [`lib/health-routes.mjs`](../lib/health-routes.mjs), store in
+[`lib/health-store.mjs`](../lib/health-store.mjs), ADB link in
+[`lib/adb-connection.mjs`](../lib/adb-connection.mjs), hidden-display reader in
+[`lib/hidden-display-reader.mjs`](../lib/hidden-display-reader.mjs) and app
+profiles in [`lib/health-profiles.mjs`](../lib/health-profiles.mjs). Agent
+contract in [`phone.md`](phone.md#health-read-only).
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| POST | `/api/v1/health/samples` | Bearer | Phone pushes `{tzOffsetMinutes, samples[], installedApps?}`; latest capture per source/day wins, metrics merge; `200 {ok, stored, merged, pruned, dates}` |
+| GET | `/api/v1/health/summary?days=7` (alias `GET /api/v1/health`) | Bearer | Merged per-day view `{rangeDays, tzOffsetMinutes, days[{date, metrics, sources, capturedAt}], latest}`; `days` is 1..120 |
+| GET | `/api/v1/health/sources` | Bearer | Known sources with `lastCaptureAt` plus the phone-reported `installedApps` |
+| POST | `/api/v1/health/refresh` | Bearer | `{sources?: ["huawei_health"]}`; `202 {job}`. Reads the app on a hidden virtual display and stores the parsed day |
+| GET | `/api/v1/health/refresh/{id}` | Bearer | Job state `queued`, `running`, `done` or `failed` with per-source results |
+| GET | `/api/v1/health/adb` | Bearer | `{adb:{path,found}, scrcpy:{path,found,version}, connected, serial, via, targets}` |
+| POST | `/api/v1/health/adb/pair` | Bearer | `{hostPort, code}` (6 digits) -> `adb pair`; never saves a target |
+| POST | `/api/v1/health/adb/connect` | Bearer | `{hostPort}` -> `adb connect`; saves the target on success |
+
+`health.json` keeps up to 120 days of samples and the installed-app report;
+`adb-targets.json` keeps at most 8 paired targets (both gitignored). A scheduler
+refreshes Huawei Health every 3 h only when a target is saved, skips quietly
+when ADB is unreachable and never overlaps a manual refresh.
+
 ### Remote screen
 
 Source: [`lib/screen-routes.mjs`](../lib/screen-routes.mjs).
@@ -280,7 +306,7 @@ is unreachable.
 | `.idupi-token` | Access token (repo root) |
 | `idupi-server/projects.json` | Registered projects and active project |
 | `idupi-server/deliveries/` | Delivery index and APK snapshots (newest 10) |
-| `idupi-server/data/` | Phone inbox items/config, conversation digests, `phone-status.json`, `phone-calendar.json` and `phone-calendar-proposals.json` (gitignored) |
+| `idupi-server/data/` | Phone inbox items/config, conversation digests, `phone-status.json`, `phone-calendar.json`, `phone-calendar-proposals.json`, `health.json` and `adb-targets.json` (gitignored) |
 | `idupi-server/logs/` | Server stdout/stderr from `start-server.ps1` |
 | `%ProgramData%\IDUPI\` | Sensor helper, LibreHardwareMonitor DLLs and `sensors.json` |
 
@@ -289,7 +315,7 @@ is unreachable.
 | Path | Role |
 |------|------|
 | [`index.mjs`](../index.mjs) | HTTP entry point, route chain, auth choke point, legacy chat and orchestrator routes |
-| [`lib/`](../lib) | Route modules, PTY manager, deliveries, metrics, processes, screen stream, phone agent and calendar |
+| [`lib/`](../lib) | Route modules, PTY manager, deliveries, metrics, processes, screen stream, phone agent, calendar and health |
 | [`screen-helper/`](../screen-helper) | Zero-dependency Go helper: screen capture and ConPTY host |
 | [`web/`](../web) | Static browser terminal page |
 | [`test/`](../test) | `node --test` suites |
