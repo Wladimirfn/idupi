@@ -27,10 +27,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         
         // Auto-cargar perfil de conexión guardado si existe
-        val savedProfile = com.idupi.app.data.connection.ConnectionStorage(this).getProfile()
-        if (savedProfile != null && savedProfile.host.isNotBlank()) {
-            com.idupi.app.data.IduPiClientProvider.configureRealClient(savedProfile)
-        }
+        com.idupi.app.data.IduPiClientProvider.configureFromStorage(this)
         // The delivery poller needs the client configured first.
         (application as IduPiApp).startDeliveryWatcher()
 
