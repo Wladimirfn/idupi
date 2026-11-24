@@ -17,7 +17,6 @@ En resumen:
 
 ## 📸 Capturas
 
-<!-- Las imágenes de esta galería serán provistas por el propietario del proyecto; estos archivos todavía no existen en docs/assets/screenshots/. -->
 <p align="center">
   <img src="docs/assets/screenshots/terminales.jpg" width="160" alt="Terminales" />
   <img src="docs/assets/screenshots/terminal.jpg" width="160" alt="Terminal interactivo" />
