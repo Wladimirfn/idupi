@@ -144,3 +144,9 @@ commits by task.
   calendar booleans as false (store test added); 3b-prior commit logs the
   rejection reason without content. 28cc57b CLI accepts `calendar --days N`.
   Server restarted; pending the owner re-sending from Ajustes.
+- Live check: snapshot stored (10 calendars: 3 Outlook, 4 Google, 2 local,
+  1 Samsung). Outlook keeps cancelled meetings with a "Cancelada:" title, so
+  they counted as busy: fix(calendar) drops them on the phone mapping and the
+  server (tests added). Delivered 47 / 1.46-calendar (dlv-f10ed1372cb3), app
+  726 tests / 0 failures; server restarted. T4 done pending the owner trying
+  an event from an alert.
