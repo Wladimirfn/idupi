@@ -41,6 +41,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -51,6 +53,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -65,11 +68,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.idupi.app.data.inbox.InboxConversationGroup
 import com.idupi.app.data.inbox.InboxConversationGroups
+import com.idupi.app.data.calendar.CalendarEventBuilder
 import com.idupi.app.domain.model.InboxDigest
 import com.idupi.app.domain.model.InboxDigestStatus
+import com.idupi.app.domain.model.InboxEvent
+import com.idupi.app.domain.model.InboxEventConflict
 import com.idupi.app.domain.model.InboxImportance
 import com.idupi.app.domain.model.InboxItem
 import com.idupi.app.domain.model.InboxItemState
+import com.idupi.app.ui.components.AddEventSheet
 import com.idupi.app.ui.theme.AppShapes
 import com.idupi.app.ui.theme.AppSpacing
 import com.idupi.app.ui.theme.AppTypography
@@ -83,7 +90,10 @@ import com.idupi.app.ui.theme.StatusWorking
 import com.idupi.app.ui.theme.TextPrimary
 import com.idupi.app.ui.theme.TextSecondary
 import com.idupi.app.viewmodel.AlertsViewModel
+import com.idupi.app.viewmodel.CalendarViewModel
 import com.idupi.app.viewmodel.InboxFilter
+import kotlinx.coroutines.launch
+import java.time.ZoneId
 
 /**
  * Alertas = the phone inbox (phone-inbox T5 + inbox-management T4).
@@ -101,6 +111,7 @@ import com.idupi.app.viewmodel.InboxFilter
 @Composable
 fun AlertsScreen(
     viewModel: AlertsViewModel,
+    calendarViewModel: CalendarViewModel,
     onMenuClick: () -> Unit
 ) {
     val context = LocalContext.current
@@ -111,6 +122,10 @@ fun AlertsScreen(
     val digests by viewModel.digests.collectAsState()
     val requestingDigests by viewModel.requestingDigests.collectAsState()
     val silencedConversations by viewModel.silencedConversations.collectAsState()
+    val addEvent by calendarViewModel.addEvent.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    val zone = remember { ZoneId.systemDefault() }
 
     val visibleItems = remember(items, filter) { AlertsViewModel.filterItems(items, filter) }
     val groups = remember(visibleItems) { InboxConversationGroups.group(visibleItems) }
@@ -141,6 +156,17 @@ fun AlertsScreen(
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = SlateCard)
             )
+        },
+        snackbarHost = {
+            SnackbarHost(snackbarHostState) { data ->
+                androidx.compose.material3.Snackbar(
+                    containerColor = SlateCard,
+                    contentColor = TextPrimary,
+                    shape = AppShapes.card
+                ) {
+                    Text(data.visuals.message, color = TextPrimary)
+                }
+            }
         },
         containerColor = SlateBg
     ) { paddingValues ->
@@ -189,6 +215,7 @@ fun AlertsScreen(
                                     nowMillis = nowMillis,
                                     canReply = viewModel.canReply(item),
                                     silenced = silenced,
+                                    zone = zone,
                                     onToggleSilence = onToggleSilence,
                                     onSendSuggestion = { viewModel.sendSuggestion(item) },
                                     onEdit = {
@@ -205,7 +232,14 @@ fun AlertsScreen(
                                     },
                                     onHandled = { viewModel.markHandled(item) },
                                     onDismiss = { viewModel.dismiss(item) },
-                                    onRetry = { viewModel.retryAnalysis(item) }
+                                    onRetry = { viewModel.retryAnalysis(item) },
+                                    onAddToCalendar = {
+                                        item.event?.let { event ->
+                                            calendarViewModel.openAddEvent(
+                                                CalendarEventBuilder.prefillFor(event)
+                                            )
+                                        }
+                                    }
                                 )
                             } else {
                                 val digest = digests[group.conversationKey]
@@ -216,6 +250,7 @@ fun AlertsScreen(
                                     canReply = viewModel.canReply(group),
                                     silenced = silenced,
                                     nowMillis = nowMillis,
+                                    zone = zone,
                                     onToggleSilence = onToggleSilence,
                                     onRequestDigest = { viewModel.requestDigest(group) },
                                     onSendSuggestion = { viewModel.sendGroupSuggestion(group) },
@@ -233,7 +268,14 @@ fun AlertsScreen(
                                             Toast.LENGTH_SHORT
                                         ).show()
                                     },
-                                    onMarkAllHandled = { viewModel.markGroupHandled(group) }
+                                    onMarkAllHandled = { viewModel.markGroupHandled(group) },
+                                    onAddToCalendar = { item ->
+                                        item.event?.let { event ->
+                                            calendarViewModel.openAddEvent(
+                                                CalendarEventBuilder.prefillFor(event)
+                                            )
+                                        }
+                                    }
                                 )
                             }
                         }
@@ -266,6 +308,20 @@ fun AlertsScreen(
             onDismiss = { editingGroup = null }
         )
     }
+
+    AddEventSheet(
+        state = addEvent,
+        onDraftChange = calendarViewModel::updateDraft,
+        onSave = {
+            calendarViewModel.saveEvent { saved ->
+                scope.launch {
+                    snackbarHostState.showSnackbar("Evento guardado en ${saved.calendarName}")
+                }
+            }
+        },
+        onDismiss = calendarViewModel::closeAddEvent,
+        zone = zone
+    )
 }
 
 @Composable
@@ -405,6 +461,7 @@ private fun InboxItemCard(
     nowMillis: Long,
     canReply: Boolean,
     silenced: Boolean,
+    zone: ZoneId,
     onToggleSilence: () -> Unit,
     onSendSuggestion: () -> Unit,
     onEdit: () -> Unit,
@@ -412,6 +469,7 @@ private fun InboxItemCard(
     onHandled: () -> Unit,
     onDismiss: () -> Unit,
     onRetry: () -> Unit,
+    onAddToCalendar: () -> Unit,
 ) {
     var expanded by rememberSaveable(item.id) { mutableStateOf(false) }
     val isOpen = item.state == InboxItemState.OPEN
@@ -535,6 +593,15 @@ private fun InboxItemCard(
                 SuggestedReplyBox(item.suggestedReply)
             }
 
+            item.event?.let { event ->
+                AlertEventSection(
+                    event = event,
+                    conflicts = item.eventConflicts,
+                    zone = zone,
+                    onAdd = onAddToCalendar
+                )
+            }
+
             if (isOpen) {
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm),
@@ -607,12 +674,14 @@ private fun ConversationCard(
     canReply: Boolean,
     silenced: Boolean,
     nowMillis: Long,
+    zone: ZoneId,
     onToggleSilence: () -> Unit,
     onRequestDigest: () -> Unit,
     onSendSuggestion: () -> Unit,
     onEdit: () -> Unit,
     onCopy: () -> Unit,
     onMarkAllHandled: () -> Unit,
+    onAddToCalendar: (InboxItem) -> Unit,
 ) {
     var expanded by rememberSaveable(group.conversationKey) { mutableStateOf(false) }
     val analyzing = isRequesting || digest?.status == InboxDigestStatus.ANALYZING
@@ -719,6 +788,25 @@ private fun ConversationCard(
                 }
             }
 
+            val eventItems = group.items.filter { it.event != null }
+            if (eventItems.isNotEmpty()) {
+                Text(
+                    text = "Eventos detectados",
+                    style = AppTypography.labelSmall,
+                    color = TextSecondary
+                )
+                eventItems.forEach { item ->
+                    item.event?.let { event ->
+                        AlertEventSection(
+                            event = event,
+                            conflicts = item.eventConflicts,
+                            zone = zone,
+                            onAdd = { onAddToCalendar(item) }
+                        )
+                    }
+                }
+            }
+
             if (suggestedReply.isNotBlank()) {
                 SuggestedReplyBox(suggestedReply)
             }
@@ -815,6 +903,45 @@ private fun ConversationCard(
                 }
             }
         }
+    }
+}
+
+/**
+ * Alert event chip (phone-calendar T3): the extracted event, its conflict
+ * warning and the only path to a write. Nothing is saved from here: the tap
+ * opens the confirm sheet prefilled.
+ */
+@Composable
+private fun AlertEventSection(
+    event: InboxEvent,
+    conflicts: List<InboxEventConflict>,
+    zone: ZoneId,
+    onAdd: () -> Unit
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
+    ) {
+        Box(
+            modifier = Modifier
+                .clip(AppShapes.pill)
+                .background(PrimaryIndigo.copy(alpha = 0.12f))
+                .padding(horizontal = AppSpacing.md, vertical = AppSpacing.xxs)
+        ) {
+            Text(
+                text = inboxEventChipLabel(event, zone),
+                style = AppTypography.labelSmall,
+                color = PrimaryIndigo
+            )
+        }
+        inboxConflictLine(conflicts, zone)?.let { line ->
+            Text(line, style = AppTypography.labelSmall, color = StatusWorking)
+        }
+        CompactOutlinedButton(
+            label = "Agregar al calendario",
+            onClick = onAdd,
+            contentColor = PrimaryIndigo
+        )
     }
 }
 

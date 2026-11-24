@@ -116,7 +116,14 @@ data class InboxItem(
     val suggestedReply: String = "",
     val error: String? = null,
     val state: String = InboxItemState.OPEN,
-    val updatedAt: String = ""
+    val updatedAt: String = "",
+    /**
+     * phone-calendar T3: event the PC extracted from the message, already
+     * checked against the reported snapshot. Null when the message has no date.
+     */
+    val event: InboxEvent? = null,
+    /** Existing events that overlap [event]; the card shows them as a warning. */
+    val eventConflicts: List<InboxEventConflict> = emptyList(),
 )
 
 /**

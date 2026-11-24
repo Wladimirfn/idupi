@@ -33,6 +33,7 @@ enum class Screen(val title: String) {
     CONNECTION("Conexión"),
     DASHBOARD("Dashboard"),
     ALERTS("Alertas"),
+    AGENDA("Agenda"),
     PROJECTS("Proyectos"),
     TERMINALS("Terminales"),
     CONSOLE("Procesos"),
@@ -59,6 +60,8 @@ fun AppNavigation() {
     val alertsViewModel: AlertsViewModel = viewModel()
     val inboxSettingsViewModel: InboxSettingsViewModel = viewModel()
     val phoneAgentSettingsViewModel: PhoneAgentSettingsViewModel = viewModel()
+    val calendarSettingsViewModel: CalendarSettingsViewModel = viewModel()
+    val calendarViewModel: CalendarViewModel = viewModel()
     val projectsViewModel: ProjectsViewModel = viewModel()
     val terminalsViewModel: TerminalsViewModel = viewModel()
     val consoleViewModel: ConsoleViewModel = viewModel()
@@ -211,6 +214,7 @@ fun AppNavigation() {
                                     Screen.DASHBOARD to Icons.Default.Dashboard,
                                     Screen.PROJECTS to Icons.Default.Folder,
                                     Screen.ALERTS to Icons.Default.Notifications,
+                                    Screen.AGENDA to Icons.Default.CalendarMonth,
                                     Screen.REMOTE to Icons.AutoMirrored.Filled.ScreenShare,
                                     Screen.SETTINGS to Icons.Default.Settings
                                 )
@@ -276,6 +280,11 @@ fun AppNavigation() {
                             )
                             Screen.ALERTS -> AlertsScreen(
                                 viewModel = alertsViewModel,
+                                calendarViewModel = calendarViewModel,
+                                onMenuClick = { scope.launch { drawerState.open() } }
+                            )
+                            Screen.AGENDA -> AgendaScreen(
+                                viewModel = calendarViewModel,
                                 onMenuClick = { scope.launch { drawerState.open() } }
                             )
                             Screen.PROJECTS -> ProjectsScreen(
@@ -303,6 +312,7 @@ fun AppNavigation() {
                                 mainViewModel = mainViewModel,
                                 inboxViewModel = inboxSettingsViewModel,
                                 phoneAgentViewModel = phoneAgentSettingsViewModel,
+                                calendarViewModel = calendarSettingsViewModel,
                                 onMenuClick = { scope.launch { drawerState.open() } },
                                 onNavigateToConnection = { navigateTo(Screen.CONNECTION) },
                                 onNavigateToWelcome = { navigateTo(Screen.WELCOME) },

@@ -7,6 +7,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import com.idupi.app.data.connection.ConnectionStorage
+import com.idupi.app.data.calendar.CalendarNotifier
 import com.idupi.app.data.inbox.InboxCaptureDiagnostics
 import com.idupi.app.data.inbox.InboxNotifier
 import com.idupi.app.data.inbox.isInboxListenerEnabled
@@ -102,6 +103,12 @@ class MainActivity : ComponentActivity() {
             intent?.getBooleanExtra(InboxNotifier.EXTRA_OPEN_ALERTS, false) == true
         if (openAlerts) {
             AppNavigationIntents.request(Screen.ALERTS)
+            return
+        }
+        val openAgenda =
+            intent?.getBooleanExtra(CalendarNotifier.EXTRA_OPEN_AGENDA, false) == true
+        if (openAgenda) {
+            AppNavigationIntents.request(Screen.AGENDA)
         }
     }
 }
