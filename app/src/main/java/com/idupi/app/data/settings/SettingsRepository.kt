@@ -26,6 +26,12 @@ interface SettingsRepository {
     /** Observed Alertas capture/reminder/auto-reply configuration. */
     val inboxSettings: Flow<InboxSettings>
 
+    /**
+     * Observed "send the phone status to the PC" switch (phone-agent T2).
+     * Missing value means ON: status reporting is opt-out.
+     */
+    val phoneStatusEnabled: Flow<Boolean>
+
     suspend fun setThemeMode(mode: ThemeMode)
 
     suspend fun setThemePreset(preset: ThemePreset)
@@ -45,20 +51,26 @@ interface SettingsRepository {
     suspend fun setInboxAutoReplyDelayMinutes(minutes: Int)
 
     suspend fun setInboxAutoReplyTemplate(template: String)
+
+    suspend fun setPhoneStatusEnabled(enabled: Boolean)
 }
 
 /** In-memory [SettingsRepository] backed by [MutableStateFlow]s. */
 class InMemorySettingsRepository(
     initial: ThemeSettings = ThemeSettings(),
     initialInbox: InboxSettings = InboxSettings(),
+    initialPhoneStatusEnabled: Boolean = true,
 ) : SettingsRepository {
 
     private val _themeSettings = MutableStateFlow(initial)
     private val _inboxSettings = MutableStateFlow(initialInbox)
+    private val _phoneStatusEnabled = MutableStateFlow(initialPhoneStatusEnabled)
 
     override val themeSettings: Flow<ThemeSettings> = _themeSettings.asStateFlow()
 
     override val inboxSettings: Flow<InboxSettings> = _inboxSettings.asStateFlow()
+
+    override val phoneStatusEnabled: Flow<Boolean> = _phoneStatusEnabled.asStateFlow()
 
     override suspend fun setThemeMode(mode: ThemeMode) {
         _themeSettings.update { it.copy(mode = mode) }
@@ -96,5 +108,9 @@ class InMemorySettingsRepository(
 
     override suspend fun setInboxAutoReplyTemplate(template: String) {
         _inboxSettings.update { it.copy(autoReplyTemplate = template) }
+    }
+
+    override suspend fun setPhoneStatusEnabled(enabled: Boolean) {
+        _phoneStatusEnabled.value = enabled
     }
 }

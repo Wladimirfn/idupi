@@ -1,5 +1,6 @@
 package com.idupi.app.domain.repository
 
+import com.idupi.app.data.phone.PhoneStatus
 import com.idupi.app.domain.model.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.Serializable
@@ -134,6 +135,11 @@ interface IduPiClient {
     suspend fun updateInboxConfig(agent: String, model: String, effort: String): InboxConfig
     /** Empty list for agents whose catalog the server does not cache yet. */
     suspend fun getInboxModels(agent: String): List<String>
+
+    // Phone status reporting (phone-agent T2). The server stores the snapshot
+    // as the phone's latest state and its history; the body field names are the
+    // contract in idupi-server/docs/phone.md ("Status snapshot contract").
+    suspend fun postPhoneStatus(status: PhoneStatus)
 
     // Remote screen module (docs/remote-screen-module.md)
     suspend fun getScreenMonitors(): List<ScreenMonitor>

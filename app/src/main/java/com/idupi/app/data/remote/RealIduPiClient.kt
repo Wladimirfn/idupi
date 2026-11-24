@@ -2,6 +2,7 @@ package com.idupi.app.data.remote
 
 import android.util.Log
 import com.idupi.app.IduPiApp
+import com.idupi.app.data.phone.PhoneStatus
 import com.idupi.app.domain.model.*
 import com.idupi.app.domain.repository.IduPiClient
 import com.idupi.app.service.IduPiForegroundService
@@ -891,6 +892,15 @@ class RealIduPiClient : IduPiClient {
         send(HttpMethod.Get, "/api/v1/inbox/models") {
             parameter("agent", agent)
         }.body<InboxModelsEnvelope>().models
+
+    // --- Phone status reporting (phone-agent T2) ---
+
+    override suspend fun postPhoneStatus(status: PhoneStatus) {
+        send(HttpMethod.Post, "/api/v1/phone/status") {
+            contentType(ContentType.Application.Json)
+            setBody(status)
+        }
+    }
 
     companion object {
         private const val TAG = "RealIduPiClient"

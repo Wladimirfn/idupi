@@ -11,6 +11,16 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- Phone status reporting (phone-agent T2): usage minutes per app and the
+         foreground app come from UsageStatsManager. This is a special access
+         the owner grants in the system settings (Ajustes opens that screen);
+         declaring it is what enables the request, it is not a runtime dialog.
+         tools:ignore is required because the permission protects app-ops data
+         and lint flags it as protected. -->
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+
     <application
         android:name=".IduPiApp"
         android:allowBackup="false"

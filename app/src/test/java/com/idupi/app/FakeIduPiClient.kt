@@ -20,6 +20,7 @@ import com.idupi.app.domain.repository.AiModelItem
 import com.idupi.app.domain.repository.IduPiClient
 import com.idupi.app.domain.repository.IduPiClientSource
 import com.idupi.app.domain.repository.SessionHistoryItem
+import com.idupi.app.data.phone.PhoneStatus
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -589,6 +590,16 @@ class FakeIduPiClient : IduPiClient {
         maybeFail()
         lastRequestedInboxModelsAgent = agent
         return inboxModelsToReturn
+    }
+
+    // --- Phone status reporting (phone-agent T2) ---
+
+    /** Every posted snapshot, in order, for asserting reporter behavior. */
+    val postedPhoneStatuses = mutableListOf<PhoneStatus>()
+
+    override suspend fun postPhoneStatus(status: PhoneStatus) {
+        maybeFail()
+        postedPhoneStatuses += status
     }
 
     // --- Remote screen module ---

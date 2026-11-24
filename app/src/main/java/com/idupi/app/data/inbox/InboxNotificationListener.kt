@@ -6,6 +6,7 @@ import android.service.notification.StatusBarNotification
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.idupi.app.data.IduPiClientProvider
+import com.idupi.app.data.phone.PhoneStatusReporting
 import com.idupi.app.data.settings.SettingsProvider
 import com.idupi.app.domain.model.InboxImportance
 import com.idupi.app.domain.model.InboxItem
@@ -85,10 +86,15 @@ class InboxNotificationListener : NotificationListenerService() {
     override fun onListenerConnected() {
         super.onListenerConnected()
         startReminderLoop()
+        // phone-agent T2: this listener is the long-lived host that already
+        // exists. The reporter is process-wide and idempotent, so T3's
+        // accessibility service can start the same instance without a second loop.
+        PhoneStatusReporting.start(this)
     }
 
     override fun onListenerDisconnected() {
         stopReminderLoop()
+        PhoneStatusReporting.stop()
         super.onListenerDisconnected()
     }
 
