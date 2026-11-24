@@ -130,6 +130,7 @@ function parseProposalStatus(raw) {
  *   store: ReturnType<import("./phone-calendar-store.mjs").createPhoneCalendarStore>,
  *   maxJsonBytes?: number,
  *   now?: () => Date | number | string,
+ *   log?: { info?: Function, warn?: Function },
  * }} options
  * @returns {(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse, pathname: string) => Promise<boolean>}
  */
@@ -137,6 +138,7 @@ export function createPhoneCalendarRoutes({
     store,
     maxJsonBytes = DEFAULT_MAX_JSON_BYTES,
     now = () => new Date(),
+    log = console,
 } = {}) {
     function nowMs() {
         const value = now();
@@ -150,13 +152,18 @@ export function createPhoneCalendarRoutes({
         try {
             body = await readJsonBody(req, maxJsonBytes);
         } catch (err) {
+            // Only the reason is logged, never calendar content.
+            log?.warn?.(`[calendar] snapshot body rejected: ${(err && err.code) || "BAD_REQUEST"}`);
             bodyError(res, err);
             return;
         }
         try {
             const snapshot = store.recordSnapshot(body);
+            log?.info?.(`[calendar] snapshot stored: ${snapshot.calendarCount} calendars, ${snapshot.eventCount} events`);
             sendJson(res, 200, { ok: true, snapshot });
         } catch (err) {
+            // Validation messages name the field path (events[3].end), not its value.
+            log?.warn?.(`[calendar] snapshot rejected: ${(err && err.message) || "invalid snapshot"}`);
             sendError(
                 res,
                 400,
