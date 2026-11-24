@@ -56,10 +56,10 @@ attendees, Outlook/Google cloud APIs.
   ISO times) plus `conflicts` against the snapshot; proposals queue
   (`POST /api/v1/phone/calendar/proposals` from PC, phone lists/approves/
   rejects); `idupi-phone calendar [agenda|free|propose]` CLI; docs; tests.
-- [ ] T2 App read + report: READ_CALENDAR permission flow in Ajustes,
+- [x] T2 App read + report: READ_CALENDAR permission flow in Ajustes,
   calendar reader (instances next 14 days, visible calendars), periodic report
   with the phone status loop and on change; Agenda section; tests.
-- [ ] T3 App write + approve: alert card event chip + "Agregar al calendario"
+- [x] T3 App write + approve: alert card event chip + "Agregar al calendario"
   confirm sheet (editable fields, calendar picker, conflict warning) writing
   via CalendarContract with WRITE_CALENDAR; PC proposals approval list; tests.
 - [ ] T4 Deliver: version bump, APK to the phone, server restart (check PTYs),
@@ -99,3 +99,38 @@ commits by task.
   truncated copy of the whole document (the inbox line was cut mid-row); the
   copy was removed while adding the calendar rows. No `app/` files touched, no
   push, no server restart.
+- T2 done (2026-11-24): READ/WRITE_CALENDAR declared; Ajustes > CALENDARIO
+  re-checks permissions on resume, requests both at runtime, shows the Outlook
+  sync hint, the share switch (default on), the last report and "Enviar ahora".
+  Reader reads visible `CalendarContract.Calendars` and `Instances` for now+14
+  days, skips cancelled/deleted rows, keeps all-day UTC boundaries and maps
+  everything through pure, capped/clipped functions. Process-wide reporter runs
+  on the 60 s tick (15 min floor), a 30 s debounced ContentObserver on
+  `Events.CONTENT_URI`, and the manual send; the client trio gained the
+  snapshot/proposals/decision calls. Drawer Agenda lists the next 7 local days
+  with conflicts flagged from the shared overlap logic.
+  Commit: `9c6790b` (27 files, +2,955: reader, pure mapping, reporter,
+  notifier, settings, Ajustes section component, client calls, tests).
+- T3 done (2026-11-24): Alertas single and grouped cards show the extracted
+  event chip, the "Choca con: ..." warning and "Agregar al calendario"; the
+  shared confirm sheet edits title/date/start/end/all-day/location, picks a
+  writable calendar (last used, else the first Google one), warns about local
+  conflicts and inserts through `CalendarContract.Events` only on the explicit
+  Guardar tap, then shows "Evento guardado en ...", remembers the calendar and
+  triggers a report. Pending PC proposals appear at the top of Agenda, poll
+  every 30 s while visible, open the same prefilled sheet, post the approved
+  decision with the new event id (or reject), treat 409/404 as already decided,
+  and a fresh proposal raises a "Calendario IDUPI" local notification from the
+  reporter loop.
+  Commit: `bdaf0c6` (12 files, +1,934/-3: Agenda, sheet, alert chips,
+  CalendarViewModel, navigation, tests).
+  Verification: `./gradlew.bat :app:testDebugUnitTest :app:assembleRelease -q`
+  passes (exit 0); 725 tests in 80 files, 0 failures, release APK built.
+  Deviation: the Agenda screen and the Ajustes wiring landed in the T3 commit
+  because they share `CalendarViewModel` and the confirm sheet with proposals;
+  the reporter's proposal poll/notification infrastructure is in the T2 commit.
+  Not verified on a device: real provider data (Google, Samsung, Outlook-synced
+  calendars), the Outlook "Sincronizar calendarios" hint, all-day/time-zone
+  rendering on the owner's phone, runtime permission dialogs and the insert
+  dialog, ContentObserver delivery on the real provider, and the notification
+  channel. No `idupi-server/` changes, no push, no version bump, no install.
