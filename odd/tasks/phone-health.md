@@ -288,3 +288,12 @@ then the owner wants the whole chain merged to main.
 - Line heuristic: T3+T4 authored ~4.6k lines including tests; the tasks exceed
   the advisory 400-line planning heuristic, and the commits are the coherent
   work units requested (server digest, app screen, Ajustes, Huawei docs/stub).
+- T5 (partial): 8f5d7d6 digest durations as h/min; version 49 / 1.48-salud,
+  app 867 tests / 0 failures, cert d8ba0fc9, delivered dlv-4bec7ce2da55;
+  server restarted (no PTYs). Live: `health sources` lists Huawei (captured),
+  Health Connect/Samsung/Mi Fitness/wellbeing pending the phone report, Huawei
+  Health Kit as a disabled future source; `health digest --refresh` with
+  opencode/deepseek-v4.1-flash produced a neutral-Spanish digest from the real
+  data (week comparison, recommendations, agenda notes, "No es consejo
+  médico"). Pending on the device: install 1.48, Health Connect permissions,
+  wellbeing/HC samples reaching the PC, Salud screen.
