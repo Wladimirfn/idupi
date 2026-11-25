@@ -65,7 +65,7 @@ integration (after registration), ARTEMIS integration (next feature).
   /api/v1/health/summary`, `GET /api/v1/health/sources`, `POST
   /api/v1/health/refresh`, ADB pair/connect helpers) + scheduler (every 3 h) +
   `idupi-phone health` CLI + docs + tests.
-- [ ] T2 App sources + Health Connect: detect installed health apps/devices and
+- [x] T2 App sources + Health Connect: detect installed health apps/devices and
   their route (Health Connect / hidden display / not supported); Health Connect
   permissions and reader (steps, distance, calories, heart rate, resting HR,
   sleep sessions/stages, exercise, weight, SpO2, with data origins);
@@ -143,3 +143,54 @@ then the owner wants the whole chain merged to main.
   synthetic fixture. Live refresh: 17 metrics (steps, sleep, HR, resting HR,
   exercise, water, weight, SpO2, stress, wake/bed goals, workout), no temp
   files left. Server suite green per file.
+- T2 done in five commits: 488103c (sources + Health Connect reader),
+  c8757a4 (digital wellbeing), c47bc39 (reporter + client), 4af93b7 (Ajustes >
+  SALUD), fdb67e8 (background Health Connect access). 40 files, +4240/-1.
+  - Dependency: `androidx.health.connect:connect-client:1.1.0` (last stable;
+    1.2.x is alpha). compileSdk 36 / minSdk 29 already satisfied it; no
+    Gradle, AGP, Kotlin or SDK change.
+  - `lib/health` equivalent in the app is `data/health`: catalog of 14 known
+    apps (`com.sec.android.app.shealth`, Mi Fitness x2, Zepp Life, Zepp,
+    Google Fit, Fitbit, Garmin, Withings, Polar, Oura, Strava ->
+    `health_connect`; Huawei/Honor -> `hidden_display`), plus Health Connect
+    data origins -> `installedApps` entries with route `health_connect`
+    (PackageManager label, package name fallback). Manifest uses per-package
+    `<queries>` (no QUERY_ALL_PACKAGES) and a MAIN/HOME query so launchers can
+    be excluded from screen time.
+  - Health Connect: read permissions for Steps, Distance, Total/Active
+    calories, HeartRate, RestingHeartRate, SleepSession, ExerciseSession,
+    Weight, OxygenSaturation; `READ_HEALTH_DATA_IN_BACKGROUND` for the 3 h
+    background report; `ACTION_SHOW_PERMISSIONS_RATIONALE` activity +
+    `VIEW_PERMISSION_USAGE` alias with a neutral-Spanish rationale screen.
+    Aggregates use the aggregate API (steps, distance, calories, HR avg/min/
+    max, resting HR AVG) so overlapping writers are de-duplicated by Health
+    Connect. Sleep/workouts/weight/SpO2 are raw reads bucketed by owner-local
+    day: sleep by end day (a night reported by two writers is merged, not
+    summed), workouts by start day, latest weight/SpO2. Partial grants and
+    per-record failures degrade to the remaining metrics.
+  - Wellbeing: `UsageStatsManager` events -> per-day screen time, unlocks
+    (`KEYGUARD_HIDDEN`), night minutes (00-06 local, intervals split at
+    midnight) and top 5 apps; IDUPI + launchers excluded; no usage access ->
+    no wellbeing samples (not a day of zeros).
+  - Reporter: `POST /api/v1/health/samples` with 7 days + `installedApps`;
+    3 h loop hosted by the inbox listener/accessibility service/MainActivity
+    (shared idempotent instance), start/resume at most every 30 min, and
+    "Enviar ahora". Client trio adds `postHealthSamples`,
+    `getHealthSummary(days)`, `getHealthSources`, `refreshHealth` (job id)
+    and `getHealthRefresh` for T3.
+  - Ajustes > SALUD: HC state (available / needs update / missing with
+    Play Store), permission count + request, detected sources with route
+    labels, last report and manual send; re-checked on every resume.
+  - Verification: `./gradlew.bat :app:testDebugUnitTest :app:assembleRelease
+    -q` OK; 840 unit tests, 0 failures (94 suites); release APK built.
+    Merged release manifest carries the 10 record permissions, the
+    background permission, the rationale alias and the package queries.
+  - Still to verify on the owner's phone (T5): the real permission dialog and
+    partial-grant flow, background reads on Android 16, Samsung Health/Mi
+    Fitness data actually arriving, data-origin labels for apps hidden by
+    package visibility, and the Play Store/Health Connect intents. No
+    Robolectric: the Android adapters are compile-checked only, the rules are
+    covered by the pure tests.
+  - Deviation: the reporter has no on/off switch (not requested for T2); it
+    sends only when a PC profile is saved. `sourceApp` is empty for both
+    sources; origin packages travel in `installedApps`, never in metrics.
