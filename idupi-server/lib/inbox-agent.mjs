@@ -80,11 +80,25 @@ export const OPENCODE_DENY_ALL_CONFIG = JSON.stringify({
  * `bash`/`task` names.
  *
  * `external_directory` is denied so a prompt injection cannot walk out of the
- * project (or the empty temp dir) and read the owner's other files. `.env`
- * files are denied after the read allow: investigating a deploy error never
- * needs the owner's secrets. `*.env.example` is allowed back because it only
- * documents configuration keys.
+ * project (or the empty temp dir) and read the owner's other files. Secrets
+ * are denied AFTER the read/grep/glob allows, for all three tools: `.env`
+ * files (except the documented `*.env.example`), the server bearer token,
+ * keystore/signing material, machine-local paths and the server's own data
+ * directory. Last match wins, so these denies hold even though the tools are
+ * allowed.
  */
+const SECRET_PATH_DENIES = [
+    "*.env*",
+    "**/*.env*",
+    "**/.idupi-token*",
+    ".idupi-token*",
+    "**/keystore.properties",
+    "**/local.properties",
+    "**/*.keystore",
+    "**/*.jks",
+    "**/idupi-server/data/**",
+];
+
 export const OPENCODE_READ_ONLY_CONFIG = JSON.stringify({
     permissions: [
         { action: "*", resource: "*", effect: "deny" },
@@ -92,7 +106,11 @@ export const OPENCODE_READ_ONLY_CONFIG = JSON.stringify({
         { action: "read", resource: "*", effect: "allow" },
         { action: "glob", resource: "*", effect: "allow" },
         { action: "grep", resource: "*", effect: "allow" },
-        { action: "read", resource: "*.env*", effect: "deny" },
+        ...["read", "grep", "glob"].flatMap((action) => SECRET_PATH_DENIES.map(
+            (resource) => ({ action, resource, effect: "deny" }),
+        )),
+        // Last match wins: this allow must sit after the `*.env*` denies so the
+        // documented example file stays readable (it holds only key names).
         { action: "read", resource: "*.env.example", effect: "allow" },
     ],
 });
@@ -104,14 +122,18 @@ export const OPENCODE_READ_ONLY_CONFIG = JSON.stringify({
  *   opencode v2.4.1  permissions config above (`OPENCODE_CONFIG_CONTENT`)
  *   claude 2.1.331   `--allowedTools "Read Grep Glob"` + `--permission-mode
  *                    dontAsk` (anything not pre-approved is denied) +
- *                    `--disallowedTools` for every executing/network tool
- *   codex 0.169.0    `--sandbox read-only` + `approval_policy=never`
- *   pi 1.6.0         `--tools read,grep,find,ls` allowlist (verified in
- *                    `pi --help`), `--no-mcp`, `--no-extensions`
+ *                    `--disallowedTools` for every executing/network tool and
+ *                    for path-scoped secret rules
  *
- * pi supports a tool allowlist, so it is included instead of answering 400.
+ * codex and pi are deliberately excluded: neither has a verified way to block
+ * reads of secret paths, so an investigation could leak the owner's tokens.
+ * Their analysis profiles stay unchanged.
  */
-export const READ_ONLY_INTERACTION_AGENTS = ["opencode", "claude", "codex", "pi"];
+export const READ_ONLY_INTERACTION_AGENTS = ["opencode", "claude"];
+
+/** Spanish answer for an agent without a verified read-only profile. */
+export const INTERACTION_UNSUPPORTED_MESSAGE =
+    "Interactuar solo funciona con OpenCode o Claude. Cambia el agente en Ajustes > Alertas.";
 
 /** True when the installed agent can run a read-only investigation. */
 export function supportsReadOnlyInteraction(agent) {
@@ -177,7 +199,8 @@ export function buildAgentArgv({ agent, model, effort, prompt } = {}) {
         case "claude":
             // --permission-prompts none turns anything that would prompt into a
             // denial; the disallowed list removes the tools that could execute
-            // code or touch the network. No bypassPermissions, ever.
+            // code or touch the network. Read, Grep and Glob are removed too so
+            // this profile truly has no tools.
             return {
                 command: "claude",
                 args: [
@@ -188,6 +211,7 @@ export function buildAgentArgv({ agent, model, effort, prompt } = {}) {
                     "--permission-prompts", "none",
                     "--disallowedTools",
                     "Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch",
+                    "Task", "Read", "Grep", "Glob",
                     "--",
                     text,
                 ],
@@ -227,6 +251,21 @@ export function buildAgentArgv({ agent, model, effort, prompt } = {}) {
 }
 
 /**
+ * Path-scoped secret rules for claude's Read/Grep/Glob, mirroring the web of
+ * denies the opencode profile applies. Claude takes them as tool rules, so a
+ * single `--disallowedTools` entry per tool and pattern removes the file.
+ */
+const CLAUDE_SECRET_TOOL_RULES = [
+    "**/.env*",
+    "**/.idupi-token*",
+    "**/keystore.properties",
+    "**/local.properties",
+    "**/*.keystore",
+    "**/*.jks",
+    "**/idupi-server/data/**",
+].flatMap((pattern) => ["Read", "Grep", "Glob"].map((tool) => `${tool}(${pattern})`));
+
+/**
  * Pure argv builder for "Interactuar" (alerts-flow A3): the same CLIs, but
  * with a read-only tool profile instead of no tools. The analysis profile
  * above is never loosened; this is a separate builder and a separate env.
@@ -238,6 +277,9 @@ export function buildInteractionArgv({ agent, model, effort, prompt } = {}) {
     requireAgent(agent);
     requireEffort(effort);
     requireModel(model);
+    if (!supportsReadOnlyInteraction(agent)) {
+        throw new Error(`agent does not support read-only interaction: ${agent}`);
+    }
     const text = typeof prompt === "string" ? prompt : "";
 
     switch (agent) {
@@ -258,7 +300,9 @@ export function buildInteractionArgv({ agent, model, effort, prompt } = {}) {
         case "claude":
             // dontAsk = non-interactive: anything not pre-approved is denied,
             // never prompted. --allowedTools is the whole read allowlist;
-            // every executing or network tool is disallowed explicitly too.
+            // every executing or network tool is disallowed explicitly too,
+            // with path-scoped rules for the secret files. --strict-mcp-config
+            // keeps the owner's MCP servers (and their tools) out of the run.
             return {
                 command: "claude",
                 args: [
@@ -268,60 +312,33 @@ export function buildInteractionArgv({ agent, model, effort, prompt } = {}) {
                     "--effort", effort,
                     "--permission-mode", "dontAsk",
                     "--permission-prompts", "none",
+                    "--strict-mcp-config",
                     "--allowedTools", "Read Grep Glob",
                     "--disallowedTools",
                     "Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Task",
+                    ...CLAUDE_SECRET_TOOL_RULES,
                     "--",
                     text,
                 ],
             };
-        case "codex":
-            // Read-only sandbox plus never asking for approvals: a denied
-            // command fails instead of waiting for a human that is not there.
-            return {
-                command: "codex",
-                args: [
-                    "exec",
-                    "--sandbox", "read-only",
-                    "-m", model.trim(),
-                    "-c", `model_reasoning_effort=${effort === "max" ? "xhigh" : effort}`,
-                    "-c", "approval_policy=never",
-                    "--skip-git-repo-check",
-                    text,
-                ],
-            };
-        case "pi":
-            // Verified in pi 1.6.0 `--help`: --tools is an allowlist; MCP is
-            // disabled explicitly because MCP tools survive the allowlist
-            // unless an entry starts with mcp__. Extensions and context files
-            // are disabled so the project cannot inject instructions.
-            return {
-                command: "pi",
-                args: [
-                    "-p",
-                    "--no-session",
-                    "--no-mcp",
-                    "--no-extensions",
-                    "--no-context-files",
-                    "--tools", "read,grep,find,ls",
-                    "--model", model.trim(),
-                    "--thinking", effort,
-                    text,
-                ],
-            };
         default:
-            throw new Error(`unknown agent: ${String(agent)}`);
+            // supportsReadOnlyInteraction already rejected anything else.
+            throw new Error(`agent does not support read-only interaction: ${agent}`);
     }
 }
 
 /**
  * Removes delimiter-shaped text from untrusted content so a message cannot
  * close the untrusted block early and promote its own text to instructions.
- * Covers spacing and attribute variants (`</untrusted_message >`,
- * `<untrusted_message index="2">`) because the digest uses attributed tags.
+ * Covers every variant the digest and interaction prompts use: spacing,
+ * attributes, case, a `[\\w-]` suffix (`</untrusted_message1>`,
+ * `</untrusted-message>`) and the trusted `owner_instruction` delimiters.
  */
+const DELIMITER_TAG_PATTERN =
+    /<\s*\/?\s*(?:untrusted|owner_instruction)[\w-]*(?:\s[^>]*)?\s*>/gi;
+
 export function sanitizeUntrusted(value) {
-    return String(value ?? "").replace(/<\s*\/?\s*untrusted_[a-z_]*\b[^>]*>/gi, "[tag removed]");
+    return String(value ?? "").replace(DELIMITER_TAG_PATTERN, "[tag removed]");
 }
 
 function formatUntrustedItem(item) {
@@ -741,6 +758,12 @@ export function createInboxAgentRunner({
 } = {}) {
     function agentEnv(agent, { readOnlyTools = false } = {}) {
         const next = { ...env };
+        // The server's bearer token must never reach a child process: the agent
+        // reads third-party text and could be steered into printing it. Every
+        // IDUPI_*TOKEN* key goes too, not just the exact name.
+        for (const key of Object.keys(next)) {
+            if (key === "IDUPI_TOKEN" || /^IDUPI_.*TOKEN/i.test(key)) delete next[key];
+        }
         if (agent === "opencode") {
             next.OPENCODE_CONFIG_CONTENT = readOnlyTools
                 ? OPENCODE_READ_ONLY_CONFIG
@@ -852,9 +875,15 @@ export function createInboxAgentRunner({
                 throw new Error("este agente no soporta Interactuar");
             }
             const prompt = buildInteractionPrompt({ item, instruction, project });
+            // Read-only tools are only justified inside a real project: with no
+            // project there is nothing to investigate, so the run falls back to
+            // the no-tools analysis profile in an empty temp dir. That keeps a
+            // prompt injection from reading anything at all.
+            const projectPath = typeof project?.path === "string" ? project.path.trim() : "";
+            const hasProject = projectPath.length > 0;
             const stdout = await invoke(config, prompt, {
-                cwd: project?.path ?? null,
-                readOnlyTools: true,
+                cwd: hasProject ? projectPath : null,
+                readOnlyTools: hasProject,
                 timeout: interactionTimeoutMs,
             });
             const answer = extractAssistantText(agent, stdout)

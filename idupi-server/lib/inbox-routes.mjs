@@ -12,6 +12,7 @@ import { statSync } from "node:fs";
 import {
     AGENTS,
     EFFORTS,
+    INTERACTION_UNSUPPORTED_MESSAGE,
     MAX_INTERACTION_INSTRUCTION_CHARS,
     supportsReadOnlyInteraction,
 } from "./inbox-agent.mjs";
@@ -848,6 +849,9 @@ export function createInboxRoutes({
     /** One investigation. Failures become short safe text on the item. */
     async function runInteractionJob({ id, token, instruction, project, startedAt }) {
         try {
+            // A newer interaction replaced this one while it waited in the
+            // queue: do not read the item and do not spawn a process for it.
+            if (interactionTokens.get(id) !== token) return;
             const item = store.get(id);
             if (!item) return;
             const config = store.getConfig();
@@ -1003,12 +1007,7 @@ export function createInboxRoutes({
             ? interactionRunner.supports(config.agent) === true
             : supportsReadOnlyInteraction(config.agent);
         if (!supported) {
-            sendError(
-                res,
-                400,
-                `este agente no soporta Interactuar (${config.agent})`,
-                "INTERACTION_UNSUPPORTED",
-            );
+            sendError(res, 400, INTERACTION_UNSUPPORTED_MESSAGE, "INTERACTION_UNSUPPORTED");
             return;
         }
 

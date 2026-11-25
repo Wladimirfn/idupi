@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { createInboxStore } from "../lib/inbox-store.mjs";
 import { createInboxDigestStore } from "../lib/inbox-digest.mjs";
 import { createInboxRoutes } from "../lib/inbox-routes.mjs";
+import { supportsReadOnlyInteraction } from "../lib/inbox-agent.mjs";
 import { createPhoneCalendarStore } from "../lib/phone-calendar-store.mjs";
 
 const silentLog = { log() {}, info() {}, warn() {}, error() {} };
@@ -687,8 +688,82 @@ test("POST interact answers 400 when the configured agent cannot interact", asyn
 
     assert.equal(res.status, 400);
     assert.equal(body.code, "INTERACTION_UNSUPPORTED");
-    assert.match(body.error, /no soporta Interactuar/);
+    assert.equal(
+        body.error,
+        "Interactuar solo funciona con OpenCode o Claude. Cambia el agente en Ajustes > Alertas.",
+    );
     assert.equal(interactionRunner.calls.length, 0);
+});
+
+test("POST interact answers 400 for codex and pi, keeping their analysis profiles", async (t) => {
+    const interactionRunner = {
+        supports: (agent) => supportsReadOnlyInteraction(agent),
+        calls: [],
+        async runInteraction(config, input) {
+            this.calls.push({ config, input });
+            return "should never run";
+        },
+    };
+    const { base } = await startHarness(t, { interactionRunner });
+    const { body: created } = await postMessage(base);
+
+    for (const agent of ["codex", "pi"]) {
+        const put = await putJson(base, "/api/v1/inbox/config", {
+            agent,
+            model: agent === "pi" ? "opencode-go/deepseek-v4.1-flash" : "gpt-6.2-sol",
+            effort: "low",
+        });
+        assert.equal(put.status, 200, `${agent} must stay a valid analysis agent`);
+
+        const { res, body } = await postInteraction(base, created.item.id, {
+            instruction: "revisa esto",
+        });
+        assert.equal(res.status, 400, agent);
+        assert.equal(body.code, "INTERACTION_UNSUPPORTED", agent);
+        assert.equal(
+            body.error,
+            "Interactuar solo funciona con OpenCode o Claude. Cambia el agente en Ajustes > Alertas.",
+            agent,
+        );
+    }
+    assert.equal(interactionRunner.calls.length, 0);
+});
+
+test("superseded interaction jobs never spawn a process for the replaced request", async (t) => {
+    const pending = [];
+    const interactionRunner = {
+        supports: () => true,
+        calls: [],
+        async runInteraction(config, input) {
+            this.calls.push(input.instruction);
+            return new Promise((resolve) => pending.push(resolve));
+        },
+    };
+    const { base } = await startHarness(t, { interactionRunner });
+    const { body: created } = await postMessage(base);
+    const id = created.item.id;
+
+    await postInteraction(base, id, { instruction: "primera" });
+    await waitFor(() => pending.length === 1);
+
+    await postInteraction(base, id, { instruction: "segunda" });
+    await postInteraction(base, id, { instruction: "tercera" });
+
+    pending[0]("respuesta vieja");
+    await waitFor(() => pending.length === 2);
+
+    assert.deepEqual(interactionRunner.calls, ["primera", "tercera"]);
+
+    pending[1]("respuesta nueva");
+    const finished = await waitFor(async () => {
+        const res = await fetch(base + "/api/v1/inbox?limit=200");
+        const { items } = await res.json();
+        const item = items.find((candidate) => candidate.id === id);
+        return item?.interaction?.status === "done" ? item : null;
+    });
+
+    assert.equal(finished.interaction.instruction, "tercera");
+    assert.equal(finished.interaction.answer, "respuesta nueva");
 });
 
 test("interaction jobs run one at a time", async (t) => {

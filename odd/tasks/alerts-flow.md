@@ -117,7 +117,22 @@ Delivery: about 900–1200 authored lines forecast; stacked PRs to main per task
   (progress, "Respuesta del agente · proyecto" + SelectionContainer + Copiar,
   short error + Reintentar). RED: app compile failed on the missing APIs;
   GREEN: app 905/905 with `testDebugUnitTest assembleDebug` (13 new: 4
-  `InboxAgentAnswerTest`, 6 model, 7 ViewModel cases), 0 failures.
+  `InboxAgentAnswerTest`, 3 model, 6 ViewModel cases), 0 failures.
+- 2026-11-25: A3 server verified. `POST /api/v1/inbox/{id}/interact` (202
+  `running`; 404 unknown item; 400 invalid instruction/project/unsupported
+  agent) resolves the project against the live registry and requires a real
+  directory, enqueues on its own serial chain (analysis keeps flowing), and a new
+  interaction supersedes a late answer. `inbox-store` persists/revalidates
+  `interaction` (old files decode null, caps enforced). Read-only profiles:
+  opencode `OPENCODE_CONFIG_CONTENT` (read/glob/grep only; `external_directory`
+  and `*.env*` denied), claude `--allowedTools "Read Grep Glob"` +
+  `--permission-mode dontAsk` + `--disallowedTools` Bash/Edit/Write/NotebookEdit/
+  WebFetch/WebSearch/Task, codex `--sandbox read-only` + `approval_policy=never`,
+  pi `--tools read,grep,find,ls --no-mcp --no-extensions --no-context-files`
+  (checked against `pi --help`). 5 min timeout, 6000-char answer cap, safe error
+  text; the prompt keeps the alert in a sanitized `<untrusted_message>` and the
+  owner instruction outside it. GREEN: server 895/895 (25 new), app 905/905,
+  `assembleDebug` green.
 
 ## Next step
 
