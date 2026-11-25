@@ -32,14 +32,15 @@ enum class Screen(val title: String) {
     WELCOME("Bienvenido"),
     CONNECTION("Conexión"),
     DASHBOARD("Dashboard"),
-    ALERTS("Alertas Supervisor"),
+    ALERTS("Alertas"),
     PROJECTS("Proyectos"),
     TERMINALS("Terminales"),
     CONSOLE("Procesos"),
     PTY_TERMINAL("Terminal interactiva"),
     DELIVERIES("Entregas"),
     REMOTE("Escritorio Remoto"),
-    SETTINGS("Ajustes")
+    SETTINGS("Ajustes"),
+    COMMANDS("Comandos IDUPI")
 }
 
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.animation.ExperimentalAnimationApi::class)
@@ -99,6 +100,9 @@ fun AppNavigation() {
         } else if (currentScreen == Screen.PTY_TERMINAL) {
             // Back leaves the PTY running on the PC; return to its launcher.
             currentScreen = Screen.TERMINALS
+        } else if (currentScreen == Screen.COMMANDS) {
+            // The command reference is reached from Ajustes, so Back returns there.
+            currentScreen = Screen.SETTINGS
         } else if (currentScreen != Screen.TERMINALS && currentScreen != Screen.WELCOME) {
             currentScreen = Screen.TERMINALS
         }
@@ -293,7 +297,11 @@ fun AppNavigation() {
                                 mainViewModel = mainViewModel,
                                 onMenuClick = { scope.launch { drawerState.open() } },
                                 onNavigateToConnection = { navigateTo(Screen.CONNECTION) },
-                                onNavigateToWelcome = { navigateTo(Screen.WELCOME) }
+                                onNavigateToWelcome = { navigateTo(Screen.WELCOME) },
+                                onNavigateToCommands = { navigateTo(Screen.COMMANDS) }
+                            )
+                            Screen.COMMANDS -> CommandsScreen(
+                                onBack = { currentScreen = Screen.SETTINGS }
                             )
                             else -> {}
                         }

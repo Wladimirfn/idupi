@@ -45,7 +45,7 @@ fun AlertsScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Alertas del Supervisor", style = AppTypography.appBarTitle, color = TextPrimary) },
+                title = { Text("Alertas", style = AppTypography.appBarTitle, color = TextPrimary) },
                 navigationIcon = {
                     IconButton(onClick = onMenuClick) {
                         Icon(Icons.Default.Menu, contentDescription = "Menú", tint = TextPrimary)
@@ -111,7 +111,7 @@ fun AlertsScreen(
                 }
             } else if (filteredAlerts.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("No hay alertas pendientes del supervisor Idu-pi", color = TextSecondary, style = AppTypography.bodySmall)
+                    Text("No hay alertas pendientes", color = TextSecondary, style = AppTypography.bodySmall)
                 }
             } else {
                 LazyColumn(
@@ -138,7 +138,7 @@ fun AlertsScreen(
             title = { Text("Rechazar Plan Maestro", color = TextPrimary, fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Ingresá el motivo de rechazo para que el supervisor Idu-pi reelabore la propuesta:", color = TextSecondary, fontSize = 12.sp)
+                    Text("Ingresá el motivo de rechazo para que el agente reelabore la propuesta:", color = TextSecondary, fontSize = 12.sp)
                     OutlinedTextField(
                         value = rejectReason,
                         onValueChange = { rejectReason = it },
