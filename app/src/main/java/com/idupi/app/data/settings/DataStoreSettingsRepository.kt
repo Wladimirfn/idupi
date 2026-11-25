@@ -68,6 +68,7 @@ class DataStoreSettingsRepository(
                     ?: InboxSettings.DEFAULT_AUTO_REPLY_TEMPLATE,
                 silencedConversations = (prefs[INBOX_SILENCED_CONVERSATIONS_KEY] ?: emptySet())
                     .toSet(),
+                clearCapturedFromShade = prefs[INBOX_CLEAR_CAPTURED_FROM_SHADE_KEY] ?: true,
             )
         }
 
@@ -118,6 +119,10 @@ class DataStoreSettingsRepository(
 
     override suspend fun setInboxSilencedConversations(conversations: Set<String>) {
         dataStore.edit { prefs -> prefs[INBOX_SILENCED_CONVERSATIONS_KEY] = conversations }
+    }
+
+    override suspend fun setInboxClearCapturedFromShade(enabled: Boolean) {
+        dataStore.edit { prefs -> prefs[INBOX_CLEAR_CAPTURED_FROM_SHADE_KEY] = enabled }
     }
 
     // Missing key means ON: status reporting is opt-out, so an upgraded install
@@ -200,6 +205,13 @@ class DataStoreSettingsRepository(
          */
         val INBOX_SILENCED_CONVERSATIONS_KEY: Preferences.Key<Set<String>> =
             stringSetPreferencesKey("inbox_silenced_conversations")
+
+        /**
+         * alerts-flow A1: clear captured notifications from the shade once the
+         * PC accepted them. Missing means ON, the feature's agreed default.
+         */
+        val INBOX_CLEAR_CAPTURED_FROM_SHADE_KEY: Preferences.Key<Boolean> =
+            booleanPreferencesKey("inbox_clear_captured_from_shade")
 
         /** phone-agent T2: periodic status reporting to the PC; default ON. */
         val PHONE_STATUS_ENABLED_KEY: Preferences.Key<Boolean> =

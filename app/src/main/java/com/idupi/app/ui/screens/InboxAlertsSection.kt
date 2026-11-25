@@ -162,6 +162,11 @@ fun InboxAlertsSection(viewModel: InboxSettingsViewModel) {
             }
         )
 
+        ShadeClearingCard(
+            enabled = settings.clearCapturedFromShade,
+            onToggle = viewModel::setClearCapturedFromShade
+        )
+
         FollowedAppsCard(
             settings = settings,
             state = installedApps,
@@ -368,6 +373,56 @@ private fun CaptureStatusCard(
                     color = StatusWorking
                 )
             }
+        }
+    }
+}
+
+/**
+ * alerts-flow A1: what happens to a notification once IDUPI captured it. Off
+ * keeps every capture in the shade; on leaves only IDUPI's silent summary.
+ */
+@Composable
+private fun ShadeClearingCard(enabled: Boolean, onToggle: (Boolean) -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SlateCard),
+        shape = AppShapes.card
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(AppSpacing.cardPadding)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+            ) {
+                Text(
+                    text = "Quitar de la bandeja lo que IDUPI ya capturó",
+                    style = AppTypography.bodyLarge,
+                    color = TextPrimary,
+                    modifier = Modifier.weight(1f)
+                )
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = onToggle,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = PrimaryIndigo,
+                        uncheckedThumbColor = TextSecondary,
+                        uncheckedTrackColor = SlateBg,
+                        uncheckedBorderColor = SlateBorder
+                    )
+                )
+            }
+            Text(
+                text = "Las notificaciones pasan a Alertas y la bandeja queda limpia. " +
+                    "Si la PC no responde, se quedan en la bandeja.",
+                style = AppTypography.bodySmall,
+                color = TextSecondary
+            )
         }
     }
 }

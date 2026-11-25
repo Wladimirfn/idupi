@@ -41,11 +41,11 @@ class InboxRemovalRulesTest {
     }
 
     @Test
-    fun `IDUPI cancelling a silenced notification is not an owner dismissal`() {
-        // The listener cancels the notification right after capturing a
-        // silenced conversation. Treating that as a dismissal would close the
-        // item the owner asked to keep reading, which is the opposite of
-        // "silence but read".
+    fun `IDUPI cancelling a captured notification is not an owner dismissal`() {
+        // The listener cancels a notification after capturing it: always for a
+        // silenced conversation and, since alerts-flow A1, for any capture the
+        // owner asked to clear from the shade. Treating that as a dismissal
+        // would close the item the owner has not read yet.
         assertFalse(
             InboxRemovalRules.isUserDismissalReason(
                 NotificationListenerService.REASON_LISTENER_CANCEL

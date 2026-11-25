@@ -105,6 +105,14 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
     @Volatile
     private var silencedConversations: Set<String> = emptySet()
 
+    /**
+     * "Remove what IDUPI already captured from the shade" (alerts-flow A1), as
+     * last observed. Applies only to an accepted upload: a queued or discarded
+     * capture stays visible. Default matches [InboxSettings.clearCapturedFromShade].
+     */
+    @Volatile
+    private var clearCaptured = true
+
     /** PackageManager label per package; a launcher label only changes on update. */
     private val appLabels = ConcurrentHashMap<String, String>()
 
@@ -221,14 +229,22 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
         registerReplyAction(sbn, captured)
         InboxSession.remember(captured)
         InboxCaptureDiagnostics.onCaptured(captured.app)
-        scope.launch {
-            if (upload(captured) == UploadOutcome.ACCEPTED) drainRetries()
-        }
         // Silence but read: the capture (reply action + session) is registered
         // and its upload was started above; now the notification leaves the
         // shade. The reply action stays registered, so "Enviar sugerencia"
         // still works after the owner opens Alertas.
-        if (silenced) cancelSilencedNotification(sbn.key)
+        if (silenced) cancelCapturedNotification(sbn.key)
+        scope.launch {
+            val outcome = upload(captured)
+            if (outcome == InboxUploadOutcome.ACCEPTED) drainRetries()
+            // alerts-flow A1: a capture the PC accepted leaves the shade when
+            // the owner asked for it; a queued (PC unreachable) or discarded
+            // (PC refused) capture must stay visible.
+            if (!InboxShadePolicy.shouldCancel(outcome, silenced, clearCaptured)) return@launch
+            // A silenced conversation was already cancelled before the upload.
+            if (!silenced) cancelCapturedNotification(sbn.key)
+            if (outcome == InboxUploadOutcome.ACCEPTED) recordClearedCapture()
+        }
     }
 
     /** "This conversation is silenced inside IDUPI", not inside the source app. */
@@ -247,6 +263,7 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
                 SettingsProvider.repository.inboxSettings.collect { settings ->
                     followedApps = settings.followedApps
                     silencedConversations = settings.silencedConversations
+                    clearCaptured = settings.clearCapturedFromShade
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -257,18 +274,30 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
     }
 
     /**
-     * Removes a silenced conversation's notification from the shade after IDUPI
-     * captured it. `cancelNotification` is a binder call that throws when
-     * access was revoked mid-run; a failed cancel must never crash the listener
-     * (Android disables a listener that keeps dying).
+     * Removes a captured notification from the shade (alerts-flow A1): always
+     * for a silenced conversation, and after an accepted upload when the owner
+     * asked IDUPI to clear what it captures. `cancelNotification` is a binder
+     * call that throws when access was revoked mid-run; a failed cancel must
+     * never crash the listener (Android disables a listener that keeps dying).
+     * No notification content is logged.
      */
-    private fun cancelSilencedNotification(notificationKey: String) {
+    private fun cancelCapturedNotification(notificationKey: String) {
         if (notificationKey.isBlank()) return
         try {
             cancelNotification(notificationKey)
         } catch (e: Exception) {
-            Log.w(TAG, "could not cancel a silenced notification: ${e.javaClass.simpleName}")
+            Log.w(TAG, "could not cancel a captured notification: ${e.javaClass.simpleName}")
         }
+    }
+
+    /**
+     * Counts one capture IDUPI just cleared and re-posts the single silent
+     * summary. Best-effort: a missing notification permission only means the
+     * summary is not shown, never that capture stops.
+     */
+    private fun recordClearedCapture() {
+        val count = InboxCaptureSummary.record()
+        InboxNotifier.showCaptureSummary(this, count.total, count.important)
     }
 
     private fun stopSettingsWatch() {
@@ -330,12 +359,19 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
             }
             InboxSession.remember(message)
             InboxCaptureDiagnostics.onCaptured(message.app)
-            when (upload(message)) {
-                UploadOutcome.ACCEPTED -> sent++
-                UploadOutcome.QUEUED -> uploadDeferred = true
-                UploadOutcome.DISCARDED -> Unit
+            val outcome = upload(message)
+            when (outcome) {
+                InboxUploadOutcome.ACCEPTED -> sent++
+                InboxUploadOutcome.QUEUED -> uploadDeferred = true
+                InboxUploadOutcome.DISCARDED -> Unit
             }
-            if (silenced) cancelSilencedNotification(message.notificationKey)
+            // alerts-flow A1: same rule as a live post -- silenced always
+            // leaves the shade; anything else only when the PC accepted it and
+            // the owner asked for a clean shade.
+            if (InboxShadePolicy.shouldCancel(outcome, silenced, clearCaptured)) {
+                cancelCapturedNotification(message.notificationKey)
+                if (outcome == InboxUploadOutcome.ACCEPTED) recordClearedCapture()
+            }
         }
         InboxCaptureDiagnostics.onScanCompleted(captured.size)
         // A deferred upload just proved the PC is unreachable (or unconfigured):
@@ -530,9 +566,6 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
             InboxReminderPolicy.ItemState(lastRemindedAtMillis, autoReplyDone)
     }
 
-    /** What happened to one capture's upload attempt. */
-    private enum class UploadOutcome { ACCEPTED, QUEUED, DISCARDED }
-
     /**
      * Turns the Android notification into the plain snapshot the parser takes.
      * MessagingStyle is where the per-message sender and the group name live;
@@ -593,7 +626,7 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
      * dropping it; a permanent 4xx rejection is not retried because the PC
      * understood and refused it.
      */
-    private suspend fun upload(captured: CapturedMessage): UploadOutcome {
+    private suspend fun upload(captured: CapturedMessage): InboxUploadOutcome {
         try {
             val settings = SettingsProvider.repository.inboxSettings.first()
             if (captured.app !in settings.followedApps) {
@@ -601,27 +634,27 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
                 // appeared (or the collector had not seen a just-saved change).
                 ReplyActionRegistry.drop(inboxConversationKey(captured.app, captured.conversation))
                 InboxSession.remove(captured.notificationKey)
-                return UploadOutcome.DISCARDED
+                return InboxUploadOutcome.DISCARDED
             }
             if (!ensureClientConfigured()) {
                 // No PC configured yet: keep the capture for when one is.
                 enqueueRetry(captured)
-                return UploadOutcome.QUEUED
+                return InboxUploadOutcome.QUEUED
             }
 
             val item = IduPiClientProvider.client.postInboxMessage(captured.toRequest())
             InboxSession.attachItemId(captured.notificationKey, item.id)
             InboxCaptureDiagnostics.onUploadSucceeded()
-            return UploadOutcome.ACCEPTED
+            return InboxUploadOutcome.ACCEPTED
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             val status = InboxUploadRules.statusCodeOf(e)
             Log.w(TAG, "inbox upload failed (${captured.app}): ${e.javaClass.simpleName}")
             InboxCaptureDiagnostics.onUploadFailed(e.javaClass.simpleName)
-            if (InboxUploadRules.isPermanentRejection(status)) return UploadOutcome.DISCARDED
+            if (InboxUploadRules.isPermanentRejection(status)) return InboxUploadOutcome.DISCARDED
             enqueueRetry(captured)
-            return UploadOutcome.QUEUED
+            return InboxUploadOutcome.QUEUED
         }
     }
 

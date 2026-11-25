@@ -66,8 +66,10 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.idupi.app.data.inbox.InboxCaptureSummary
 import com.idupi.app.data.inbox.InboxConversationGroup
 import com.idupi.app.data.inbox.InboxConversationGroups
+import com.idupi.app.data.inbox.InboxNotifier
 import com.idupi.app.data.calendar.CalendarEventBuilder
 import com.idupi.app.domain.model.InboxDigest
 import com.idupi.app.domain.model.InboxDigestStatus
@@ -132,6 +134,11 @@ fun AlertsScreen(
     val nowMillis = remember(items) { System.currentTimeMillis() }
 
     DisposableEffect(viewModel) {
+        // Opening Alertas consumes the capture summary (alerts-flow A1): the
+        // owner is looking at the pile, so the silent notification goes away
+        // and the next capture starts counting from zero.
+        InboxCaptureSummary.reset()
+        InboxNotifier.clearCaptureSummary(context)
         viewModel.startPolling()
         onDispose { viewModel.stopPolling() }
     }

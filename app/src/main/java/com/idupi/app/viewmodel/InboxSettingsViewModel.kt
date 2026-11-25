@@ -341,6 +341,16 @@ class InboxSettingsViewModel(
         }
     }
 
+    /**
+     * alerts-flow A1: captured notifications leave the shade once the PC
+     * accepted them. Turning this off keeps every capture visible.
+     */
+    fun setClearCapturedFromShade(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.setInboxClearCapturedFromShade(enabled)
+        }
+    }
+
     fun setRemindMinImportance(importance: String) {
         viewModelScope.launch {
             settingsRepository.setInboxRemindMinImportance(importance)
