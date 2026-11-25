@@ -71,12 +71,12 @@ integration (after registration), ARTEMIS integration (next feature).
   sleep sessions/stages, exercise, weight, SpO2, with data origins);
   digital wellbeing extras (total screen time, unlocks, night use); reporter to
   the PC; tests.
-- [ ] T3 AI digest + UI: server daily digest through the configured agent
+- [x] T3 AI digest + UI: server daily digest through the configured agent
   (health + wellbeing + agenda, neutral Spanish, not medical advice, cached per
   day); app "Salud" drawer screen (today per metric with source, 7-day trends,
   digest, "Actualizar ahora") and Ajustes > SALUD (sources, Health Connect
   permissions, PC/ADB status); tests.
-- [ ] T4 Huawei Health Kit groundwork: `idupi-server/docs/huawei-health-kit.md`
+- [x] T4 Huawei Health Kit groundwork: `idupi-server/docs/huawei-health-kit.md`
   step-by-step registration guide (AppGallery Connect project, HUAWEI ID,
   Health Kit scopes, test users, review) + disabled connector config shape.
 - [ ] T5 Deliver: version bump, APK, server restart, live check (sources,
@@ -194,3 +194,97 @@ then the owner wants the whole chain merged to main.
   - Deviation: the reporter has no on/off switch (not requested for T2); it
     sends only when a PC profile is saved. `sourceApp` is empty for both
     sources; origin packages travel in `installedApps`, never in metrics.
+- T3 server done in three commits: 730b66d (Huawei Kit source, shared with
+  T4), 903bf0b (digest prompt/cache), 1842534 (routes, wiring, CLI, docs).
+  - `lib/health-digest.mjs`: prompt built from the last 7 merged days, the
+    latest wellbeing day (screen time, unlocks, night screen, top apps) and
+    today/tomorrow agenda; day numbers, app labels and event titles travel in
+    `<untrusted_health_data>`, `<untrusted_wellbeing>` and `<untrusted_agenda>`
+    blocks, delimiter-shaped text neutralized with `sanitizeUntrusted`. The
+    prompt asks for exactly `{summary, highlights, recommendations,
+    agendaNotes}`, demands neutral Latin American Spanish, that numbers come
+    only from the data, and states it is not medical advice / never diagnoses.
+    Store `data/health-digests.json` keeps 30 days; interrupted `analyzing`
+    becomes `failed` on load. Cache key = owner-local date + SHA-256 of inputs;
+    a ready record with the same hash is served without an agent.
+  - Routes: `GET /api/v1/health/digest?date=` (cached state, never runs the
+    agent; past dates readable) and `POST /api/v1/health/digest {date?,
+    refresh?}` (202 analyzing, 200 cached/ready; only today can be generated).
+    `available:false` when the window has no health data, so no agent runs on
+    nothing. `GET /sources` gained `futureSources`.
+  - Automatic regeneration fires after a successful hidden read or a samples
+    POST, at most once every 3 h (`maybeAutoGenerate` throttles; unchanged
+    inputs skip). The service reuses the inbox runner/config (`inbox-config.json`
+    agent/model/effort) and its own serial agent queue.
+  - CLI: `idupi-phone health digest [--refresh] [--json]` (poll 120 s when
+    refreshing) and the sources list prints future sources.
+  - Tests: `health-digest.test.mjs` 23 cases (delimiter injection, units,
+    parse, hash, store retention/corruption, cache, failure/retry, no-data,
+    only-today, 3 h throttle, routes, sources, collect inputs) and CLI cases.
+  - Docs: `docs/phone.md` routes table + "Daily digest (T3)" section.
+- T3 app done in two commits: d4e13f9 (Salud screen + client, 11 files,
+  +1874) and 5a297f2 (Ajustes extension, 5 files, +358).
+  - `data/health/HealthSaludModels.kt`: pure mappers to today cards (Pasos with
+    goal progress, Sueño with stages, Frecuencia + reposo, Estrés, SpO₂, Peso,
+    Ejercicio, Agua, Pantalla + desbloqueos + noche, Top apps), source labels
+    from the per-metric `sources` map, four 7-day series (steps/pantalla bars,
+    sueño/pulso sparklines) and deterministic neutral-Spanish formatting.
+    Only the day matching today feeds the cards, so yesterday is never shown as
+    today; a day without samples renders the empty state pointing to
+    Ajustes > SALUD.
+  - `ui/screens/HealthSaludScreen.kt`: header with the date and "Actualizar
+    ahora" (spinner + "Leyendo Huawei Health desde el PC…"), Canvas charts, and
+    the digest card with summary/highlights/recommendations/agenda notes,
+    "Generar resumen" / "Actualizar resumen", "Analizando…", error + "Reintentar"
+    and the "No es consejo médico." footer.
+  - `viewmodel/HealthSaludViewModel.kt` + `data/health/HealthRefreshRun.kt`:
+    loads summary + cached digest; refresh = POST /health/refresh → poll every
+    1 s up to 60 attempts → phone-side `HealthReporting.reportNow()` → reload
+    summary + digest; digest generation polls up to 240 s (the agent timeout is
+    180 s). Errors map to retry copy instead of inventing success.
+  - Client: `getHealthDigest`, `requestHealthDigest` (body built by hand so an
+    absent date is omitted) and `getHealthAdbStatus`; `HealthSummary` models
+    gained the digest, ADB and future-source shapes.
+  - Navigation: `Screen.HEALTH("Salud")` in the drawer right after Agenda, with
+    its own ViewModel instance.
+  - Ajustes > SALUD: PC block with ADB connected/serial, saved target, scrcpy
+    version, a short explanation of the hidden reading and "Leer Huawei Health
+    ahora" (same refresh loop, then the phone-side report, then sources + ADB
+    reload). Health Connect controls unchanged.
+  - Tests: `HealthSaludModelsTest` (8 cases) and `HealthSaludViewModelTest`
+    (12 cases: load, summary failure, refresh done/failed/timeout, reading
+    message, double-tap guard, digest ready/failed/throw/poll, clear error),
+    plus 6 HealthSettings cases and the ADB copy test.
+  - Verified: `./gradlew.bat :app:testDebugUnitTest :app:assembleRelease -q`
+    OK; 96 suites, 867 tests, 0 failures; release APK built. Server:
+    74 test files, 0 failures; `node --check idupi-server/index.mjs` OK.
+  - Still to verify on the owner's phone/PC (T5): the real Salud screen render
+    and drawer entry, a real "Actualizar ahora" against a paired ADB target,
+    the real digest with the configured agent (tests inject a fake runner;
+    nothing was generated against a real model), and the Ajustes ADB block on a
+    phone with/without a saved target. `NeutralSpanishCopyTest` is green.
+- T4 done in 730b66d: `docs/huawei-health-kit.md` walks the owner through the
+  HUAWEI Developer account (identity verification, ~3 workdays, unverified),
+  AppGallery project/app, HUAWEI ID + Health Service Kit scopes (steps, sleep,
+  heart rate, stress, SpO₂, weight; exact strings must be copied from the
+  official scope reference at registration), review requirements (privacy URL,
+  use case, screenshots; up to ~15 workdays, test mode ~100 users, both marked
+  unverified), OAuth 2.0 authorization-code flow, the
+  `https://health-api.cloud.huawei.com/healthkit/v1/...` family (e.g.
+  `sampleSet:polymerize`, marked unverified) and the disabled
+  `data/huawei-health-kit.json` shape with `IDUPI_HUAWEI_CLIENT_SECRET`.
+  `lib/huawei-health-kit.mjs` exports `huaweiHealthKitStatus()` →
+  `{enabled, configured, reason}` and `futureHealthSources()`; no network call.
+  9 tests cover missing/corrupt/complete configs, the secret never in the file,
+  custom env names and the future-source shape. `GET /health/sources` lists
+  `huawei_health_kit` in `futureSources` with no captures.
+  - Deviation: `reason` distinguishes `registered_but_disabled` and
+    `missing_config:<fields>` beyond the required three fields; no scope
+    strings are validated because the official list is checked at registration.
+- T3/T4 deviation summary: the digest POST supports only today (GET reads
+  cached past days); the API adds `available` so no agent runs without data;
+  the digest is forced by the app button and throttled only for automatic runs;
+  no real agent run, ADB read or device render happened in this session.
+- Line heuristic: T3+T4 authored ~4.6k lines including tests; the tasks exceed
+  the advisory 400-line planning heuristic, and the commits are the coherent
+  work units requested (server digest, app screen, Ajustes, Huawei docs/stub).
