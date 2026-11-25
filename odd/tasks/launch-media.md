@@ -36,7 +36,7 @@ needs. The owner publishes it on YouTube, LinkedIn, X and Instagram.
       art direction, script (`guion.md`), `e00` styleboard. Owner approves.
 - [x] T3 Capture real UI footage (screen recordings of each feature) with the
       same redaction rules.
-- [ ] T4 Narration (voice-1) + music (music-1) + audio gate.
+- [x] T4 Narration (voice-1) + music (music-1) + audio gate.
 - [ ] T5 Composition and keyframes (design-2), independent audit.
 - [ ] T6 Delivery render + motion gate; send the MP4 to the owner's phone for
       review.
@@ -85,7 +85,16 @@ TDD: not applicable (media and docs only).
   must-hear acronyms (PC as pe-se, IDUPI, APK, CPU, Node.js) + glossary.json. All 12
   scenes verdict pass (audit/narration-report.json); 5:00 with 1.2 s gaps. Script
   tweaks: e04 "Desde la PC, tú escribes", e12 "Esto es IDUPI: ...".
+- 2026-11-25 owner approved narration. Music (music-1, 37 min): "Senal suave al amanecer",
+  84 BPM D major, 320 s, no drums, AI score (engine arrangement arc disabled at
+  render time; engine source untouched). Composition (design-2, 30 min): 12 scenes,
+  12 skeletons, 13 audio tags, keyframes deterministic. e03/e11 re-narrated
+  (Claude, Tailscale); tools/sync_timeline.mjs keeps scene cuts fixed. Mix
+  (tools/mix.mjs): music -4 dB + sidechain duck under voice, -14 LUFS, peak -2.3.
+  Audio gate PASS with Whisper turbo. Skill change: voz_validator.py honors
+  IDU_STT_MODEL and knows pc/tailscale/claude(cloud) renderings (3 copies,
+  incl. cross cli/skills-bundle, uncommitted there).
 
 ## Next step
 
-Owner listens to Download/IDUPI-narracion-completa.m4a; on OK: music (music-1), timeline from voice durations, composition (design-2), audit, render.
+Independent visual audit (consult-1, opencode) -> delivery render with audio/mix-hq.wav -> motion gate -> send MP4 to the phone.
