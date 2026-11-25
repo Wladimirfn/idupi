@@ -24,6 +24,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -55,10 +56,28 @@ import java.util.concurrent.ConcurrentHashMap
  * template auto-reply). The loop starts on [onListenerConnected] and stops on
  * [onListenerDisconnected]/[onDestroy], so losing notification access also
  * stops the reminders.
+ *
+ * Capture reliability (inbox capture fix T1): on connect the listener also
+ * reads the notifications already in the shade (`activeNotifications`) through
+ * the same parser as live posts. A failed upload is persisted in the bounded
+ * [InboxRetryQueue] and drained on connect, on every tick, right after a
+ * successful upload and on demand from Ajustes. Ajustes drives the on-demand
+ * scan through [InboxCaptureController] and reads [InboxCaptureDiagnostics];
+ * it never touches this service directly.
  */
-class InboxNotificationListener : NotificationListenerService() {
+class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** True between [onListenerConnected] and disconnect/destroy. */
+    @Volatile
+    private var connected = false
+
+    /** Serialises queue drains; an overlapping drain is a no-op. */
+    private val drainMutex = Mutex()
+
+    /** Persistent failed-upload queue, app-private and bounded. */
+    private val retryRepository by lazy { InboxRetryProvider.get() }
 
     /**
      * Pending "the owner dismissed this" markings, one per notification key.
@@ -85,14 +104,23 @@ class InboxNotificationListener : NotificationListenerService() {
 
     override fun onListenerConnected() {
         super.onListenerConnected()
+        connected = true
+        InboxCaptureController.attach(this)
+        InboxCaptureDiagnostics.onListenerConnected()
         startReminderLoop()
         // phone-agent T2: this listener is the long-lived host that already
         // exists. The reporter is process-wide and idempotent, so T3's
         // accessibility service can start the same instance without a second loop.
         PhoneStatusReporting.start(this)
+        // Notifications already in the shade are never re-posted by the system:
+        // this scan is the only way they reach the PC.
+        scope.launch { runInitialScan() }
     }
 
     override fun onListenerDisconnected() {
+        connected = false
+        InboxCaptureController.detach(this)
+        InboxCaptureDiagnostics.onListenerDisconnected()
         stopReminderLoop()
         PhoneStatusReporting.stop()
         super.onListenerDisconnected()
@@ -133,6 +161,9 @@ class InboxNotificationListener : NotificationListenerService() {
     }
 
     override fun onDestroy() {
+        connected = false
+        InboxCaptureController.detach(this)
+        InboxCaptureDiagnostics.onListenerDisconnected()
         stopReminderLoop()
         pendingHandled.values.forEach { it.cancel() }
         pendingHandled.clear()
@@ -148,7 +179,93 @@ class InboxNotificationListener : NotificationListenerService() {
         pendingHandled.remove(sbn.key)?.cancel()
         registerReplyAction(sbn, captured)
         InboxSession.remember(captured)
-        scope.launch { upload(captured) }
+        InboxCaptureDiagnostics.onCaptured(captured.app)
+        scope.launch {
+            if (upload(captured) == UploadOutcome.ACCEPTED) drainRetries()
+        }
+    }
+
+    // --- Active-notification scan and retry drain (inbox capture fix T1) ---
+
+    override fun isCaptureConnected(): Boolean = connected
+
+    /**
+     * Reads every notification currently in the shade, captures them through
+     * the same parser + reply-action + session path as live posts, then drains
+     * the retry queue. The system calls the scan on connect; Ajustes calls it
+     * on demand.
+     */
+    override suspend fun scanActiveNow(): InboxScanResult {
+        if (!connected) return InboxScanResult.NotConnected
+        val pairs = snapshotActiveNotifications()
+        val sbnByKey = pairs.associate { it.second.key to it.first }
+        val captured = InboxActiveScan.select(pairs.map { it.second })
+
+        var sent = 0
+        var uploadDeferred = false
+        for (message in captured) {
+            pendingHandled.remove(message.notificationKey)?.cancel()
+            if (message.notificationKey.isNotBlank()) {
+                sbnByKey[message.notificationKey]?.let { sbn ->
+                    registerReplyAction(sbn, message)
+                }
+            }
+            InboxSession.remember(message)
+            InboxCaptureDiagnostics.onCaptured(message.app)
+            when (upload(message)) {
+                UploadOutcome.ACCEPTED -> sent++
+                UploadOutcome.QUEUED -> uploadDeferred = true
+                UploadOutcome.DISCARDED -> Unit
+            }
+        }
+        InboxCaptureDiagnostics.onScanCompleted(captured.size)
+        // A deferred upload just proved the PC is unreachable (or unconfigured):
+        // draining immediately would spend another timeout on the same
+        // condition. The queue waits for the next tick or connect.
+        if (!uploadDeferred) sent += drainRetries()
+        return InboxScanResult.Completed(captured = captured.size, sent = sent)
+    }
+
+    /**
+     * `activeNotifications` is a binder call that throws SecurityException when
+     * access was revoked mid-run. One unreadable notification must not abort the
+     * whole scan, so each snapshot is built defensively.
+     */
+    private fun snapshotActiveNotifications():
+        List<Pair<StatusBarNotification, NotificationSnapshot>> {
+        val active = try {
+            activeNotifications
+        } catch (e: SecurityException) {
+            return emptyList()
+        } catch (e: Exception) {
+            return emptyList()
+        } ?: return emptyList()
+
+        val pairs = ArrayList<Pair<StatusBarNotification, NotificationSnapshot>>(active.size)
+        for (sbn in active) {
+            val posted = sbn ?: continue
+            val snapshot = try {
+                snapshotOf(posted)
+            } catch (e: Exception) {
+                continue
+            }
+            pairs.add(posted to snapshot)
+        }
+        return pairs
+    }
+
+    /** The connect-time scan must never crash the listener (Android disables it). */
+    private suspend fun runInitialScan() {
+        try {
+            // Deliver what was queued while the PC was down before reading the
+            // shade; the scan then drains again if it captured anything new.
+            drainRetries()
+            scanActiveNow()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "initial inbox scan failed: ${e.javaClass.simpleName}")
+        }
     }
 
     // --- Reminders and template auto-reply (phone-inbox T4) ---
@@ -159,6 +276,8 @@ class InboxNotificationListener : NotificationListenerService() {
             while (isActive) {
                 delay(REMINDER_TICK_MS)
                 try {
+                    // The PC may have come back since the last failed upload.
+                    drainRetries()
                     runReminderTick()
                 } catch (e: CancellationException) {
                     throw e
@@ -286,6 +405,9 @@ class InboxNotificationListener : NotificationListenerService() {
             InboxReminderPolicy.ItemState(lastRemindedAtMillis, autoReplyDone)
     }
 
+    /** What happened to one capture's upload attempt. */
+    private enum class UploadOutcome { ACCEPTED, QUEUED, DISCARDED }
+
     /**
      * Turns the Android notification into the plain snapshot the parser takes.
      * MessagingStyle is where the per-message sender and the group name live;
@@ -340,33 +462,101 @@ class InboxNotificationListener : NotificationListenerService() {
         }
     }
 
-    private suspend fun upload(captured: CapturedMessage) {
+    /**
+     * Uploads one capture. A failure persists the capture for retry instead of
+     * dropping it; a permanent 4xx rejection is not retried because the PC
+     * understood and refused it.
+     */
+    private suspend fun upload(captured: CapturedMessage): UploadOutcome {
         try {
             val settings = SettingsProvider.repository.inboxSettings.first()
             if (captured.app !in settings.enabledApps) {
                 // Monitoring was turned off after the notification appeared.
                 ReplyActionRegistry.drop(inboxConversationKey(captured.app, captured.conversation))
                 InboxSession.remove(captured.notificationKey)
-                return
+                return UploadOutcome.DISCARDED
             }
-            if (!ensureClientConfigured()) return
+            if (!ensureClientConfigured()) {
+                // No PC configured yet: keep the capture for when one is.
+                enqueueRetry(captured)
+                return UploadOutcome.QUEUED
+            }
 
-            val item = IduPiClientProvider.client.postInboxMessage(
-                InboxMessageRequest(
-                    app = captured.app,
-                    packageName = captured.packageName,
-                    sender = captured.sender,
-                    conversation = captured.conversation,
-                    text = captured.text,
-                    postedAt = captured.postedAt,
-                    notificationKey = captured.notificationKey
-                )
-            )
+            val item = IduPiClientProvider.client.postInboxMessage(captured.toRequest())
             InboxSession.attachItemId(captured.notificationKey, item.id)
+            InboxCaptureDiagnostics.onUploadSucceeded()
+            return UploadOutcome.ACCEPTED
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            val status = InboxUploadRules.statusCodeOf(e)
             Log.w(TAG, "inbox upload failed (${captured.app}): ${e.javaClass.simpleName}")
+            InboxCaptureDiagnostics.onUploadFailed(e.javaClass.simpleName)
+            if (InboxUploadRules.isPermanentRejection(status)) return UploadOutcome.DISCARDED
+            enqueueRetry(captured)
+            return UploadOutcome.QUEUED
+        }
+    }
+
+    /** Persists a failed capture; dedupe and bounds are the queue's rules. */
+    private suspend fun enqueueRetry(captured: CapturedMessage) {
+        try {
+            val entries = retryRepository.enqueue(captured)
+            InboxCaptureDiagnostics.onPendingCount(entries.size)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "could not persist inbox retry: ${e.javaClass.simpleName}")
+        }
+    }
+
+    /**
+     * Sends queued captures in arrival order. The server accepting them or
+     * rejecting them permanently removes the entry; a transient failure stops
+     * the batch and waits for the next tick instead of hammering a dead PC.
+     *
+     * @return how many queued uploads the PC accepted.
+     */
+    private suspend fun drainRetries(): Int {
+        if (!drainMutex.tryLock()) return 0
+        try {
+            if (!ensureClientConfigured()) {
+                InboxCaptureDiagnostics.onPendingCount(retryRepository.size())
+                return 0
+            }
+            val batch = retryRepository.selectBatch()
+            var sent = 0
+            for (entry in batch) {
+                try {
+                    val item = IduPiClientProvider.client.postInboxMessage(entry.toRequest())
+                    if (entry.notificationKey.isNotBlank()) {
+                        InboxSession.attachItemId(entry.notificationKey, item.id)
+                    }
+                    retryRepository.remove(entry)
+                    InboxCaptureDiagnostics.onUploadSucceeded()
+                    sent++
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    val status = InboxUploadRules.statusCodeOf(e)
+                    Log.w(TAG, "inbox retry failed (${entry.app}): ${e.javaClass.simpleName}")
+                    InboxCaptureDiagnostics.onUploadFailed(e.javaClass.simpleName)
+                    if (InboxUploadRules.isPermanentRejection(status)) {
+                        retryRepository.remove(entry)
+                        continue
+                    }
+                    break
+                }
+            }
+            InboxCaptureDiagnostics.onPendingCount(retryRepository.size())
+            return sent
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "inbox retry drain failed: ${e.javaClass.simpleName}")
+            return 0
+        } finally {
+            drainMutex.unlock()
         }
     }
 
@@ -417,3 +607,14 @@ class InboxNotificationListener : NotificationListenerService() {
         private const val REMINDER_TICK_MS = 60_000L
     }
 }
+
+/** The wire request for a captured notification; also used by retry drains. */
+private fun CapturedMessage.toRequest(): InboxMessageRequest = InboxMessageRequest(
+    app = app,
+    packageName = packageName,
+    sender = sender,
+    conversation = conversation,
+    text = text,
+    postedAt = postedAt,
+    notificationKey = notificationKey
+)

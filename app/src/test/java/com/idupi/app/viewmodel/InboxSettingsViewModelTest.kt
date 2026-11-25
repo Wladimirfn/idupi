@@ -3,10 +3,15 @@ package com.idupi.app.viewmodel
 import com.idupi.app.FakeClientSource
 import com.idupi.app.FakeIduPiClient
 import com.idupi.app.MainDispatcherRule
+import com.idupi.app.data.inbox.InboxCaptureGateway
+import com.idupi.app.data.inbox.InboxCaptureState
+import com.idupi.app.data.inbox.InboxScanResult
 import com.idupi.app.data.settings.InMemorySettingsRepository
 import com.idupi.app.domain.model.InboxConfig
 import com.idupi.app.domain.model.InboxImportance
 import com.idupi.app.domain.model.InboxSettings
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -37,7 +42,9 @@ class InboxSettingsViewModelTest {
         repository = InMemorySettingsRepository()
     }
 
-    private fun viewModel() = InboxSettingsViewModel(FakeClientSource(fake), repository)
+    private fun viewModel(
+        gateway: InboxCaptureGateway = FakeInboxCaptureGateway()
+    ) = InboxSettingsViewModel(FakeClientSource(fake), repository, gateway)
 
     private fun config(
         agent: String = "opencode",
@@ -237,5 +244,133 @@ class InboxSettingsViewModelTest {
         advanceUntilIdle()
 
         assertEquals(10, viewModel.inboxSettings.value.reminderIntervalMinutes)
+    }
+
+    // --- Capture reliability (inbox capture fix T1) ---
+
+    @Test
+    fun `scanNow reports how many notifications were sent`() = runTest {
+        val gateway = FakeInboxCaptureGateway().apply {
+            scanResult = InboxScanResult.Completed(captured = 3, sent = 2)
+        }
+        val viewModel = viewModel(gateway)
+
+        viewModel.scanNow()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.scanCalls)
+        assertEquals("2 notificaciones enviadas", viewModel.captureAction.value.scanMessage)
+        assertFalse(viewModel.captureAction.value.isScanning)
+    }
+
+    @Test
+    fun `scanNow uses the singular for one notification`() = runTest {
+        val gateway = FakeInboxCaptureGateway().apply {
+            scanResult = InboxScanResult.Completed(captured = 1, sent = 1)
+        }
+        val viewModel = viewModel(gateway)
+
+        viewModel.scanNow()
+        advanceUntilIdle()
+
+        assertEquals("1 notificación enviada", viewModel.captureAction.value.scanMessage)
+    }
+
+    @Test
+    fun `scanNow reports a disconnected listener`() = runTest {
+        val gateway = FakeInboxCaptureGateway().apply {
+            scanResult = InboxScanResult.NotConnected
+        }
+        val viewModel = viewModel(gateway)
+
+        viewModel.scanNow()
+        advanceUntilIdle()
+
+        assertEquals("Lector no conectado", viewModel.captureAction.value.scanMessage)
+    }
+
+    @Test
+    fun `scanNow shows progress and ignores a second tap while running`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val gateway = FakeInboxCaptureGateway().apply {
+            scanGate = gate
+            scanResult = InboxScanResult.Completed(captured = 1, sent = 1)
+        }
+        val viewModel = viewModel(gateway)
+
+        viewModel.scanNow()
+        advanceUntilIdle()
+        assertTrue(viewModel.captureAction.value.isScanning)
+        assertEquals(1, gateway.scanCalls)
+
+        viewModel.scanNow()
+        assertEquals(1, gateway.scanCalls)
+
+        gate.complete(Unit)
+        advanceUntilIdle()
+        assertFalse(viewModel.captureAction.value.isScanning)
+        assertEquals("1 notificación enviada", viewModel.captureAction.value.scanMessage)
+    }
+
+    @Test
+    fun `scanNow failure keeps the button usable and reports a message`() = runTest {
+        val gateway = FakeInboxCaptureGateway().apply {
+            scanError = IllegalStateException("boom")
+        }
+        val viewModel = viewModel(gateway)
+
+        viewModel.scanNow()
+        advanceUntilIdle()
+
+        assertEquals("No se pudo leer las notificaciones", viewModel.captureAction.value.scanMessage)
+        assertFalse(viewModel.captureAction.value.isScanning)
+    }
+
+    @Test
+    fun `capture status mirrors the gateway`() = runTest {
+        val gateway = FakeInboxCaptureGateway()
+        val viewModel = viewModel(gateway)
+
+        gateway.status.value = InboxCaptureState(
+            listenerConnected = true,
+            lastCaptureApp = "whatsapp",
+            pendingRetryCount = 2
+        )
+
+        assertTrue(viewModel.captureStatus.value.listenerConnected)
+        assertEquals("whatsapp", viewModel.captureStatus.value.lastCaptureApp)
+        assertEquals(2, viewModel.captureStatus.value.pendingRetryCount)
+    }
+
+    @Test
+    fun `refreshCaptureStatus asks the gateway for the pending count`() = runTest {
+        val gateway = FakeInboxCaptureGateway()
+        val viewModel = viewModel(gateway)
+
+        viewModel.refreshCaptureStatus()
+        advanceUntilIdle()
+
+        assertEquals(1, gateway.pendingRefreshCalls)
+    }
+}
+
+/** Test double for the capture seam; no Android service involved. */
+private class FakeInboxCaptureGateway : InboxCaptureGateway {
+    override val status = MutableStateFlow(InboxCaptureState())
+    var scanResult: InboxScanResult = InboxScanResult.Completed(captured = 0, sent = 0)
+    var scanError: Exception? = null
+    var scanGate: CompletableDeferred<Unit>? = null
+    var scanCalls = 0
+    var pendingRefreshCalls = 0
+
+    override suspend fun scanNow(): InboxScanResult {
+        scanCalls++
+        scanGate?.await()
+        scanError?.let { throw it }
+        return scanResult
+    }
+
+    override suspend fun refreshPendingCount() {
+        pendingRefreshCalls++
     }
 }

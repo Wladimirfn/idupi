@@ -7,7 +7,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import com.idupi.app.data.connection.ConnectionStorage
+import com.idupi.app.data.inbox.InboxCaptureDiagnostics
 import com.idupi.app.data.inbox.InboxNotifier
+import com.idupi.app.data.inbox.isInboxListenerEnabled
+import com.idupi.app.data.inbox.requestInboxListenerRebind
 import com.idupi.app.data.notification.DeliveryNotifications
 import com.idupi.app.data.notification.NotificationPermissionState
 import com.idupi.app.data.notification.currentNotificationPermissionPlan
@@ -60,6 +63,19 @@ class MainActivity : ComponentActivity() {
 
         NotificationPermissionState.markAsked(this)
         notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
+    /**
+     * Android unbinds a notification listener after an APK update or an OEM
+     * battery kill while the permission string still says "granted". When the
+     * app comes back and diagnostics say the listener is not connected, ask the
+     * system to rebind it (inbox capture fix T1).
+     */
+    override fun onResume() {
+        super.onResume()
+        if (isInboxListenerEnabled(this) && !InboxCaptureDiagnostics.state.value.listenerConnected) {
+            requestInboxListenerRebind(this)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {

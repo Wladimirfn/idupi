@@ -65,7 +65,16 @@ fun relativeTimeLabel(item: InboxItem, nowMillis: Long): String {
     val receivedAt = parseInstantMillis(item.receivedAt)
         ?: parseInstantMillis(item.postedAt)
         ?: return ""
-    val minutes = Duration.ofMillis(nowMillis - receivedAt).toMinutes()
+    return relativeTimeLabel(receivedAt, nowMillis)
+}
+
+/**
+ * Same wording for a raw epoch-millis timestamp, used by the capture status
+ * block (inbox capture fix T1). Null means "never", which the caller renders.
+ */
+fun relativeTimeLabel(atMillis: Long?, nowMillis: Long): String {
+    if (atMillis == null) return ""
+    val minutes = Duration.ofMillis((nowMillis - atMillis).coerceAtLeast(0)).toMinutes()
     return when {
         minutes < 1 -> "ahora"
         minutes < 60 -> "hace $minutes min"
