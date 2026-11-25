@@ -80,7 +80,12 @@ TDD: not applicable (media and docs only).
   assets/: push.jpg (real idupi-push ls), alertas-ajustes/recordatorios/analista.jpg
   (followed-apps list skipped: it shows banking apps), salud-resumen.jpg. Note: the
   virtual display now shows Samsung nav buttons at the bottom; crop to 2200 px.
+- Narration (T4, voice part): owner chose cloned Eric variant A (exag 0.7/cfg 0.4/temp 0.8
+  + mastering). tools/narrate.py = tts_es validated chunks + Whisper turbo STT +
+  must-hear acronyms (PC as pe-se, IDUPI, APK, CPU, Node.js) + glossary.json. All 12
+  scenes verdict pass (audit/narration-report.json); 5:00 with 1.2 s gaps. Script
+  tweaks: e04 "Desde la PC, tú escribes", e12 "Esto es IDUPI: ...".
 
 ## Next step
 
-Owner picks the narrator voice (samples on phone: Music/IDUPI voz-1-eric cloned, voz-2-alex preset), then T4.
+Owner listens to Download/IDUPI-narracion-completa.m4a; on OK: music (music-1), timeline from voice durations, composition (design-2), audit, render.
