@@ -903,7 +903,8 @@ test("interaction runner uses the project path as cwd and read-only opencode per
         execFile: deps.execFile,
         mkdtemp: deps.mkdtemp,
         rm: deps.rm,
-        env: { PATH: "x" },
+        // A stale PWD inherited from the shell that started the server.
+        env: { PATH: "x", PWD: "C:\\stale\\IDUPI" },
     });
 
     const answer = await runner.runInteraction(
@@ -915,6 +916,9 @@ test("interaction runner uses the project path as cwd and read-only opencode per
     assert.equal(deps.calls.length, 1);
     const [{ args, options }] = deps.calls;
     assert.equal(options.cwd, INTERACTION_PROJECT.path);
+    // opencode resolves its workspace from PWD, not from the real cwd: a stale
+    // PWD made every project read an "external directory" denial.
+    assert.equal(options.env.PWD, INTERACTION_PROJECT.path);
     assert.equal(options.env.OPENCODE_CONFIG_CONTENT, OPENCODE_READ_ONLY_CONFIG);
     assert.equal(options.timeout, 300000);
     assert.deepEqual(deps.dirs, [], "a project interaction must not create a temp cwd");
@@ -927,7 +931,7 @@ test("interaction runner without a project drops the read-only tools and uses a 
         execFile: deps.execFile,
         mkdtemp: deps.mkdtemp,
         rm: deps.rm,
-        env: { PATH: "x" },
+        env: { PATH: "x", PWD: "C:\\stale\\IDUPI" },
     });
 
     const answer = await runner.runInteraction(
@@ -939,6 +943,8 @@ test("interaction runner without a project drops the read-only tools and uses a 
     assert.equal(deps.dirs.length, 1);
     assert.match(deps.dirs[0], /idupi-inbox-$/);
     assert.equal(deps.calls[0].options.cwd, "C:\\temp\\idupi-inbox-fake");
+    // The empty temp dir is only an isolation boundary if opencode sees it.
+    assert.equal(deps.calls[0].options.env.PWD, "C:\\temp\\idupi-inbox-fake");
     assert.equal(deps.calls[0].options.env.OPENCODE_CONFIG_CONTENT, OPENCODE_DENY_ALL_CONFIG);
     assert.deepEqual(deps.removed, [{
         path: "C:\\temp\\idupi-inbox-fake",

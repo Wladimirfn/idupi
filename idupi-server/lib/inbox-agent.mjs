@@ -784,8 +784,13 @@ export function createInboxAgentRunner({
     now = () => new Date(),
     tzOffsetMinutes = null,
 } = {}) {
-    function agentEnv(agent, { readOnlyTools = false } = {}) {
+    function agentEnv(agent, { readOnlyTools = false, cwd = null } = {}) {
         const next = { ...env };
+        // opencode resolves its workspace from PWD, not from the process cwd.
+        // A PWD inherited from the shell that started the server pointed it at
+        // the IDUPI checkout, so every project read was denied as an "external
+        // directory" and the empty temp dir was no isolation boundary.
+        if (cwd) next.PWD = cwd;
         // The server's bearer token must never reach a child process: the agent
         // reads third-party text and could be steered into printing it. Every
         // IDUPI_*TOKEN* key goes too, not just the exact name.
@@ -846,7 +851,7 @@ export function createInboxAgentRunner({
                 }
                 const stdout = await execFileText(execFile, target.command, args, {
                     cwd: workingDir,
-                    env: agentEnv(agent, { readOnlyTools }),
+                    env: agentEnv(agent, { readOnlyTools, cwd: workingDir }),
                     timeout,
                     maxBuffer: MAX_OUTPUT_BYTES,
                     windowsHide: true,
