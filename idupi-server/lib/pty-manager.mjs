@@ -94,18 +94,32 @@ function validateDims(cols, rows) {
     }
 }
 
+// Windows PowerShell starts on the OEM code page (850/437), so UTF-8 written by
+// Node CLIs such as idupi-phone shows up as "Tel├®fono". The startup command
+// switches the console to UTF-8 both ways; the label stays short for the app.
+const WINDOWS_UTF8_SETUP =
+    "[Console]::InputEncoding = [Console]::OutputEncoding = [System.Text.Encoding]::UTF8";
+
+// Returns { argv, label }: argv is what gets spawned, label what the app shows.
 function normalizeShell(shell) {
-    if (typeof shell === "string" && shell.trim()) return [shell];
+    if (typeof shell === "string" && shell.trim()) {
+        return { argv: [shell], label: shell };
+    }
     if (
         Array.isArray(shell) && shell.length > 0 &&
         shell.every((arg) => typeof arg === "string")
     ) {
-        return [...shell];
+        return { argv: [...shell], label: shell.join(" ") };
     }
     if (shell === undefined || shell === null) {
-        return process.platform === "win32"
-            ? ["powershell.exe", "-NoLogo"]
-            : [process.env.SHELL || "/bin/bash"];
+        if (process.platform === "win32") {
+            return {
+                argv: ["powershell.exe", "-NoLogo", "-NoExit", "-Command", WINDOWS_UTF8_SETUP],
+                label: "powershell.exe -NoLogo",
+            };
+        }
+        const unixShell = process.env.SHELL || "/bin/bash";
+        return { argv: [unixShell], label: unixShell };
     }
     throw badRequest("shell must be a non-empty string or a string array");
 }
@@ -212,7 +226,7 @@ export class PtyManager {
             );
         }
 
-        const argv = normalizeShell(shell);
+        const { argv, label: shellLabel } = normalizeShell(shell);
         const id = "pty-" + randomBytes(8).toString("hex");
         const args = [
             "--cols", String(cols),
@@ -238,7 +252,7 @@ export class PtyManager {
             cols,
             rows,
             cwd: targetCwd,
-            shell: argv.join(" "),
+            shell: shellLabel,
             createdAt: new Date().toISOString(),
             alive: true,
             exitCode: null,
