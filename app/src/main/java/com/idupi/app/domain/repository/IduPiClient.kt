@@ -1,5 +1,6 @@
 package com.idupi.app.domain.repository
 
+import com.idupi.app.data.health.HealthSamplesUpload
 import com.idupi.app.data.phone.PhoneStatus
 import com.idupi.app.domain.model.*
 import kotlinx.coroutines.flow.Flow
@@ -154,6 +155,21 @@ interface IduPiClient {
     // Phone calendar reporting (phone-calendar T2). The phone owns the
     // calendars; this replaces the PC's snapshot of the next 14 days.
     suspend fun postPhoneCalendar(snapshot: PhoneCalendarSnapshot)
+
+    // Phone health (phone-health T2). The phone owns the sensors and Health
+    // Connect; the PC keeps the merged daily history. `installApps` travels
+    // with every upload so the PC knows which apps have a reading route.
+    suspend fun postHealthSamples(upload: HealthSamplesUpload)
+    suspend fun getHealthSummary(days: Int = 7): HealthSummary
+    suspend fun getHealthSources(): HealthSourcesResponse
+
+    /**
+     * Asks the PC to read the apps that do not publish to Health Connect
+     * (phone-health T3). `sources` empty means the server's default source set;
+     * the answer is a job the UI polls with [getHealthRefresh].
+     */
+    suspend fun refreshHealth(sources: List<String> = emptyList()): HealthRefreshJob
+    suspend fun getHealthRefresh(id: String): HealthRefreshJob
 
     /**
      * Pending PC proposals, newest first (phone-calendar T3). The PC never

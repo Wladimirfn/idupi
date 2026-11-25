@@ -25,6 +25,7 @@ import com.idupi.app.domain.repository.AiModelItem
 import com.idupi.app.domain.repository.IduPiClient
 import com.idupi.app.domain.repository.IduPiClientSource
 import com.idupi.app.domain.repository.SessionHistoryItem
+import com.idupi.app.data.health.HealthSamplesUpload
 import com.idupi.app.data.phone.PhoneStatus
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -698,6 +699,63 @@ class FakeIduPiClient : IduPiClient {
         maybeFail()
         proposalDecisions += ProposalDecisionCall(id, decision, eventId)
         return PhoneCalendarProposal(id = id, status = decision, eventId = eventId)
+    }
+
+    // --- Phone health (phone-health T2) ---
+
+    /** Every posted upload, in order. */
+    val postedHealthUploads = mutableListOf<HealthSamplesUpload>()
+
+    /** When non-null, [postHealthSamples] throws it instead of recording. */
+    var failHealthPostWith: Exception? = null
+
+    override suspend fun postHealthSamples(upload: HealthSamplesUpload) {
+        maybeFail()
+        failHealthPostWith?.let { throw it }
+        postedHealthUploads += upload
+    }
+
+    var healthSummaryToReturn: com.idupi.app.domain.model.HealthSummary =
+        com.idupi.app.domain.model.HealthSummary()
+    var healthSourcesToReturn: com.idupi.app.domain.model.HealthSourcesResponse =
+        com.idupi.app.domain.model.HealthSourcesResponse()
+    var healthRefreshToReturn: com.idupi.app.domain.model.HealthRefreshJob =
+        com.idupi.app.domain.model.HealthRefreshJob(id = "job-fake", status = "queued")
+    var failHealthSummaryWith: Exception? = null
+    var lastRequestedHealthSummaryDays: Int? = null
+
+    /** Every `refreshHealth` call, with the sources argument. */
+    val refreshHealthCalls = mutableListOf<List<String>>()
+
+    /** Every `getHealthRefresh` id, in order. */
+    val healthRefreshFetches = mutableListOf<String>()
+
+    override suspend fun getHealthSummary(days: Int): com.idupi.app.domain.model.HealthSummary {
+        maybeFail()
+        failHealthSummaryWith?.let { throw it }
+        lastRequestedHealthSummaryDays = days
+        return healthSummaryToReturn
+    }
+
+    override suspend fun getHealthSources(): com.idupi.app.domain.model.HealthSourcesResponse {
+        maybeFail()
+        return healthSourcesToReturn
+    }
+
+    override suspend fun refreshHealth(
+        sources: List<String>,
+    ): com.idupi.app.domain.model.HealthRefreshJob {
+        maybeFail()
+        refreshHealthCalls += sources
+        return healthRefreshToReturn
+    }
+
+    override suspend fun getHealthRefresh(
+        id: String,
+    ): com.idupi.app.domain.model.HealthRefreshJob {
+        maybeFail()
+        healthRefreshFetches += id
+        return healthRefreshToReturn
     }
 
     // --- Phone control (phone-agent T3) ---

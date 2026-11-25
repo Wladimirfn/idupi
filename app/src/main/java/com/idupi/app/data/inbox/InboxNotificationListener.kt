@@ -7,6 +7,7 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.idupi.app.data.IduPiClientProvider
 import com.idupi.app.data.calendar.CalendarReporting
+import com.idupi.app.data.health.HealthReporting
 import com.idupi.app.data.phone.PhoneStatusReporting
 import com.idupi.app.data.settings.SettingsProvider
 import com.idupi.app.domain.model.InboxApp
@@ -144,6 +145,8 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
         // phone-calendar T2: the same long-lived host carries the calendar
         // reporter and its ContentObserver.
         CalendarReporting.start(this)
+        // phone-health T2: the 3 h health report rides the same process.
+        HealthReporting.start(this)
         // Notifications already in the shade are never re-posted by the system:
         // this scan is the only way they reach the PC.
         scope.launch { runInitialScan() }
