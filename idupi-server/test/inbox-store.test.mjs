@@ -578,3 +578,82 @@ test("openPromotions and closePromotions work across apps", async (t) => {
     assert.deepEqual(store.openPromotions(), []);
     assert.throws(() => store.closePromotions("open"), /invalid state/);
 });
+
+// --- Interactuar (alerts-flow A3) -----------------------------------------
+
+function interaction(overrides = {}) {
+    return {
+        status: "done",
+        instruction: "revisa si este error afecta mis proyectos",
+        projectId: "idupi",
+        projectName: "IDUPI",
+        answer: "No te afecta: revisé package.json.",
+        startedAt: "2026-11-24T10:00:00.000Z",
+        finishedAt: "2026-11-24T10:02:00.000Z",
+        error: null,
+        ...overrides,
+    };
+}
+
+test("a new item starts without an interaction and keeps old files compatible", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: tickingClock() });
+
+    const { item } = store.add(message());
+    assert.equal(item.interaction, null);
+
+    const reloaded = createInboxStore({ dataDir: dir, log: silentLog });
+    assert.equal(reloaded.get(item.id).interaction, null);
+});
+
+test("the interaction round-trips through a store reload and can be replaced", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: tickingClock() });
+    const { item } = store.add(message());
+
+    const running = store.update(item.id, {
+        interaction: interaction({ status: "running", answer: "", finishedAt: null }),
+    });
+    assert.equal(running.interaction.status, "running");
+
+    const done = store.update(item.id, { interaction: interaction() });
+    assert.deepEqual(done.interaction, interaction());
+
+    const reloaded = createInboxStore({ dataDir: dir, log: silentLog });
+    assert.deepEqual(reloaded.get(item.id).interaction, interaction());
+
+    const cleared = reloaded.update(item.id, { interaction: null });
+    assert.equal(cleared.interaction, null);
+});
+
+test("a malformed stored interaction is dropped instead of breaking the item", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: tickingClock() });
+    const { item } = store.add(message());
+
+    // An older or newer file may carry a shape this build cannot trust.
+    const raw = JSON.parse(await readFile(join(dir, "inbox.json"), "utf8"));
+    raw.items[0].interaction = { status: "teleported", instruction: 42 };
+    await writeFile(join(dir, "inbox.json"), JSON.stringify(raw), "utf8");
+
+    const reloaded = createInboxStore({ dataDir: dir, log: silentLog });
+    assert.equal(reloaded.get(item.id).interaction, null);
+});
+
+test("interaction fields are clipped to the wire caps", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: tickingClock() });
+    const { item } = store.add(message());
+
+    const updated = store.update(item.id, {
+        interaction: interaction({
+            instruction: "i".repeat(5000),
+            answer: "a".repeat(20000),
+            error: "e".repeat(1000),
+        }),
+    });
+
+    assert.equal(updated.interaction.instruction.length, 2000);
+    assert.equal(updated.interaction.answer.length, 6000);
+    assert.equal(updated.interaction.error.length, 300);
+});

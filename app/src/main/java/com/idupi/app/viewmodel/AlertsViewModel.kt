@@ -7,6 +7,7 @@ import com.idupi.app.IduPiApp
 import com.idupi.app.data.IduPiClientProvider
 import com.idupi.app.data.inbox.InboxConversationGroup
 import com.idupi.app.data.inbox.InboxConversationGroups
+import com.idupi.app.data.inbox.InboxNotifier
 import com.idupi.app.data.inbox.ReplyActionRegistry
 import com.idupi.app.data.inbox.inboxConversationKey
 import com.idupi.app.data.settings.SettingsProvider
@@ -15,9 +16,12 @@ import com.idupi.app.domain.model.InboxDigest
 import com.idupi.app.domain.model.InboxDigestScope
 import com.idupi.app.domain.model.InboxDigestStatus
 import com.idupi.app.domain.model.InboxImportance
+import com.idupi.app.domain.model.InboxInteraction
+import com.idupi.app.domain.model.InboxInteractionStatus
 import com.idupi.app.domain.model.InboxItem
 import com.idupi.app.domain.model.InboxItemState
 import com.idupi.app.domain.model.InboxItemStatus
+import com.idupi.app.domain.model.Project
 import com.idupi.app.domain.repository.IduPiClientSource
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -65,6 +69,13 @@ class AlertsViewModel(
             .getOrDefault(false)
     },
     private val settingsRepository: SettingsRepository = SettingsProvider.repository,
+    private val notifyAgentAnswer: (InboxItem) -> Unit = { item ->
+        // alerts-flow A3: the investigation finished while the owner was away.
+        // Posting is a side effect; a shade that refuses the notification must
+        // never break the polling loop.
+        runCatching { InboxNotifier(IduPiApp.instance).showAgentAnswer(item) }
+            .onFailure { Log.w(TAG, "could not post the agent answer notification") }
+    },
 ) : ViewModel() {
 
     private val client get() = clientSource.client
@@ -96,6 +107,17 @@ class AlertsViewModel(
     /** Silenced conversations, from the persisted settings. */
     private val _silencedConversations = MutableStateFlow<Set<String>>(emptySet())
     val silencedConversations: StateFlow<Set<String>> = _silencedConversations.asStateFlow()
+
+    /** Linked PC projects the Interactuar sheet offers; empty until loaded. */
+    private val _projects = MutableStateFlow<List<Project>>(emptyList())
+    val projects: StateFlow<List<Project>> = _projects.asStateFlow()
+
+    /**
+     * Last interaction status seen per item id, for the one-shot
+     * "Respuesta del agente lista" ping (alerts-flow A3). A done answer that
+     * was already done on the first load is history, not news.
+     */
+    private val interactionStatuses = mutableMapOf<String, String>()
 
     private var pollingJob: Job? = null
 
@@ -397,6 +419,86 @@ class AlertsViewModel(
         }
     }
 
+    // --- Interactuar (alerts-flow A3) --------------------------------------
+
+    /**
+     * Hands one owner instruction to the PC agent (alerts-flow A3). The card
+     * switches to `running` immediately; the server's answered item replaces
+     * that optimistic block, and polling carries the finished answer.
+     */
+    fun interact(itemId: String, instruction: String, projectId: String?) {
+        val trimmed = instruction.trim()
+        if (trimmed.isEmpty()) {
+            _errorMessage.value = "Escribe una instrucción antes de enviar"
+            return
+        }
+        val item = _items.value.firstOrNull { it.id == itemId } ?: return
+        startInteraction(item, trimmed, projectId)
+    }
+
+    /** Re-sends a failed interaction with the same instruction and project. */
+    fun retryInteraction(item: InboxItem) {
+        val interaction = item.interaction ?: return
+        val instruction = interaction.instruction.trim()
+        if (instruction.isEmpty()) {
+            _errorMessage.value = "Escribe una instrucción antes de enviar"
+            return
+        }
+        val current = _items.value.firstOrNull { it.id == item.id } ?: item
+        startInteraction(current, instruction, interaction.projectId)
+    }
+
+    /**
+     * Loads the linked PC projects for the sheet's "Proyecto (opcional)"
+     * picker. Failures stay silent: the sheet still works with "Ninguno".
+     */
+    fun refreshProjects() {
+        viewModelScope.launch {
+            try {
+                _projects.value = client.getProjects()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to load projects for Interactuar", e)
+            }
+        }
+    }
+
+    private fun startInteraction(item: InboxItem, instruction: String, projectId: String?) {
+        val previous = item.interaction
+        val optimistic = InboxInteraction(
+            status = InboxInteractionStatus.RUNNING,
+            instruction = instruction,
+            projectId = projectId,
+            projectName = projectNameOf(projectId)
+        )
+        updateInteraction(item.id, optimistic)
+        viewModelScope.launch {
+            try {
+                val updated = client.interactWithInboxItem(item.id, instruction, projectId)
+                updated.interaction?.let { updateInteraction(item.id, it) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to start interaction for ${item.id}", e)
+                updateInteraction(item.id, previous)
+                _errorMessage.value =
+                    "No se pudo iniciar la interacción: ${e.localizedMessage}"
+            }
+        }
+    }
+
+    private fun updateInteraction(itemId: String, interaction: InboxInteraction?) {
+        publish(
+            _items.value.map {
+                if (it.id == itemId) it.copy(interaction = interaction) else it
+            }
+        )
+    }
+
+    private fun projectNameOf(projectId: String?): String? =
+        projectId?.let { id -> _projects.value.firstOrNull { it.id == id }?.name }
+
     private fun load(reportErrors: Boolean, showLoading: Boolean) {
         viewModelScope.launch {
             if (showLoading) _isLoading.value = true
@@ -577,8 +679,36 @@ class AlertsViewModel(
         )
     }
 
+    /**
+     * One-shot "Respuesta del agente lista" ping (alerts-flow A3). Only a
+     * running -> done transition while Alertas is observing it counts as
+     * news: an answer that was already done when the list first loaded would
+     * otherwise re-ping on every app start, and a failed job stays silent
+     * because its error is shown on the card.
+     */
+    private fun announceFinishedInteractions(
+        previous: List<InboxItem>,
+        next: List<InboxItem>
+    ) {
+        val previousById = previous.associateBy { it.id }
+        val presentIds = next.mapTo(mutableSetOf()) { it.id }
+        interactionStatuses.keys.retainAll(presentIds)
+        for (item in next) {
+            val status = item.interaction?.status ?: continue
+            val before = interactionStatuses[item.id]
+                ?: previousById[item.id]?.interaction?.status
+            interactionStatuses[item.id] = status
+            if (status == InboxInteractionStatus.DONE &&
+                before == InboxInteractionStatus.RUNNING
+            ) {
+                notifyAgentAnswer(item)
+            }
+        }
+    }
+
     /** Closed items leave Alertas; they are never part of the working list. */
     private fun publish(items: List<InboxItem>) {
+        announceFinishedInteractions(_items.value, items)
         _items.value = items.filter { it.state == InboxItemState.OPEN }
         _unreadCount.value = _items.value.count {
             it.state == InboxItemState.OPEN &&

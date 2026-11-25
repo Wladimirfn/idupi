@@ -7,6 +7,8 @@ import com.idupi.app.data.inbox.InboxConversationGroups
 import com.idupi.app.data.settings.InMemorySettingsRepository
 import com.idupi.app.data.settings.SettingsRepository
 import com.idupi.app.domain.model.InboxDigest
+import com.idupi.app.domain.model.InboxInteraction
+import com.idupi.app.domain.model.InboxInteractionStatus
 import com.idupi.app.domain.model.InboxItem
 import com.idupi.app.domain.model.InboxItemState
 import com.idupi.app.domain.model.InboxItemStatus
@@ -70,7 +72,8 @@ class AlertsViewModelTest {
         hasReplyAction: (String) -> Boolean = { true },
         sendReply: (String, String) -> Boolean = { _, _ -> true },
         settings: SettingsRepository = InMemorySettingsRepository(),
-    ) = AlertsViewModel(FakeClientSource(fake), hasReplyAction, sendReply, settings)
+        notifyAgentAnswer: (InboxItem) -> Unit = {},
+    ) = AlertsViewModel(FakeClientSource(fake), hasReplyAction, sendReply, settings, notifyAgentAnswer)
 
     @Test
     fun `init loads the inbox and requests the page size`() = runTest {
@@ -649,5 +652,140 @@ class AlertsViewModelTest {
 
         assertEquals(listOf("p1"), viewModel.items.value.map { it.id })
         assertNotNull(viewModel.errorMessage.value)
+    }
+
+    // --- Interactuar (alerts-flow A3) --------------------------------------
+
+    private fun runningInteraction(instruction: String = "revisa esto") = InboxInteraction(
+        status = InboxInteractionStatus.RUNNING,
+        instruction = instruction,
+        startedAt = "2026-11-24T10:00:00.000Z"
+    )
+
+    private fun doneInteraction(
+        instruction: String = "revisa esto",
+        answer: String = "No te afecta: revisé package.json."
+    ) = InboxInteraction(
+        status = InboxInteractionStatus.DONE,
+        instruction = instruction,
+        projectId = "idupi",
+        projectName = "IDUPI",
+        answer = answer,
+        startedAt = "2026-11-24T10:00:00.000Z",
+        finishedAt = "2026-11-24T10:02:00.000Z"
+    )
+
+    @Test
+    fun `interacting posts the instruction and project and shows the running state`() = runTest {
+        fake.inboxItemsToReturn = listOf(sampleItem())
+        fake.interactionResult = sampleItem().copy(interaction = runningInteraction())
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        viewModel.interact("i1", "revisa esto", "idupi")
+        advanceUntilIdle()
+
+        val request = fake.interactionRequests.single()
+        assertEquals("i1", request.id)
+        assertEquals("revisa esto", request.instruction)
+        assertEquals("idupi", request.projectId)
+        assertEquals(
+            InboxInteractionStatus.RUNNING,
+            viewModel.items.value.single().interaction?.status
+        )
+    }
+
+    @Test
+    fun `a running to done transition posts the answer notification once`() = runTest {
+        val notified = mutableListOf<InboxItem>()
+        fake.inboxItemsToReturn = listOf(sampleItem().copy(interaction = runningInteraction()))
+        val viewModel = viewModel(notifyAgentAnswer = { notified += it })
+        advanceUntilIdle()
+        assertTrue(notified.isEmpty())
+
+        fake.inboxItemsToReturn = listOf(
+            sampleItem().copy(interaction = doneInteraction())
+        )
+        viewModel.refresh()
+        advanceUntilIdle()
+
+        assertEquals(1, notified.size)
+        assertEquals("i1", notified.single().id)
+        assertEquals("revisa esto", notified.single().interaction?.instruction)
+
+        // The next poll sees the same done item: no second ping.
+        viewModel.refresh()
+        advanceUntilIdle()
+        assertEquals(1, notified.size)
+    }
+
+    @Test
+    fun `an interaction already done on the first load does not notify`() = runTest {
+        val notified = mutableListOf<InboxItem>()
+        fake.inboxItemsToReturn = listOf(sampleItem().copy(interaction = doneInteraction()))
+
+        val viewModel = viewModel(notifyAgentAnswer = { notified += it })
+        advanceUntilIdle()
+
+        assertTrue(notified.isEmpty())
+    }
+
+    @Test
+    fun `a failed interaction request keeps the item and shows an inline error`() = runTest {
+        fake.inboxItemsToReturn = listOf(sampleItem())
+        fake.failInteractionWith = RuntimeException("server off")
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        viewModel.interact("i1", "revisa esto", null)
+        advanceUntilIdle()
+
+        assertEquals("i1", viewModel.items.value.single().id)
+        assertEquals(
+            "No se pudo iniciar la interacción: server off",
+            viewModel.errorMessage.value
+        )
+    }
+
+    @Test
+    fun `retrying a failed interaction reuses its instruction and project`() = runTest {
+        val failed = sampleItem().copy(
+            interaction = InboxInteraction(
+                status = InboxInteractionStatus.FAILED,
+                instruction = "revisa si esto afecta al proyecto",
+                projectId = "idupi",
+                projectName = "IDUPI",
+                error = "agent failed"
+            )
+        )
+        fake.inboxItemsToReturn = listOf(failed)
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        viewModel.retryInteraction(failed)
+        advanceUntilIdle()
+
+        val request = fake.interactionRequests.single()
+        assertEquals("i1", request.id)
+        assertEquals("revisa si esto afecta al proyecto", request.instruction)
+        assertEquals("idupi", request.projectId)
+    }
+
+    @Test
+    fun `refreshProjects exposes the linked projects for the picker`() = runTest {
+        fake.projectsToReturn = listOf(
+            com.idupi.app.domain.model.Project(
+                id = "idupi",
+                name = "IDUPI",
+                path = "C:\\dev\\idupi",
+                isActive = false
+            )
+        )
+        val viewModel = viewModel()
+
+        viewModel.refreshProjects()
+        advanceUntilIdle()
+
+        assertEquals(listOf("idupi"), viewModel.projects.value.map { it.id })
     }
 }

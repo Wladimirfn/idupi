@@ -7,9 +7,13 @@
 // process at a time works through the queue, so a burst of notifications never
 // spawns a burst of CLIs.
 
+import { statSync } from "node:fs";
+
 import {
     AGENTS,
     EFFORTS,
+    MAX_INTERACTION_INSTRUCTION_CHARS,
+    supportsReadOnlyInteraction,
 } from "./inbox-agent.mjs";
 import {
     DEFAULT_MAX_TEXT_CHARS,
@@ -181,6 +185,8 @@ function isoFrom(value) {
  * @param {{
  *   store: ReturnType<import("./inbox-store.mjs").createInboxStore>,
  *   runner: { run: Function },
+ *   interactionRunner?: { runInteraction: Function, supports?: Function },
+ *   projects?: () => Array<{ id: string, name?: string, path: string }>,
  *   now?: () => Date | number | string,
  *   openCodeModels?: () => string[] | Promise<string[]>,
  *   maxJsonBytes?: number,
@@ -192,6 +198,8 @@ export function createInboxRoutes({
     runner,
     digestStore = null,
     calendarStore = null,
+    interactionRunner = null,
+    projects = () => [],
     now = () => new Date(),
     openCodeModels = () => [],
     maxJsonBytes = DEFAULT_MAX_JSON_BYTES,
@@ -805,6 +813,233 @@ export function createInboxRoutes({
         sendJson(res, 202, { item });
     }
 
+    // --- Interactuar (alerts-flow A3) ------------------------------------
+
+    // One investigation at a time, on its own chain: a job that may last five
+    // minutes must not block incoming notification analysis. The chain never
+    // rejects; runInteractionJob owns its failures and stores them on the item.
+    let interactionTail = Promise.resolve();
+
+    // Per-item generation. A new interaction replaces the previous one, and a
+    // superseded job's late answer is discarded instead of overwriting it.
+    const interactionTokens = new Map();
+
+    function interactionShape({
+        status,
+        instruction,
+        project = null,
+        answer = "",
+        startedAt = null,
+        finishedAt = null,
+        error = null,
+    }) {
+        return {
+            status,
+            instruction,
+            projectId: project?.id ?? null,
+            projectName: project?.name ?? null,
+            answer,
+            startedAt,
+            finishedAt,
+            error,
+        };
+    }
+
+    /** One investigation. Failures become short safe text on the item. */
+    async function runInteractionJob({ id, token, instruction, project, startedAt }) {
+        try {
+            const item = store.get(id);
+            if (!item) return;
+            const config = store.getConfig();
+            try {
+                const answer = await interactionRunner.runInteraction(config, {
+                    item,
+                    instruction,
+                    project,
+                });
+                if (interactionTokens.get(id) !== token) return;
+                store.update(id, {
+                    interaction: interactionShape({
+                        status: "done",
+                        instruction,
+                        project,
+                        answer: String(answer ?? ""),
+                        startedAt,
+                        finishedAt: stamp(),
+                    }),
+                    updatedAt: stamp(),
+                });
+            } catch (err) {
+                if (interactionTokens.get(id) !== token) return;
+                try {
+                    store.update(id, {
+                        interaction: interactionShape({
+                            status: "failed",
+                            instruction,
+                            project,
+                            startedAt,
+                            finishedAt: stamp(),
+                            error: shortError(err),
+                        }),
+                        updatedAt: stamp(),
+                    });
+                } catch {
+                    // The JSON file could not be written; the in-memory
+                    // interaction still shows "running" and can be retried.
+                }
+            }
+        } catch {
+            // Fire-and-forget: one broken item must never stall the queue.
+        }
+    }
+
+    function enqueueInteraction(job) {
+        interactionTail = interactionTail
+            .then(() => runInteractionJob(job), () => runInteractionJob(job))
+            .catch(() => {});
+    }
+
+    /** Trimmed owner instruction, 1..MAX characters. */
+    function requiredInstruction(body) {
+        const value = body?.instruction;
+        if (value !== undefined && value !== null && typeof value !== "string") {
+            throw typedError("INVALID_INSTRUCTION", "instruction must be a string");
+        }
+        const raw = typeof value === "string" ? value.trim() : "";
+        if (raw.length === 0) {
+            throw typedError("INVALID_INSTRUCTION", "instruction is required");
+        }
+        if (raw.length > MAX_INTERACTION_INSTRUCTION_CHARS) {
+            throw typedError(
+                "INVALID_INSTRUCTION",
+                `instruction exceeds ${MAX_INTERACTION_INSTRUCTION_CHARS} characters`,
+            );
+        }
+        return raw;
+    }
+
+    /**
+     * Optional linked project, resolved by id against the registry the
+     * `/api/v1/projects` route serves. The agent's cwd needs a real directory;
+     * an unknown id or a missing path is a 400, never a silent fallback.
+     */
+    function resolveInteractionProject(rawId) {
+        if (rawId === undefined || rawId === null || rawId === "") return null;
+        if (typeof rawId !== "string") {
+            throw typedError("INVALID_PROJECT", "projectId must be a string");
+        }
+        const id = rawId.trim();
+        if (id.length === 0) return null;
+
+        const listed = typeof projects === "function" ? projects() : [];
+        const match = Array.isArray(listed)
+            ? listed.find((entry) => entry && entry.id === id)
+            : null;
+        if (!match) {
+            throw typedError("INVALID_PROJECT", "project not found");
+        }
+        const project = {
+            id: String(match.id),
+            name: String(match.name ?? match.id),
+            path: String(match.path ?? ""),
+        };
+        let stats = null;
+        try {
+            stats = statSync(project.path);
+        } catch {
+            stats = null;
+        }
+        if (!stats) {
+            throw typedError("INVALID_PROJECT", "project path is not available");
+        }
+        if (!stats.isDirectory()) {
+            throw typedError("INVALID_PROJECT", "project path is not a directory");
+        }
+        return project;
+    }
+
+    async function interact(req, res, id) {
+        if (!ITEM_ID_PATTERN.test(id)) {
+            sendError(res, 404, "inbox item not found", "NOT_FOUND");
+            return;
+        }
+        if (!store.get(id)) {
+            sendError(res, 404, "inbox item not found", "NOT_FOUND");
+            return;
+        }
+        if (!interactionRunner || typeof interactionRunner.runInteraction !== "function") {
+            sendError(res, 503, "interaction is not configured", "INTERACTION_UNAVAILABLE");
+            return;
+        }
+
+        let body;
+        try {
+            body = await readJsonBody(req, maxJsonBytes);
+        } catch (err) {
+            if (err && err.code === "TOO_LARGE") {
+                sendError(res, 413, err.message, "TOO_LARGE");
+            } else {
+                sendError(res, 400, (err && err.message) || "invalid body", "BAD_REQUEST");
+            }
+            return;
+        }
+        if (!body || typeof body !== "object" || Array.isArray(body)) {
+            sendError(res, 400, "body must be a JSON object", "INVALID_MESSAGE");
+            return;
+        }
+
+        let instruction;
+        let project;
+        try {
+            instruction = requiredInstruction(body);
+            project = resolveInteractionProject(body.projectId);
+        } catch (err) {
+            sendError(res, 400, err.message, err.code || "INVALID_MESSAGE");
+            return;
+        }
+
+        const config = store.getConfig();
+        const supported = typeof interactionRunner.supports === "function"
+            ? interactionRunner.supports(config.agent) === true
+            : supportsReadOnlyInteraction(config.agent);
+        if (!supported) {
+            sendError(
+                res,
+                400,
+                `este agente no soporta Interactuar (${config.agent})`,
+                "INTERACTION_UNSUPPORTED",
+            );
+            return;
+        }
+
+        const startedAt = stamp();
+        const token = (interactionTokens.get(id) ?? 0) + 1;
+        interactionTokens.set(id, token);
+
+        let item;
+        try {
+            item = store.update(id, {
+                interaction: interactionShape({
+                    status: "running",
+                    instruction,
+                    project,
+                    startedAt,
+                }),
+                updatedAt: startedAt,
+            });
+        } catch (err) {
+            sendError(res, 500, shortError(err), "INTERNAL");
+            return;
+        }
+        if (!item) {
+            sendError(res, 404, "inbox item not found", "NOT_FOUND");
+            return;
+        }
+
+        enqueueInteraction({ id, token, instruction, project, startedAt });
+        sendJson(res, 202, { interaction: item.interaction });
+    }
+
     function getConfig(res) {
         const config = store.getConfig();
         sendJson(res, 200, {
@@ -986,6 +1221,14 @@ export function createInboxRoutes({
                     return true;
                 }
                 retryAnalysis(req, res, id);
+                return true;
+            }
+            if (action === "interact") {
+                if (req.method !== "POST") {
+                    methodNotAllowed(res, "POST");
+                    return true;
+                }
+                await interact(req, res, id);
                 return true;
             }
         }

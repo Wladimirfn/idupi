@@ -13,7 +13,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { AGENTS, EFFORTS } from "./inbox-agent.mjs";
+import { AGENTS, EFFORTS, MAX_INTERACTION_ANSWER_CHARS, MAX_INTERACTION_INSTRUCTION_CHARS } from "./inbox-agent.mjs";
 
 export const ITEM_ID_PATTERN = /^inb-[0-9a-f]{12}$/;
 
@@ -36,6 +36,9 @@ export function isValidAppId(value) {
 export const INBOX_STATUSES = ["analyzing", "ready", "failed"];
 export const INBOX_IMPORTANCES = ["high", "medium", "low"];
 export const INBOX_STATES = ["open", "handled", "replied", "auto_replied", "dismissed"];
+
+/** Interactuar job state persisted with the item (alerts-flow A3). */
+export const INTERACTION_STATUSES = ["running", "done", "failed"];
 
 /** States that make an item closed for the owner's working list. */
 export const CLOSED_STATES = ["handled", "replied", "auto_replied", "dismissed"];
@@ -133,6 +136,29 @@ function sanitizeEventConflicts(value) {
         conflicts.push({ title: singleLine(entry.title, 120), start, end });
     }
     return conflicts;
+}
+
+/**
+ * The Interactuar result revalidated on load and on every write (alerts-flow
+ * A3). A missing or malformed block becomes null: an item from before A3, or
+ * one written by a newer server this build cannot trust, still decodes.
+ */
+function sanitizeStoredInteraction(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const status = INTERACTION_STATUSES.includes(value.status) ? value.status : null;
+    if (!status) return null;
+    const instruction = clip(value.instruction, MAX_INTERACTION_INSTRUCTION_CHARS).trim();
+    if (instruction.length === 0) return null;
+    return {
+        status,
+        instruction,
+        projectId: singleLine(value.projectId, MAX_FIELD_CHARS) || null,
+        projectName: singleLine(value.projectName, MAX_FIELD_CHARS) || null,
+        answer: clip(value.answer, MAX_INTERACTION_ANSWER_CHARS),
+        startedAt: toIso(value.startedAt, null),
+        finishedAt: toIso(value.finishedAt, null),
+        error: value.error ? clip(String(value.error), MAX_ERROR_CHARS) : null,
+    };
 }
 
 /**
@@ -276,6 +302,8 @@ export function createInboxStore({
                 suggestedReply: clip(candidate.suggestedReply, 1200),
                 // Items written before alerts-flow A2 have no flag: false.
                 promotion: candidate.promotion === true,
+                // Items written before alerts-flow A3 have no interaction: null.
+                interaction: sanitizeStoredInteraction(candidate.interaction),
                 event: sanitizeStoredEvent(candidate.event),
                 eventConflicts: sanitizeEventConflicts(candidate.eventConflicts),
                 error: candidate.error ? clip(candidate.error, MAX_ERROR_CHARS) : null,
@@ -378,6 +406,8 @@ export function createInboxStore({
             summary: "",
             suggestedReply: "",
             promotion: false,
+            // Interactuar (alerts-flow A3): filled by the route, not the capture.
+            interaction: null,
             event: null,
             eventConflicts: [],
             error: null,
@@ -545,6 +575,9 @@ export function createInboxStore({
         if ("promotion" in patch) {
             if (typeof patch.promotion !== "boolean") throw new Error("invalid promotion");
             item.promotion = patch.promotion;
+        }
+        if ("interaction" in patch) {
+            item.interaction = sanitizeStoredInteraction(patch.interaction);
         }
         if ("event" in patch) item.event = sanitizeStoredEvent(patch.event);
         if ("eventConflicts" in patch) {

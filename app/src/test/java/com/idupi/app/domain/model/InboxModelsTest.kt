@@ -200,8 +200,66 @@ class InboxModelsTest {
         assertEquals("archived", item.state)
         assertEquals("critical", item.importance)
     }
+
+    @Test
+    fun `an item from before A3 decodes with a null interaction`() {
+        val item = json.decodeFromString<InboxItem>(
+            """{"id":"old","app":"gmail","text":"x","notificationKey":"k"}"""
+        )
+
+        assertNull(item.interaction)
+    }
+
+    @Test
+    fun `decodes the interaction block persisted by the server`() {
+        val payload = """
+            {
+              "id": "inb-2f1a9c",
+              "app": "gmail",
+              "text": "Build failed",
+              "notificationKey": "k3",
+              "interaction": {
+                "status": "done",
+                "instruction": "revisa si este error afecta mis proyectos",
+                "projectId": "idupi",
+                "projectName": "IDUPI",
+                "answer": "No te afecta: revisé package.json.",
+                "startedAt": "2026-11-24T10:00:00.000Z",
+                "finishedAt": "2026-11-24T10:02:00.000Z",
+                "error": null
+              }
+            }
+        """.trimIndent()
+
+        val interaction = json.decodeFromString<InboxItem>(payload).interaction
+
+        assertEquals(InboxInteractionStatus.DONE, interaction?.status)
+        assertEquals("revisa si este error afecta mis proyectos", interaction?.instruction)
+        assertEquals("idupi", interaction?.projectId)
+        assertEquals("IDUPI", interaction?.projectName)
+        assertEquals("No te afecta: revisé package.json.", interaction?.answer)
+        assertEquals("2026-11-24T10:00:00.000Z", interaction?.startedAt)
+        assertEquals("2026-11-24T10:02:00.000Z", interaction?.finishedAt)
+    }
+
+    @Test
+    fun `a partial interaction from a newer server still decodes with defaults`() {
+        val interaction = json.decodeFromString<InboxInteraction>(
+            """{"status":"running","instruction":"revisa esto","future":true}"""
+        )
+
+        assertEquals(InboxInteractionStatus.RUNNING, interaction.status)
+        assertEquals("revisa esto", interaction.instruction)
+        assertNull(interaction.projectId)
+        assertNull(interaction.projectName)
+        assertEquals("", interaction.answer)
+        assertNull(interaction.startedAt)
+        assertNull(interaction.finishedAt)
+        assertNull(interaction.error)
+    }
 }
 
 /** Mirrors the private envelope in RealIduPiClient so the shape is pinned. */
 @Serializable
 private data class InboxItemsEnvelope(val items: List<InboxItem> = emptyList())
+

@@ -895,6 +895,20 @@ class RealIduPiClient : IduPiClient {
         send(HttpMethod.Post, "/api/v1/inbox/$id/retry")
             .body<InboxItemEnvelope>().item
 
+    override suspend fun interactWithInboxItem(
+        id: String,
+        instruction: String,
+        projectId: String?
+    ): InboxItem {
+        // The 202 body carries only the interaction; the rest of the item is
+        // unchanged on the server, so the caller merges this block in.
+        val envelope = send(HttpMethod.Post, "/api/v1/inbox/$id/interact") {
+            contentType(ContentType.Application.Json)
+            setBody(InboxInteractionRequest(instruction = instruction, projectId = projectId))
+        }.body<InboxInteractionEnvelope>()
+        return InboxItem(id = id, interaction = envelope.interaction)
+    }
+
     override suspend fun getInboxConfig(): InboxConfig =
         send(HttpMethod.Get, "/api/v1/inbox/config").body()
 
@@ -1126,6 +1140,10 @@ private data class InboxConfigPayload(val agent: String, val model: String, val 
 /** `POST|GET /inbox/digest` wraps the conversation digest. */
 @Serializable
 private data class InboxDigestEnvelope(val digest: InboxDigest)
+
+/** `POST /inbox/{id}/interact` wraps the item's `interaction` (alerts-flow A3). */
+@Serializable
+private data class InboxInteractionEnvelope(val interaction: InboxInteraction = InboxInteraction())
 
 /** `POST /inbox/digest` body when the digest spans a scope (alerts-flow A2). */
 @Serializable

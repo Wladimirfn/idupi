@@ -42,7 +42,7 @@ draft) ready to review.
       `promocion`); promotions/newsletters skip per-item noise, group into one
       "Promociones" card with one digest (server digest scope by category) and
       "Marcar todo revisado". Server + app. Tests.
-- [ ] A3 Interactuar. Card button opens a sheet: instruction text + optional
+- [x] A3 Interactuar. Card button opens a sheet: instruction text + optional
       linked project. `POST /api/v1/inbox/{id}/interact` runs an agent with
       READ-ONLY tools in the project cwd (alert content stays an untrusted block,
       the instruction is trusted); answer stored on the item and shown on the
@@ -99,9 +99,26 @@ Delivery: about 900–1200 authored lines forecast; stacked PRs to main per task
   group (`PROMOTIONS_KEY`), one "Promociones" card (count line, app chips,
   Resumir, Ver todas, Marcar todo revisado, no reply buttons), reminder/
   auto-reply policy skips promotions. RED: app compile failed on the missing
-  promotion APIs; GREEN: server 870/870 (13 new), app 891/891 (12 new),
+  promotion APIs; GREEN: server 870/870 (13 new), app 892/892 (13 new),
   `assembleDebug` green.
+- 2026-11-25: A3 done (server earlier by work-2; app now). App:
+  `InboxItem.interaction` + `InboxInteraction`/`InboxInteractionStatus`
+  (all fields defaulted) and `InboxInteractionRequest`;
+  `IduPiClient.interactWithInboxItem(id, instruction, projectId?)` posting to
+  `/api/v1/inbox/{id}/interact` (202 -> `{interaction}`, projects reused from
+  `getProjects`); `AlertsViewModel.interact`/`retryInteraction` start an
+  optimistic `running` block and let the existing 10 s poll finish it; a
+  running -> done transition posts `InboxAgentAnswer` ("Respuesta del agente
+  lista", first instruction line, tap opens Alertas) once per answer (a done
+  item on first load never pings, failures stay silent); "Interactuar" button
+  in the actions FlowRow of the single-item and conversation cards (never on
+  Promociones) opens an `AgentInteractionSheet` (instruction field, optional
+  project dropdown, "Enviar al agente"); running/done/failed render inline
+  (progress, "Respuesta del agente · proyecto" + SelectionContainer + Copiar,
+  short error + Reintentar). RED: app compile failed on the missing APIs;
+  GREEN: app 905/905 with `testDebugUnitTest assembleDebug` (13 new: 4
+  `InboxAgentAnswerTest`, 6 model, 7 ViewModel cases), 0 failures.
 
 ## Next step
 
-A3.
+A4.

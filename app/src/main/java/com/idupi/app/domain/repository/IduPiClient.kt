@@ -156,6 +156,18 @@ interface IduPiClient {
     suspend fun setInboxConversationState(app: String, conversation: String, state: String): Int
 
     /**
+     * Interactuar (alerts-flow A3): hands one owner instruction to the PC agent,
+     * which works in [projectId] (or in no project when null) with read-only
+     * tools. The server answers 202 with the item's `running` interaction; the
+     * answer arrives later on the item and polling picks it up.
+     */
+    suspend fun interactWithInboxItem(
+        id: String,
+        instruction: String,
+        projectId: String? = null
+    ): InboxItem
+
+    /**
      * Closes every open promotion in one call (`handled`); returns how many
      * items left the list.
      */

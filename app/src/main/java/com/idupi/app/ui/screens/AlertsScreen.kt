@@ -21,6 +21,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
@@ -37,6 +40,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -47,6 +51,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
@@ -76,8 +81,11 @@ import com.idupi.app.domain.model.InboxDigestStatus
 import com.idupi.app.domain.model.InboxEvent
 import com.idupi.app.domain.model.InboxEventConflict
 import com.idupi.app.domain.model.InboxImportance
+import com.idupi.app.domain.model.InboxInteraction
+import com.idupi.app.domain.model.InboxInteractionStatus
 import com.idupi.app.domain.model.InboxItem
 import com.idupi.app.domain.model.InboxItemState
+import com.idupi.app.domain.model.Project
 import com.idupi.app.ui.components.AddEventSheet
 import com.idupi.app.ui.theme.AppShapes
 import com.idupi.app.ui.theme.AppSpacing
@@ -127,6 +135,7 @@ fun AlertsScreen(
     val digests by viewModel.digests.collectAsState()
     val requestingDigests by viewModel.requestingDigests.collectAsState()
     val silencedConversations by viewModel.silencedConversations.collectAsState()
+    val projects by viewModel.projects.collectAsState()
     val addEvent by calendarViewModel.addEvent.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -149,6 +158,9 @@ fun AlertsScreen(
     var editingItem by remember { mutableStateOf<InboxItem?>(null) }
     var editingGroup by remember { mutableStateOf<InboxConversationGroup?>(null) }
     var editText by remember { mutableStateOf("") }
+
+    // Interactuar (alerts-flow A3): one sheet at a time, always for one item.
+    var interactingItem by remember { mutableStateOf<InboxItem?>(null) }
 
     Scaffold(
         topBar = {
@@ -259,6 +271,19 @@ fun AlertsScreen(
                                                 CalendarEventBuilder.prefillFor(event)
                                             )
                                         }
+                                    },
+                                    onInteract = {
+                                        interactingItem = item
+                                        viewModel.refreshProjects()
+                                    },
+                                    onRetryInteraction = { viewModel.retryInteraction(item) },
+                                    onCopyInteraction = { answer ->
+                                        clipboard.setText(AnnotatedString(answer))
+                                        Toast.makeText(
+                                            context,
+                                            "Respuesta copiada",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
                                     }
                                 )
                             } else {
@@ -295,6 +320,21 @@ fun AlertsScreen(
                                                 CalendarEventBuilder.prefillFor(event)
                                             )
                                         }
+                                    },
+                                    onInteract = {
+                                        interactingItem = group.newestItem
+                                        viewModel.refreshProjects()
+                                    },
+                                    onRetryInteraction = {
+                                        viewModel.retryInteraction(group.newestItem)
+                                    },
+                                    onCopyInteraction = { answer ->
+                                        clipboard.setText(AnnotatedString(answer))
+                                        Toast.makeText(
+                                            context,
+                                            "Respuesta copiada",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
                                     }
                                 )
                             }
@@ -342,6 +382,228 @@ fun AlertsScreen(
         onDismiss = calendarViewModel::closeAddEvent,
         zone = zone
     )
+
+    interactingItem?.let { item ->
+        AgentInteractionSheet(
+            projects = projects,
+            onSend = { instruction, projectId ->
+                viewModel.interact(item.id, instruction, projectId)
+                interactingItem = null
+            },
+            onDismiss = { interactingItem = null }
+        )
+    }
+}
+
+/**
+ * Interactuar sheet (alerts-flow A3): one owner instruction plus an optional
+ * linked project. The agent works read-only in that project and the answer
+ * lands on the card, so nothing leaves the phone from here except the request.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AgentInteractionSheet(
+    projects: List<Project>,
+    onSend: (instruction: String, projectId: String?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var instruction by rememberSaveable { mutableStateOf("") }
+    var selectedProjectId by rememberSaveable { mutableStateOf<String?>(null) }
+    var dropdownExpanded by remember { mutableStateOf(false) }
+    val selectedProject = projects.firstOrNull { it.id == selectedProjectId }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = SlateCard,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(AppSpacing.cardPadding),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.sm),
+        ) {
+            Text(
+                text = "Interactuar",
+                style = AppTypography.bodyLarge.copy(fontWeight = FontWeight.Bold),
+                color = TextPrimary,
+            )
+            Text(
+                text = "El agente revisa la alerta y te responde aquí. Solo lee: no escribe archivos ni ejecuta comandos.",
+                style = AppTypography.bodySmall,
+                color = TextSecondary,
+            )
+
+            OutlinedTextField(
+                value = instruction,
+                onValueChange = { instruction = it },
+                label = { Text("¿Qué quieres que haga el agente?", style = AppTypography.bodySmall) },
+                placeholder = {
+                    Text(
+                        "Ej.: revisa si esto afecta mis proyectos",
+                        style = AppTypography.bodySmall,
+                        color = TextSecondary,
+                    )
+                },
+                minLines = 3,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = TextPrimary,
+                    unfocusedTextColor = TextPrimary,
+                    focusedBorderColor = PrimaryIndigo,
+                    unfocusedBorderColor = SlateBorder,
+                    focusedContainerColor = SlateBg,
+                    unfocusedContainerColor = SlateBg,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            Box(modifier = Modifier.fillMaxWidth()) {
+                OutlinedButton(
+                    onClick = { dropdownExpanded = true },
+                    border = BorderStroke(1.dp, SlateBorder),
+                    shape = AppShapes.small,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = "Proyecto (opcional): ${selectedProject?.name ?: "Ninguno"}",
+                        style = AppTypography.bodySmall,
+                        color = TextPrimary,
+                    )
+                }
+                DropdownMenu(
+                    expanded = dropdownExpanded,
+                    onDismissRequest = { dropdownExpanded = false },
+                ) {
+                    DropdownMenuItem(
+                        text = { Text("Ninguno", style = AppTypography.bodySmall, color = TextPrimary) },
+                        onClick = {
+                            dropdownExpanded = false
+                            selectedProjectId = null
+                        }
+                    )
+                    projects.forEach { project ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    text = project.name,
+                                    style = AppTypography.bodySmall,
+                                    color = TextPrimary,
+                                )
+                            },
+                            onClick = {
+                                dropdownExpanded = false
+                                selectedProjectId = project.id
+                            }
+                        )
+                    }
+                }
+            }
+
+            Button(
+                onClick = { onSend(instruction, selectedProjectId) },
+                enabled = instruction.isNotBlank(),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = PrimaryIndigo,
+                    contentColor = Color.White,
+                ),
+                shape = AppShapes.small,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Enviar al agente", fontWeight = FontWeight.Bold)
+            }
+        }
+    }
+}
+
+/**
+ * The agent's answer block on a card (alerts-flow A3): progress while running,
+ * the answer with "Copiar" when done, a short error with "Reintentar" when the
+ * job failed.
+ */
+@Composable
+private fun AgentInteractionSection(
+    interaction: InboxInteraction,
+    onRetry: () -> Unit,
+    onCopy: () -> Unit,
+) {
+    when (interaction.status) {
+        InboxInteractionStatus.RUNNING -> {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm),
+            ) {
+                CircularProgressIndicator(
+                    color = PrimaryIndigo,
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(16.dp),
+                )
+                Text(
+                    text = "El agente está revisando…",
+                    style = AppTypography.bodySmall,
+                    color = TextSecondary,
+                )
+            }
+        }
+        InboxInteractionStatus.DONE -> {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(AppShapes.small)
+                    .background(SlateBg)
+                    .border(1.dp, SlateBorder, AppShapes.small)
+                    .padding(AppSpacing.md),
+                verticalArrangement = Arrangement.spacedBy(AppSpacing.xs),
+            ) {
+                Text(
+                    text = interactionHeader(interaction),
+                    style = AppTypography.labelSmall,
+                    color = PrimaryIndigo,
+                )
+                SelectionContainer {
+                    Text(
+                        text = interaction.answer.ifBlank { "El agente no devolvió una respuesta." },
+                        style = AppTypography.bodySmall,
+                        color = TextPrimary,
+                    )
+                }
+                if (interaction.answer.isNotBlank()) {
+                    TextButton(
+                        onClick = onCopy,
+                        contentPadding = PaddingValues(horizontal = AppSpacing.xs),
+                        modifier = Modifier.align(Alignment.End),
+                    ) {
+                        Text("Copiar", style = AppTypography.labelSmall, color = PrimaryIndigo)
+                    }
+                }
+            }
+        }
+        InboxInteractionStatus.FAILED -> {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm),
+            ) {
+                Text(
+                    text = interaction.error?.takeIf { it.isNotBlank() }
+                        ?: "No se pudo completar la interacción",
+                    style = AppTypography.bodySmall,
+                    color = StatusError,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onRetry) {
+                    Text("Reintentar", style = AppTypography.labelSmall, color = PrimaryIndigo)
+                }
+            }
+        }
+    }
+}
+
+/** "Respuesta del agente", plus " · <project>" when the agent worked in one. */
+private fun interactionHeader(interaction: InboxInteraction): String {
+    val project = interaction.projectName?.takeIf { it.isNotBlank() }
+        ?: return "Respuesta del agente"
+    return "Respuesta del agente · $project"
 }
 
 @Composable
@@ -490,6 +752,9 @@ private fun InboxItemCard(
     onDismiss: () -> Unit,
     onRetry: () -> Unit,
     onAddToCalendar: () -> Unit,
+    onInteract: () -> Unit,
+    onRetryInteraction: () -> Unit,
+    onCopyInteraction: (String) -> Unit,
 ) {
     var expanded by rememberSaveable(item.id) { mutableStateOf(false) }
     val isOpen = item.state == InboxItemState.OPEN
@@ -622,6 +887,14 @@ private fun InboxItemCard(
                 )
             }
 
+            item.interaction?.let { interaction ->
+                AgentInteractionSection(
+                    interaction = interaction,
+                    onRetry = onRetryInteraction,
+                    onCopy = { onCopyInteraction(interaction.answer) }
+                )
+            }
+
             if (isOpen) {
                 FlowRow(
                     horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm),
@@ -667,6 +940,11 @@ private fun InboxItemCard(
                         onClick = onDismiss,
                         contentColor = StatusError
                     )
+                    CompactOutlinedButton(
+                        label = "Interactuar",
+                        onClick = onInteract,
+                        contentColor = PrimaryIndigo
+                    )
                 }
                 if (!canReply) {
                     Text(
@@ -702,6 +980,9 @@ private fun ConversationCard(
     onCopy: () -> Unit,
     onMarkAllHandled: () -> Unit,
     onAddToCalendar: (InboxItem) -> Unit,
+    onInteract: () -> Unit,
+    onRetryInteraction: () -> Unit,
+    onCopyInteraction: (String) -> Unit,
 ) {
     var expanded by rememberSaveable(group.conversationKey) { mutableStateOf(false) }
     val analyzing = isRequesting || digest?.status == InboxDigestStatus.ANALYZING
@@ -831,6 +1112,14 @@ private fun ConversationCard(
                 SuggestedReplyBox(suggestedReply)
             }
 
+            group.newestItem.interaction?.let { interaction ->
+                AgentInteractionSection(
+                    interaction = interaction,
+                    onRetry = onRetryInteraction,
+                    onCopy = { onCopyInteraction(interaction.answer) }
+                )
+            }
+
             FlowRow(
                 horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm),
                 verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
@@ -869,6 +1158,11 @@ private fun ConversationCard(
                     label = "Marcar todo atendido",
                     onClick = onMarkAllHandled,
                     contentColor = StatusConnected
+                )
+                CompactOutlinedButton(
+                    label = "Interactuar",
+                    onClick = onInteract,
+                    contentColor = PrimaryIndigo
                 )
             }
             if (!canReply) {

@@ -86,6 +86,40 @@ object InboxImportance {
     const val LOW = "low"
 }
 
+/** Interactuar job states the server persists with the item (`INTERACTION_STATUSES`). */
+object InboxInteractionStatus {
+    const val RUNNING = "running"
+    const val DONE = "done"
+    const val FAILED = "failed"
+
+    val ALL = listOf(RUNNING, DONE, FAILED)
+}
+
+/**
+ * alerts-flow A3: one owner instruction handed to the PC agent, with the
+ * answer it produced. The server keeps it on the item (`interaction`), so the
+ * card can show progress and the result across polls and app restarts.
+ *
+ * Every field has a default: an item written by an older server has no block
+ * at all, and one written by a newer server may carry fields this build does
+ * not know. Nothing here is sent back to the server.
+ */
+@Serializable
+data class InboxInteraction(
+    /** One of [InboxInteractionStatus]; empty when the server sent no status. */
+    val status: String = "",
+    /** The owner's own instruction, trimmed by the server. */
+    val instruction: String = "",
+    /** Linked project the agent worked in; null when the owner picked none. */
+    val projectId: String? = null,
+    val projectName: String? = null,
+    /** The agent's answer; empty while running and after a failure. */
+    val answer: String = "",
+    val startedAt: String? = null,
+    val finishedAt: String? = null,
+    val error: String? = null
+)
+
 /**
  * One captured notification plus the agent's analysis of it.
  *
@@ -131,6 +165,23 @@ data class InboxItem(
      * from an older server, which decode as false.
      */
     val promotion: Boolean = false,
+    /**
+     * alerts-flow A3: the latest owner instruction and the agent's answer.
+     * Null on items that were never handed to the agent (and on items from an
+     * older server, which decode as null).
+     */
+    val interaction: InboxInteraction? = null,
+)
+
+/**
+ * `POST /api/v1/inbox/{id}/interact` body (alerts-flow A3). The instruction is
+ * the owner's trusted text; [projectId] names a linked project the read-only
+ * agent works in, or is omitted when the owner picked "Ninguno".
+ */
+@Serializable
+data class InboxInteractionRequest(
+    val instruction: String,
+    val projectId: String? = null
 )
 
 /**

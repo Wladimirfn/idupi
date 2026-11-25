@@ -1347,6 +1347,10 @@ const handleInboxRoute = createInboxRoutes({
     store: inboxStore,
     digestStore: inboxDigestStore,
     runner: inboxRunner,
+    // Interactuar (alerts-flow A3): the same runner, a separate read-only
+    // tool profile, and the live project registry for the cwd.
+    interactionRunner: inboxRunner,
+    projects: () => registeredProjects,
     calendarStore: phoneCalendarStore,
     openCodeModels: () => openCodeCli.listAllModels(),
 });

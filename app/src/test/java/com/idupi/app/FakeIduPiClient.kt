@@ -582,6 +582,37 @@ class FakeIduPiClient : IduPiClient {
         return inboxRetryResult ?: InboxItem(id = id, status = "analyzing")
     }
 
+    // --- Interactuar (alerts-flow A3) --------------------------------------
+
+    /** One owner instruction sent to POST /inbox/{id}/interact. */
+    data class InteractionRequest(
+        val id: String,
+        val instruction: String,
+        val projectId: String?
+    )
+
+    var interactionResult: InboxItem? = null
+    var failInteractionWith: Throwable? = null
+    val interactionRequests = mutableListOf<InteractionRequest>()
+
+    override suspend fun interactWithInboxItem(
+        id: String,
+        instruction: String,
+        projectId: String?
+    ): InboxItem {
+        failInteractionWith?.let { throw it }
+        maybeFail()
+        interactionRequests += InteractionRequest(id, instruction, projectId)
+        return interactionResult ?: InboxItem(
+            id = id,
+            interaction = com.idupi.app.domain.model.InboxInteraction(
+                status = com.idupi.app.domain.model.InboxInteractionStatus.RUNNING,
+                instruction = instruction,
+                projectId = projectId
+            )
+        )
+    }
+
     override suspend fun getInboxConfig(): InboxConfig {
         maybeFail()
         return inboxConfigToReturn

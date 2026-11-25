@@ -51,6 +51,22 @@ class InboxNotifier(private val context: Context) {
         )
     }
 
+    /**
+     * alerts-flow A3: the Interactuar investigation finished. The body is the
+     * owner's own instruction, never the alert text or the answer, and the tap
+     * opens Alertas where the answer is shown in full.
+     */
+    fun showAgentAnswer(item: InboxItem) {
+        val instruction = item.interaction?.instruction.orEmpty()
+        post(
+            notificationId = notificationId(ANSWER_TAG, item.id),
+            channelId = SupervisorNotificationManager.CHANNEL_ID,
+            title = InboxAgentAnswer.TITLE,
+            text = InboxAgentAnswer.notificationText(instruction),
+            appLabel = InboxApp.displayLabel(item.appLabel, item.app)
+        )
+    }
+
     private fun summaryOf(item: InboxItem): String =
         item.summary.ifBlank { item.text }.ifBlank { "Sin contenido para mostrar" }
 
@@ -130,6 +146,7 @@ class InboxNotifier(private val context: Context) {
 
         private const val REMINDER_TAG = "inbox_reminder"
         private const val READY_TAG = "inbox_ready"
+        private const val ANSWER_TAG = "inbox_answer"
 
         /** Fixed id: the summary updates in place instead of stacking. */
         private const val SUMMARY_NOTIFICATION_ID = 24_001
