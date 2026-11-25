@@ -97,6 +97,6 @@ class PhoneAgentSettingsViewModel(
         private const val TAG = "PhoneAgentVM"
 
         const val MESSAGE_SENT = "Estado enviado a la PC."
-        const val MESSAGE_FAILED = "No se pudo enviar. Revisá la conexión con la PC."
+        const val MESSAGE_FAILED = "No se pudo enviar. Revisa la conexión con la PC."
     }
 }

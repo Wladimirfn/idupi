@@ -151,3 +151,6 @@ stacked PRs (same as #18 → #19 → #20).
   2026-11-24: server started on feat/phone-agent after the PC reboot (no live
   PTYs); branch pushed and stacked PR #21 opened on #20. Pending: the phone
   has not reported status yet (`idupi-phone status`: no data); live e2e.
+- Live e2e (2026-11-24, on 1.43): `idupi-phone status` returns battery,
+  signal, network, memory, storage and top apps; `idupi-phone screen` returned
+  the lock-screen (AOD) node dump through the accessibility service.

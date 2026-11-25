@@ -67,11 +67,12 @@ class InboxSettingsDataStoreTest {
     }
 
     @Test
-    fun `an empty DataStore captures every app and leaves auto-reply off`() = runTest {
+    fun `an empty DataStore follows the default apps and leaves auto-reply off`() = runTest {
         val settings = repo.inboxSettings.first()
 
-        assertEquals(InboxApp.allIds, settings.enabledApps)
-        assertEquals(4, settings.enabledApps.size)
+        assertEquals(InboxApp.defaultFollowedIds, settings.followedApps)
+        assertEquals(6, settings.followedApps.size)
+        assertTrue(settings.followedApps.containsAll(setOf("whatsapp", "messenger", "telegram")))
         assertEquals(15, settings.reminderIntervalMinutes)
         assertEquals(InboxImportance.HIGH, settings.remindMinImportance)
         assertFalse(settings.autoReplyEnabled)
@@ -81,7 +82,7 @@ class InboxSettingsDataStoreTest {
 
     @Test
     fun `every inbox setting persists across a new repository instance`() = runTest {
-        repo.setInboxEnabledApps(setOf(InboxApp.WHATSAPP.id, InboxApp.OUTLOOK.id))
+        repo.setInboxFollowedApps(setOf(InboxApp.WHATSAPP.id, InboxApp.OUTLOOK.id))
         repo.setInboxReminderIntervalMinutes(5)
         repo.setInboxRemindMinImportance(InboxImportance.MEDIUM)
         repo.setInboxAutoReplyEnabled(true)
@@ -90,7 +91,7 @@ class InboxSettingsDataStoreTest {
 
         val reopened = reopen().inboxSettings.first()
 
-        assertEquals(setOf("whatsapp", "outlook"), reopened.enabledApps)
+        assertEquals(setOf("whatsapp", "outlook"), reopened.followedApps)
         assertEquals(5, reopened.reminderIntervalMinutes)
         assertEquals(InboxImportance.MEDIUM, reopened.remindMinImportance)
         assertTrue(reopened.autoReplyEnabled)
@@ -100,14 +101,14 @@ class InboxSettingsDataStoreTest {
 
     @Test
     fun `monitoring nothing is a real choice and survives a reopen`() = runTest {
-        repo.setInboxEnabledApps(emptySet())
+        repo.setInboxFollowedApps(emptySet())
 
-        assertTrue(reopen().inboxSettings.first().enabledApps.isEmpty())
+        assertTrue(reopen().inboxSettings.first().followedApps.isEmpty())
     }
 
     @Test
     fun `writing one inbox key keeps the other choices intact`() = runTest {
-        repo.setInboxEnabledApps(setOf(InboxApp.GMAIL.id))
+        repo.setInboxFollowedApps(setOf(InboxApp.GMAIL.id))
         repo.setInboxAutoReplyEnabled(true)
         repo.setInboxAutoReplyTemplate("Plantilla propia")
 
@@ -115,7 +116,7 @@ class InboxSettingsDataStoreTest {
 
         val settings = repo.inboxSettings.first()
         assertEquals(45, settings.reminderIntervalMinutes)
-        assertEquals(setOf(InboxApp.GMAIL.id), settings.enabledApps)
+        assertEquals(setOf(InboxApp.GMAIL.id), settings.followedApps)
         assertTrue(settings.autoReplyEnabled)
         assertEquals("Plantilla propia", settings.autoReplyTemplate)
     }
@@ -147,5 +148,29 @@ class InboxSettingsDataStoreTest {
 
         repo.setInboxReminderIntervalMinutes(20)
         assertEquals(20, repo.inboxSettings.first().reminderIntervalMinutes)
+    }
+
+    @Test
+    fun `silenced conversations survive a restart and start empty`() = runTest {
+        assertEquals(emptySet<String>(), repo.inboxSettings.first().silencedConversations)
+
+        repo.setInboxSilencedConversations(setOf("whatsapp|Equipo", "telegram|Grupo"))
+
+        assertEquals(
+            setOf("whatsapp|Equipo", "telegram|Grupo"),
+            reopen().inboxSettings.first().silencedConversations
+        )
+    }
+
+    @Test
+    fun `changing other settings keeps the silenced list`() = runTest {
+        repo.setInboxSilencedConversations(setOf("whatsapp|Equipo"))
+
+        repo.setInboxReminderIntervalMinutes(30)
+
+        assertEquals(
+            setOf("whatsapp|Equipo"),
+            reopen().inboxSettings.first().silencedConversations
+        )
     }
 }

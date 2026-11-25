@@ -31,12 +31,23 @@ class InboxFormatTest {
         Instant.ofEpochMilli(now - minutes * 60_000L).toString()
 
     @Test
-    fun `app labels cover the four supported apps`() {
+    fun `app labels cover the presets and fall back to the id`() {
         assertEquals("WhatsApp", inboxAppLabel("whatsapp"))
         assertEquals("WhatsApp Business", inboxAppLabel("whatsapp_business"))
         assertEquals("Gmail", inboxAppLabel("gmail"))
         assertEquals("Outlook", inboxAppLabel("outlook"))
-        assertEquals("telegram", inboxAppLabel("telegram"))
+        assertEquals("Messenger", inboxAppLabel("messenger"))
+        assertEquals("Telegram", inboxAppLabel("telegram"))
+        assertEquals("Instagram", inboxAppLabel("instagram"))
+        assertEquals("Signal", inboxAppLabel("signal"))
+        assertEquals("com.example.chat", inboxAppLabel("com.example.chat"))
+    }
+
+    @Test
+    fun `alert label prefers the captured package label`() {
+        assertEquals("Telegram X", alertAppLabel("Telegram X", "telegram"))
+        assertEquals("Telegram", alertAppLabel("   ", "telegram"))
+        assertEquals("com.example.chat", alertAppLabel("", "com.example.chat"))
     }
 
     @Test
@@ -46,15 +57,6 @@ class InboxFormatTest {
         assertEquals("Baja", importanceLabel("low"))
         assertNull(importanceLabel(null))
         assertNull(importanceLabel("critical"))
-    }
-
-    @Test
-    fun `closed item labels`() {
-        assertEquals("Atendida", inboxItemStateLabel(InboxItemState.HANDLED))
-        assertEquals("Respondida", inboxItemStateLabel(InboxItemState.REPLIED))
-        assertEquals("Respondida automáticamente", inboxItemStateLabel(InboxItemState.AUTO_REPLIED))
-        assertEquals("Descartada", inboxItemStateLabel(InboxItemState.DISMISSED))
-        assertNull(inboxItemStateLabel(InboxItemState.OPEN))
     }
 
     @Test
@@ -107,5 +109,22 @@ class InboxFormatTest {
         assertEquals(false, isInboxItemAnalyzing(item(status = InboxItemStatus.READY)))
         assertEquals(true, isInboxItemFailed(item(status = InboxItemStatus.FAILED)))
         assertEquals(false, isInboxItemFailed(item(status = InboxItemStatus.READY)))
+    }
+
+    @Test
+    fun `silenced conversation labels name the app and the chat`() {
+        assertEquals("WhatsApp · Equipo", silencedConversationLabel("whatsapp|Equipo"))
+        assertEquals(
+            "Telegram · Grupo de la familia",
+            silencedConversationLabel("telegram|Grupo de la familia")
+        )
+        // A non-preset app falls back to its package name.
+        assertEquals(
+            "com.example.chat · Amigos",
+            silencedConversationLabel("com.example.chat|Amigos")
+        )
+        // A malformed key renders as-is instead of crashing the settings list.
+        assertEquals("sin-separador", silencedConversationLabel("sin-separador"))
+        assertEquals("WhatsApp", silencedConversationLabel("whatsapp|"))
     }
 }

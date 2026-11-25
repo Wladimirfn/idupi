@@ -137,6 +137,15 @@ interface IduPiClient {
     /** Empty list for agents whose catalog the server does not cache yet. */
     suspend fun getInboxModels(agent: String): List<String>
 
+    // Conversation digest (inbox-management T4). `requestInboxDigest` asks the
+    // PC to summarize the chat's open items (202 while it runs); repeated calls
+    // are cached by the server while the included ids and texts do not change.
+    suspend fun requestInboxDigest(app: String, conversation: String): InboxDigest
+    suspend fun getInboxDigest(app: String, conversation: String): InboxDigest
+
+    /** Closes every open item of one chat as `handled` or `dismissed`. */
+    suspend fun setInboxConversationState(app: String, conversation: String, state: String): Int
+
     // Phone status reporting (phone-agent T2). The server stores the snapshot
     // as the phone's latest state and its history; the body field names are the
     // contract in idupi-server/docs/phone.md ("Status snapshot contract").

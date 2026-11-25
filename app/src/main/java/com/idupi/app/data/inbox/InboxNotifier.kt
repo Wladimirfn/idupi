@@ -10,6 +10,7 @@ import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.idupi.app.MainActivity
 import com.idupi.app.data.notification.SupervisorNotificationManager
+import com.idupi.app.domain.model.InboxApp
 import com.idupi.app.domain.model.InboxItem
 
 /**
@@ -35,7 +36,8 @@ class InboxNotifier(private val context: Context) {
             notificationId = notificationId(REMINDER_TAG, item.id),
             channelId = REMINDER_CHANNEL_ID,
             title = item.sender.ifBlank { "Mensaje sin remitente" },
-            text = summaryOf(item)
+            text = summaryOf(item),
+            appLabel = InboxApp.displayLabel(item.appLabel, item.app)
         )
     }
 
@@ -44,7 +46,8 @@ class InboxNotifier(private val context: Context) {
             notificationId = notificationId(READY_TAG, item.id),
             channelId = SupervisorNotificationManager.CHANNEL_ID,
             title = "Mensaje importante de ${item.sender.ifBlank { "un contacto" }}",
-            text = summaryOf(item)
+            text = summaryOf(item),
+            appLabel = InboxApp.displayLabel(item.appLabel, item.app)
         )
     }
 
@@ -55,12 +58,14 @@ class InboxNotifier(private val context: Context) {
         notificationId: Int,
         channelId: String,
         title: String,
-        text: String
+        text: String,
+        appLabel: String
     ) {
         val notification = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle(title)
             .setContentText(text)
+            .setSubText(appLabel)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)

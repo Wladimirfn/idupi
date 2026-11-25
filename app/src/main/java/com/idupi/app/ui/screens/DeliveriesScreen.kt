@@ -303,7 +303,7 @@ private fun InstallPermissionCard(onOpenSettings: () -> Unit) {
                     )
                 }
                 Text(
-                    text = "Permití instalar apps desde IDUPI",
+                    text = "Permite instalar apps desde IDUPI",
                     style = AppTypography.bodySmall.copy(fontWeight = FontWeight.Bold, fontSize = 14.sp),
                     color = TextPrimary
                 )

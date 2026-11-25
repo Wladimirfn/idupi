@@ -595,7 +595,7 @@ private fun MetricsErrorCard(message: String?, onRetry: () -> Unit) {
         )
         Text(
             text = message
-                ?: "Revisá que el servidor esté corriendo y que el token de Conexión sea correcto.",
+                ?: "Revisa que el servidor esté corriendo y que el token de Conexión sea correcto.",
             style = AppTypography.bodySmall,
             color = TextSecondary
         )

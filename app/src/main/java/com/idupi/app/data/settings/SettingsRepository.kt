@@ -45,8 +45,11 @@ interface SettingsRepository {
 
     suspend fun setCustomColors(colors: ThemeColors)
 
-    /** [apps] are [com.idupi.app.domain.model.InboxApp.id] values. */
-    suspend fun setInboxEnabledApps(apps: Set<String>)
+    /**
+     * [apps] are followed app ids: a [com.idupi.app.domain.model.InboxApp.id]
+     * or the package name of any other app.
+     */
+    suspend fun setInboxFollowedApps(apps: Set<String>)
 
     suspend fun setInboxReminderIntervalMinutes(minutes: Int)
 
@@ -58,6 +61,12 @@ interface SettingsRepository {
     suspend fun setInboxAutoReplyDelayMinutes(minutes: Int)
 
     suspend fun setInboxAutoReplyTemplate(template: String)
+
+    /**
+     * Conversations silenced inside IDUPI, keyed by
+     * [com.idupi.app.data.inbox.inboxConversationKey].
+     */
+    suspend fun setInboxSilencedConversations(conversations: Set<String>)
 
     suspend fun setPhoneStatusEnabled(enabled: Boolean)
 
@@ -97,8 +106,8 @@ class InMemorySettingsRepository(
         _themeSettings.update { it.copy(custom = colors) }
     }
 
-    override suspend fun setInboxEnabledApps(apps: Set<String>) {
-        _inboxSettings.update { it.copy(enabledApps = apps.toSet()) }
+    override suspend fun setInboxFollowedApps(apps: Set<String>) {
+        _inboxSettings.update { it.copy(followedApps = apps.toSet()) }
     }
 
     override suspend fun setInboxReminderIntervalMinutes(minutes: Int) {
@@ -121,6 +130,10 @@ class InMemorySettingsRepository(
 
     override suspend fun setInboxAutoReplyTemplate(template: String) {
         _inboxSettings.update { it.copy(autoReplyTemplate = template) }
+    }
+
+    override suspend fun setInboxSilencedConversations(conversations: Set<String>) {
+        _inboxSettings.update { it.copy(silencedConversations = conversations.toSet()) }
     }
 
     override suspend fun setPhoneStatusEnabled(enabled: Boolean) {

@@ -3,6 +3,8 @@ package com.idupi.app
 import com.idupi.app.domain.model.ChatEvent
 import com.idupi.app.domain.model.FileNode
 import com.idupi.app.domain.model.InboxConfig
+import com.idupi.app.domain.model.InboxConversationStateResult
+import com.idupi.app.domain.model.InboxDigest
 import com.idupi.app.domain.model.InboxItem
 import com.idupi.app.domain.model.InboxItemState
 import com.idupi.app.domain.model.InboxMessageRequest
@@ -591,6 +593,49 @@ class FakeIduPiClient : IduPiClient {
         maybeFail()
         lastRequestedInboxModelsAgent = agent
         return inboxModelsToReturn
+    }
+
+    // --- Conversation digest (inbox-management T4) ---
+
+    /** When set, digest requests/fetches return it; otherwise a plain ready one. */
+    var inboxDigestToReturn: InboxDigest? = null
+    var inboxConversationStateResult: InboxConversationStateResult =
+        InboxConversationStateResult()
+
+    /** When set, only the digest methods throw it (load/state calls keep working). */
+    var failInboxDigestWith: Throwable? = null
+
+    /** (app, conversation) pairs sent to POST /inbox/digest. */
+    val requestedInboxDigests = mutableListOf<Pair<String, String>>()
+    val fetchedInboxDigests = mutableListOf<Pair<String, String>>()
+    val inboxConversationStates = mutableListOf<Triple<String, String, String>>()
+
+    override suspend fun requestInboxDigest(app: String, conversation: String): InboxDigest {
+        failInboxDigestWith?.let { throw it }
+        maybeFail()
+        requestedInboxDigests += app to conversation
+        return inboxDigestToReturn ?: InboxDigest(
+            app = app,
+            conversation = conversation,
+            status = "analyzing"
+        )
+    }
+
+    override suspend fun getInboxDigest(app: String, conversation: String): InboxDigest {
+        failInboxDigestWith?.let { throw it }
+        maybeFail()
+        fetchedInboxDigests += app to conversation
+        return inboxDigestToReturn ?: InboxDigest(app = app, conversation = conversation)
+    }
+
+    override suspend fun setInboxConversationState(
+        app: String,
+        conversation: String,
+        state: String
+    ): Int {
+        maybeFail()
+        inboxConversationStates += Triple(app, conversation, state)
+        return inboxConversationStateResult.closed
     }
 
     // --- Phone status reporting (phone-agent T2) ---

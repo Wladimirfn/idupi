@@ -17,7 +17,8 @@ class InboxRetryQueueTest {
     private fun captured(
         key: String = "key-1",
         text: String = "hola",
-        app: String = "whatsapp"
+        app: String = "whatsapp",
+        appLabel: String = ""
     ) = CapturedMessage(
         app = app,
         packageName = "com.whatsapp",
@@ -25,7 +26,8 @@ class InboxRetryQueueTest {
         conversation = "Ana",
         text = text,
         postedAt = "2026-11-24T12:00:00Z",
-        notificationKey = key
+        notificationKey = key,
+        appLabel = appLabel
     )
 
     private fun pending(key: String = "key-1", text: String = "hola", at: Long = 1_000L) =
@@ -142,6 +144,20 @@ class InboxRetryQueueTest {
     }
 
     @Test
+    fun `a retried capture keeps its package label on the wire`() = runTest {
+        val store = InMemoryStore()
+        val repository = InboxRetryRepository(store, clock = { 10_000L })
+
+        repository.enqueue(
+            captured("tg", "hola", app = "org.telegram.messenger", appLabel = "Telegram")
+        )
+
+        val request = repository.entries().single().toRequest()
+        assertEquals("org.telegram.messenger", request.app)
+        assertEquals("Telegram", request.appLabel)
+    }
+
+    @Test
     fun `repository drops expired entries on read and persists the prune`() = runTest {
         val store = InMemoryStore(listOf(pending("old", at = 0)))
         var now = InboxRetryQueue.TTL_MILLIS + 1
@@ -211,5 +227,25 @@ class InboxRetryQueueTest {
         )
         assertEquals(null, InboxUploadRules.statusCodeOf(RuntimeException("offline")))
         assertEquals(null, InboxUploadRules.statusCodeOf(null))
+    }
+
+    // --- Silence but read (inbox-management T4) ----------------------------
+
+    @Test
+    fun `a digestOnly capture keeps the flag across the queue and the request`() {
+        val silenced = captured("key-silenced").copy(digestOnly = true)
+
+        val entry = PendingInboxUpload.from(silenced, queuedAtMillis = 1_000L)
+
+        assertTrue(entry.digestOnly)
+        assertTrue(entry.toRequest().digestOnly)
+    }
+
+    @Test
+    fun `a normal capture stays a per-message upload`() {
+        val entry = PendingInboxUpload.from(captured("key-normal"), queuedAtMillis = 1_000L)
+
+        assertFalse(entry.digestOnly)
+        assertFalse(entry.toRequest().digestOnly)
     }
 }

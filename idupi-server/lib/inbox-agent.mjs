@@ -164,15 +164,20 @@ export function buildAgentArgv({ agent, model, effort, prompt } = {}) {
 /**
  * Removes delimiter-shaped text from untrusted content so a message cannot
  * close the untrusted block early and promote its own text to instructions.
+ * Covers spacing and attribute variants (`</untrusted_message >`,
+ * `<untrusted_message index="2">`) because the digest uses attributed tags.
  */
-function sanitizeUntrusted(value) {
-    return String(value ?? "").replace(/<\/?untrusted_(?:message|context)>/gi, "[tag removed]");
+export function sanitizeUntrusted(value) {
+    return String(value ?? "").replace(/<\s*\/?\s*untrusted_[a-z_]*\b[^>]*>/gi, "[tag removed]");
 }
 
 function formatUntrustedItem(item) {
     const text = sanitizeUntrusted(String(item?.text ?? "").slice(0, MAX_PROMPT_ITEM_CHARS));
+    // The phone's PackageManager label is display metadata and is untrusted
+    // like the rest of the item; the app id is the fallback when it is absent.
+    const appName = String(item?.appLabel || item?.app || "unknown");
     return sanitizeUntrusted([
-        `App: ${item?.app ?? "unknown"}`,
+        `App: ${appName}`,
         `Sender: ${item?.sender ?? ""}`,
         `Conversation: ${item?.conversation ?? ""}`,
         `Posted at: ${item?.postedAt ?? ""}`,
@@ -209,9 +214,10 @@ export function buildInboxPrompt(item, related = []) {
         "",
         "Rules:",
         '- importance: "high" when the owner must act soon, "medium" when it matters but can wait, "low" for everything else.',
-        '- category: one short Spanish label (for example "Trabajo", "Familia", "Banco", "Promociones").',
-        "- summary: at most 3 factual sentences in Spanish, based only on the message.",
-        "- suggestedReply: natural first-person Spanish as the owner; empty string when no reply is appropriate.",
+        '- category: one short label in neutral Latin American Spanish (for example "Trabajo", "Familia", "Banco", "Promociones").',
+        "- summary: at most 3 factual sentences in neutral Latin American Spanish, based only on the message.",
+        "- suggestedReply: natural first-person reply in the owner's voice, in neutral Latin American Spanish; empty string when no reply is appropriate.",
+        '- language: write summary, category and suggestedReply in neutral Latin American Spanish, second person "tú" (use "usted" when the sender writes formally or it is work mail); never voseo or regional slang (Argentine, Spanish-from-Spain "vosotros", etc.); match the sender\'s formality.',
         "",
         "<untrusted_message>",
         formatUntrustedItem(item),
@@ -281,7 +287,7 @@ function scanTopLevelObjects(text) {
  * fences or both. The LAST parseable object wins, which is the final answer
  * when a model shows an example first.
  */
-function extractJsonObject(raw) {
+export function extractJsonObject(raw) {
     const text = String(raw ?? "").trim();
     if (text.length === 0) throw new Error("agent returned no output");
 
@@ -301,7 +307,7 @@ function extractJsonObject(raw) {
 }
 
 /** The assistant text of one agent run, per that CLI's output format. */
-function extractAssistantText(agent, stdout) {
+export function extractAssistantText(agent, stdout) {
     const raw = String(stdout ?? "");
 
     if (agent === "opencode") {

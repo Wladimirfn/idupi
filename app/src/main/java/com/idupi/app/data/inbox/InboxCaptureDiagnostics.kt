@@ -19,7 +19,7 @@ data class InboxCaptureState(
     val listenerConnected: Boolean = false,
     val connectedSinceMillis: Long? = null,
     val lastCaptureAtMillis: Long? = null,
-    /** `InboxApp.id` of the last capture, never the sender or text. */
+    /** Followed app id of the last capture (preset id or package), never text. */
     val lastCaptureApp: String? = null,
     val lastUploadOkAtMillis: Long? = null,
     val lastUploadErrorClass: String? = null,

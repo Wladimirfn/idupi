@@ -17,13 +17,41 @@ import { AGENTS, EFFORTS } from "./inbox-agent.mjs";
 
 export const ITEM_ID_PATTERN = /^inb-[0-9a-f]{12}$/;
 
-export const INBOX_APPS = ["whatsapp", "whatsapp_business", "gmail", "outlook"];
+/**
+ * App ids the inbox accepts: a preset id ("whatsapp_business") or the package
+ * name of any app the owner follows ("org.telegram.messenger"). Android
+ * package names may contain uppercase letters; anything outside letters,
+ * digits, "_" and "." is refused so a malformed client cannot store an
+ * arbitrary string that later reaches the agent prompt.
+ */
+export const APP_ID_PATTERN = /^[A-Za-z0-9_.]{1,120}$/;
+
+/** The optional display label the phone captures from PackageManager. */
+export const MAX_APP_LABEL_CHARS = 60;
+
+export function isValidAppId(value) {
+    return typeof value === "string" && APP_ID_PATTERN.test(value);
+}
+
 export const INBOX_STATUSES = ["analyzing", "ready", "failed"];
 export const INBOX_IMPORTANCES = ["high", "medium", "low"];
 export const INBOX_STATES = ["open", "handled", "replied", "auto_replied", "dismissed"];
 
+/** States that make an item closed for the owner's working list. */
+export const CLOSED_STATES = ["handled", "replied", "auto_replied", "dismissed"];
+
 export const DEFAULT_MAX_ITEMS = 500;
 export const DEFAULT_MAX_TEXT_CHARS = 4000;
+
+/**
+ * Category stored on a digest-only item (inbox-management T4): the phone
+ * silenced the conversation, so the message is captured for the conversation
+ * digest instead of being classified on its own.
+ */
+export const DIGEST_ONLY_CATEGORY = "Silenciado";
+
+/** Closed items older than this are pruned; open items are never pruned. */
+export const DEFAULT_PRUNE_AFTER_MS = 24 * 60 * 60 * 1000;
 
 export const DEFAULT_AGENT = "opencode";
 export const DEFAULT_EFFORT = "max";
@@ -70,7 +98,7 @@ function singleLine(value, maxChars) {
 function isValidItem(candidate) {
     if (!candidate || typeof candidate !== "object") return false;
     if (!ITEM_ID_PATTERN.test(String(candidate.id ?? ""))) return false;
-    if (!INBOX_APPS.includes(candidate.app)) return false;
+    if (!isValidAppId(candidate.app)) return false;
     if (typeof candidate.text !== "string") return false;
     if (!Number.isFinite(Date.parse(String(candidate.receivedAt ?? "")))) return false;
     return true;
@@ -82,6 +110,7 @@ function isValidItem(candidate) {
  *   now?: (() => Date | number | string) | Date | number | string,
  *   maxItems?: number,
  *   maxTextChars?: number,
+ *   pruneAfterMs?: number,
  *   log?: { warn?: Function, info?: Function },
  * }} options
  */
@@ -90,6 +119,7 @@ export function createInboxStore({
     now = () => new Date(),
     maxItems = DEFAULT_MAX_ITEMS,
     maxTextChars = DEFAULT_MAX_TEXT_CHARS,
+    pruneAfterMs = DEFAULT_PRUNE_AFTER_MS,
     log = console,
 } = {}) {
     if (typeof dataDir !== "string" || dataDir.length === 0) {
@@ -100,6 +130,9 @@ export function createInboxStore({
     const maxText = Number.isInteger(maxTextChars) && maxTextChars > 0
         ? maxTextChars
         : DEFAULT_MAX_TEXT_CHARS;
+    const pruneAfter = Number.isFinite(pruneAfterMs) && pruneAfterMs >= 0
+        ? pruneAfterMs
+        : DEFAULT_PRUNE_AFTER_MS;
 
     const itemsFile = join(dataDir, ITEMS_FILE);
     const configFile = join(dataDir, CONFIG_FILE);
@@ -132,8 +165,29 @@ export function createInboxStore({
         }
     }
 
-    function persistItems() {
+    function persistItems({ prune = true } = {}) {
+        if (prune) pruneClosed();
         atomicWrite(itemsFile, JSON.stringify({ version: 1, items }, null, 2) + "\n");
+    }
+
+    /**
+     * Drops closed items whose updatedAt is older than `pruneAfter`. Open items
+     * are kept forever by this rule; returns whether anything was removed.
+     */
+    function pruneClosed() {
+        const cutoff = Date.parse(clock()) - pruneAfter;
+        if (!Number.isFinite(cutoff)) return false;
+        let changed = false;
+        for (let index = items.length - 1; index >= 0; index -= 1) {
+            const item = items[index];
+            if (!CLOSED_STATES.includes(item.state)) continue;
+            const updatedAt = Date.parse(item.updatedAt);
+            if (Number.isFinite(updatedAt) && updatedAt < cutoff) {
+                items.splice(index, 1);
+                changed = true;
+            }
+        }
+        return changed;
     }
 
     function persistConfig() {
@@ -176,6 +230,7 @@ export function createInboxStore({
             items.push({
                 id: candidate.id,
                 app: candidate.app,
+                appLabel: singleLine(candidate.appLabel, MAX_APP_LABEL_CHARS),
                 packageName: clip(candidate.packageName, MAX_FIELD_CHARS),
                 sender: clip(candidate.sender, MAX_FIELD_CHARS),
                 conversation: clip(candidate.conversation, MAX_FIELD_CHARS),
@@ -203,6 +258,15 @@ export function createInboxStore({
                 persistItems();
             } catch (err) {
                 log?.warn?.(`[inbox] no se pudo limpiar inbox.json: ${err.message}`);
+            }
+        }
+
+        // The file may be valid yet still hold closed items past the window.
+        if (pruneClosed()) {
+            try {
+                persistItems({ prune: false });
+            } catch (err) {
+                log?.warn?.(`[inbox] no se pudo podar inbox.json: ${err.message}`);
             }
         }
     }
@@ -238,8 +302,8 @@ export function createInboxStore({
      */
     function add(input = {}) {
         const app = String(input.app ?? "");
-        if (!INBOX_APPS.includes(app)) {
-            throw new Error(`unknown app: ${app}`);
+        if (!isValidAppId(app)) {
+            throw new Error("invalid app");
         }
         const text = clip(typeof input.text === "string" ? input.text : String(input.text ?? ""), maxText);
         if (text.trim().length === 0) {
@@ -258,9 +322,14 @@ export function createInboxStore({
         }
 
         const receivedAt = clock();
+        // A silenced conversation is summarized per conversation on demand, so
+        // its items skip the per-message agent entirely (inbox-management T4):
+        // they are stored already "ready" and the digest route does the work.
+        const digestOnly = input.digestOnly === true;
         const item = {
             id: `inb-${randomBytes(6).toString("hex")}`,
             app,
+            appLabel: singleLine(input.appLabel, MAX_APP_LABEL_CHARS),
             packageName: clip(input.packageName, MAX_FIELD_CHARS),
             sender: clip(input.sender, MAX_FIELD_CHARS),
             conversation: clip(input.conversation, MAX_FIELD_CHARS),
@@ -268,9 +337,9 @@ export function createInboxStore({
             postedAt: toIso(input.postedAt, receivedAt),
             receivedAt,
             notificationKey,
-            status: "analyzing",
-            importance: null,
-            category: "",
+            status: digestOnly ? "ready" : "analyzing",
+            importance: digestOnly ? "low" : null,
+            category: digestOnly ? DIGEST_ONLY_CATEGORY : "",
             summary: "",
             suggestedReply: "",
             error: null,
@@ -293,6 +362,13 @@ export function createInboxStore({
 
     /** Newest first, insertion order as the tie-breaker. */
     function list({ limit = 50 } = {}) {
+        if (pruneClosed()) {
+            try {
+                persistItems({ prune: false });
+            } catch (err) {
+                log?.warn?.(`[inbox] no se pudo podar inbox.json: ${err.message}`);
+            }
+        }
         const safeLimit = Number.isInteger(limit) && limit > 0 ? limit : 50;
         return items
             .map((item, index) => ({ item, index }))
@@ -324,6 +400,54 @@ export function createInboxStore({
             .sort((a, b) => Date.parse(b.receivedAt) - Date.parse(a.receivedAt))
             .slice(0, safeLimit)
             .map((candidate) => clone(candidate));
+    }
+
+    /**
+     * Open items of one app + conversation, oldest first. `limit` keeps the
+     * NEWEST ones (the tail), which is what a conversation digest summarizes.
+     */
+    function openByConversation(app, conversation, limit = 200) {
+        const safeLimit = Number.isInteger(limit) && limit > 0 ? limit : 200;
+        return items
+            .filter((item) => (
+                item.state === "open" &&
+                item.app === app &&
+                item.conversation === conversation
+            ))
+            .sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt))
+            .slice(-safeLimit)
+            .map((item) => clone(item));
+    }
+
+    /**
+     * Closes every open item of one conversation in a single write
+     * (inbox-management T4). Returns the updated items so the phone can count
+     * what left the list.
+     */
+    function closeConversation(app, conversation, state, updatedAt) {
+        if (!CLOSED_STATES.includes(state)) throw new Error("invalid state");
+        const stamp = toIso(updatedAt, clock());
+        const closed = [];
+        for (const item of items) {
+            if (item.state !== "open" || item.app !== app || item.conversation !== conversation) {
+                continue;
+            }
+            item.state = state;
+            item.updatedAt = stamp;
+            closed.push(clone(item));
+        }
+        if (closed.length > 0) persistItems();
+        return closed;
+    }
+
+    /** Digest keys (`app\u0000conversation`) that still have an open item. */
+    function openConversationKeys() {
+        const keys = new Set();
+        for (const item of items) {
+            if (item.state !== "open") continue;
+            keys.add(`${item.app}\u0000${item.conversation}`);
+        }
+        return keys;
     }
 
     /**
@@ -388,6 +512,9 @@ export function createInboxStore({
         get,
         list,
         related,
+        openByConversation,
+        closeConversation,
+        openConversationKeys,
         update,
         getConfig,
         setConfig,

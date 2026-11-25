@@ -27,7 +27,7 @@ import kotlinx.coroutines.flow.map
  * from a build without these keys both land on dark + Índigo instead of
  * crashing or rendering an undefined palette. Each setter writes one key, which
  * keeps unrelated choices intact (changing the mode must not reset the custom
- * swatches, and changing the reminder interval must not reset the monitored
+ * swatches, and changing the reminder interval must not reset the followed
  * apps).
  */
 class DataStoreSettingsRepository(
@@ -51,9 +51,10 @@ class DataStoreSettingsRepository(
     override val inboxSettings: Flow<InboxSettings> =
         dataStore.data.map { prefs ->
             InboxSettings(
-                // An empty stored set is a real choice ("monitor nothing"), so
-                // only a missing key falls back to every app.
-                enabledApps = (prefs[INBOX_ENABLED_APPS_KEY] ?: InboxApp.allIds).toSet(),
+                // An empty stored set is a real choice ("follow nothing"), so
+                // only a missing key falls back to the default follow list.
+                followedApps = (prefs[INBOX_FOLLOWED_APPS_KEY] ?: InboxApp.defaultFollowedIds)
+                    .toSet(),
                 reminderIntervalMinutes = prefs[INBOX_REMINDER_INTERVAL_KEY]
                     ?: InboxSettings.DEFAULT_REMINDER_INTERVAL_MINUTES,
                 remindMinImportance = InboxSettings.normalizeImportance(
@@ -64,6 +65,8 @@ class DataStoreSettingsRepository(
                     ?: InboxSettings.DEFAULT_AUTO_REPLY_DELAY_MINUTES,
                 autoReplyTemplate = prefs[INBOX_AUTO_REPLY_TEMPLATE_KEY]
                     ?: InboxSettings.DEFAULT_AUTO_REPLY_TEMPLATE,
+                silencedConversations = (prefs[INBOX_SILENCED_CONVERSATIONS_KEY] ?: emptySet())
+                    .toSet(),
             )
         }
 
@@ -84,8 +87,8 @@ class DataStoreSettingsRepository(
         }
     }
 
-    override suspend fun setInboxEnabledApps(apps: Set<String>) {
-        dataStore.edit { prefs -> prefs[INBOX_ENABLED_APPS_KEY] = apps }
+    override suspend fun setInboxFollowedApps(apps: Set<String>) {
+        dataStore.edit { prefs -> prefs[INBOX_FOLLOWED_APPS_KEY] = apps }
     }
 
     override suspend fun setInboxReminderIntervalMinutes(minutes: Int) {
@@ -110,6 +113,10 @@ class DataStoreSettingsRepository(
 
     override suspend fun setInboxAutoReplyTemplate(template: String) {
         dataStore.edit { prefs -> prefs[INBOX_AUTO_REPLY_TEMPLATE_KEY] = template }
+    }
+
+    override suspend fun setInboxSilencedConversations(conversations: Set<String>) {
+        dataStore.edit { prefs -> prefs[INBOX_SILENCED_CONVERSATIONS_KEY] = conversations }
     }
 
     // Missing key means ON: status reporting is opt-out, so an upgraded install
@@ -142,7 +149,12 @@ class DataStoreSettingsRepository(
         val THEME_CUSTOM_CARD_KEY: Preferences.Key<Int> = intPreferencesKey("theme_custom_card")
         val THEME_CUSTOM_TEXT_KEY: Preferences.Key<Int> = intPreferencesKey("theme_custom_text")
 
-        val INBOX_ENABLED_APPS_KEY: Preferences.Key<Set<String>> =
+        /**
+         * Followed app ids: a preset id or any package name. The preference
+         * name keeps its original "enabled apps" spelling so a set already
+         * stored by an older build is read without a migration.
+         */
+        val INBOX_FOLLOWED_APPS_KEY: Preferences.Key<Set<String>> =
             stringSetPreferencesKey("inbox_enabled_apps")
         val INBOX_REMINDER_INTERVAL_KEY: Preferences.Key<Int> =
             intPreferencesKey("inbox_reminder_interval_minutes")
@@ -154,6 +166,14 @@ class DataStoreSettingsRepository(
             intPreferencesKey("inbox_auto_reply_delay_minutes")
         val INBOX_AUTO_REPLY_TEMPLATE_KEY: Preferences.Key<String> =
             stringPreferencesKey("inbox_auto_reply_template")
+
+        /**
+         * inbox-management T4: conversations silenced inside IDUPI, stored as
+         * `app|conversation` keys. Missing means none, so an upgraded install
+         * starts with nothing silenced.
+         */
+        val INBOX_SILENCED_CONVERSATIONS_KEY: Preferences.Key<Set<String>> =
+            stringSetPreferencesKey("inbox_silenced_conversations")
 
         /** phone-agent T2: periodic status reporting to the PC; default ON. */
         val PHONE_STATUS_ENABLED_KEY: Preferences.Key<Boolean> =

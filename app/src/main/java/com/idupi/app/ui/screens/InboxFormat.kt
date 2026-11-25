@@ -3,7 +3,6 @@ package com.idupi.app.ui.screens
 import com.idupi.app.domain.model.InboxApp
 import com.idupi.app.domain.model.InboxImportance
 import com.idupi.app.domain.model.InboxItem
-import com.idupi.app.domain.model.InboxItemState
 import com.idupi.app.domain.model.InboxItemStatus
 import java.time.Duration
 import java.time.Instant
@@ -13,29 +12,21 @@ import java.time.Instant
  * Spanish because the owner and their contacts are; code stays English.
  */
 
-/** Owner-facing name of the source app. */
-fun inboxAppLabel(app: String): String = when (app) {
-    InboxApp.WHATSAPP.id -> "WhatsApp"
-    InboxApp.WHATSAPP_BUSINESS.id -> "WhatsApp Business"
-    InboxApp.GMAIL.id -> "Gmail"
-    InboxApp.OUTLOOK.id -> "Outlook"
-    else -> app
-}
+/** Owner-facing name of the source app: preset label, else the id/package. */
+fun inboxAppLabel(app: String): String = InboxApp.labelFor(app)
+
+/**
+ * Alertas card title for the source app: the label the phone captured first,
+ * then the preset label, then the app id or package name.
+ */
+fun alertAppLabel(appLabel: String, app: String): String =
+    InboxApp.displayLabel(appLabel, app)
 
 /** Alta / Media / Baja, or null while the agent has not returned a level. */
 fun importanceLabel(importance: String?): String? = when (importance) {
     InboxImportance.HIGH -> "Alta"
     InboxImportance.MEDIUM -> "Media"
     InboxImportance.LOW -> "Baja"
-    else -> null
-}
-
-/** Label for a closed item; null for `open`. */
-fun inboxItemStateLabel(state: String): String? = when (state) {
-    InboxItemState.HANDLED -> "Atendida"
-    InboxItemState.REPLIED -> "Respondida"
-    InboxItemState.AUTO_REPLIED -> "Respondida automáticamente"
-    InboxItemState.DISMISSED -> "Descartada"
     else -> null
 }
 
@@ -55,6 +46,20 @@ fun agentLabel(agent: String): String = when (agent) {
     "codex" -> "Codex"
     "pi" -> "Pi"
     else -> agent
+}
+
+/**
+ * Owner-facing name of a silenced conversation key
+ * (`inboxConversationKey(app, conversation)`): "WhatsApp · Equipo". A key
+ * without the separator (older build, malformed value) renders as-is.
+ */
+fun silencedConversationLabel(conversationKey: String): String {
+    val separator = conversationKey.indexOf('|')
+    if (separator <= 0) return conversationKey
+    val app = conversationKey.substring(0, separator)
+    val conversation = conversationKey.substring(separator + 1)
+    val appLabel = InboxApp.labelFor(app)
+    return if (conversation.isBlank()) appLabel else "$appLabel · $conversation"
 }
 
 /**

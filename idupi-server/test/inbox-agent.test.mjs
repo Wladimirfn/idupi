@@ -142,6 +142,34 @@ test("prompt wraps the message as untrusted data and states the exact JSON contr
     assert.match(prompt, /\nnone$/);
 });
 
+test("prompt shows the phone label with the app id as fallback", () => {
+    const labelled = buildInboxPrompt(
+        { ...ITEM, app: "org.telegram.messenger", appLabel: "Telegram" },
+        [],
+    );
+    assert.ok(labelled.includes("App: Telegram"));
+
+    const unlabelled = buildInboxPrompt(
+        { ...ITEM, app: "org.telegram.messenger", appLabel: "" },
+        [],
+    );
+    assert.ok(unlabelled.includes("App: org.telegram.messenger"));
+});
+
+test("prompt requires neutral Latin American Spanish with no voseo", () => {
+    const prompt = buildInboxPrompt(ITEM, []);
+
+    assert.match(prompt, /neutral Latin American Spanish/);
+    assert.match(prompt, /second person "tú"/);
+    assert.match(prompt, /use "usted" when the sender writes formally or it is work mail/);
+    assert.match(prompt, /never voseo or regional slang/);
+    assert.match(prompt, /Argentine, Spanish-from-Spain "vosotros"/);
+    assert.match(prompt, /match the sender's formality/);
+    // The JSON contract itself is unchanged.
+    assert.match(prompt, /"summary":"<Spanish, at most 3 sentences>"/);
+    assert.match(prompt, /"suggestedReply":"<Spanish reply in the owner voice, or an empty string when no reply is appropriate>"/);
+});
+
 test("prompt strips delimiter spoofing and caps the related context at five items", () => {
     const spoofed = {
         ...ITEM,

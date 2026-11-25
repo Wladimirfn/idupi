@@ -10,11 +10,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+    CLOSED_STATES,
     DEFAULT_AGENT,
     DEFAULT_EFFORT,
     DEFAULT_MAX_ITEMS,
     DEFAULT_MAX_TEXT_CHARS,
     DEFAULT_MODEL,
+    DEFAULT_PRUNE_AFTER_MS,
     ITEM_ID_PATTERN,
     createInboxStore,
 } from "../lib/inbox-store.mjs";
@@ -35,6 +37,7 @@ function tickingClock() {
 function message(overrides = {}) {
     return {
         app: "whatsapp",
+        appLabel: "WhatsApp",
         packageName: "com.whatsapp",
         sender: "Ana",
         conversation: "Equipo",
@@ -56,6 +59,7 @@ test("add persists the full item shape and a new store reloads it", async (t) =>
     assert.deepEqual(
         {
             app: item.app,
+            appLabel: item.appLabel,
             packageName: item.packageName,
             sender: item.sender,
             conversation: item.conversation,
@@ -72,6 +76,7 @@ test("add persists the full item shape and a new store reloads it", async (t) =>
         },
         {
             app: "whatsapp",
+            appLabel: "WhatsApp",
             packageName: "com.whatsapp",
             sender: "Ana",
             conversation: "Equipo",
@@ -125,6 +130,52 @@ test("text is capped at 4000 characters", async (t) => {
 
     assert.equal(item.text.length, DEFAULT_MAX_TEXT_CHARS);
     assert.equal(item.text.length, 4000);
+});
+
+test("any followed package name is accepted and its label is persisted", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: tickingClock() });
+
+    const { item } = store.add(message({
+        app: "org.telegram.messenger",
+        appLabel: "  Telegram  ",
+        packageName: "org.telegram.messenger",
+    }));
+
+    assert.equal(item.app, "org.telegram.messenger");
+    assert.equal(item.appLabel, "Telegram");
+
+    const reloaded = createInboxStore({ dataDir: dir, log: silentLog });
+    assert.equal(reloaded.get(item.id).appLabel, "Telegram");
+});
+
+test("app ids outside the id/package alphabet are rejected", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog });
+
+    // Android package names may contain uppercase letters.
+    assert.doesNotThrow(() => store.add(message({ app: "com.Example.App", notificationKey: "upper" })));
+    assert.throws(() => store.add(message({ app: "tele gram" })), /invalid app/);
+    assert.throws(() => store.add(message({ app: "telegram!" })), /invalid app/);
+    assert.throws(() => store.add(message({ app: "" })), /invalid app/);
+    assert.throws(() => store.add(message({ app: "x".repeat(121) })), /invalid app/);
+});
+
+test("an appLabel is clipped to 60 characters on write and on load", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: tickingClock() });
+
+    const { item } = store.add(message({ appLabel: "L".repeat(100) }));
+    assert.equal(item.appLabel.length, 60);
+
+    await writeItemsFile(dir, [
+        storedItem("inb-000000000009", "open", "2026-11-24T10:00:00.000Z", {
+            appLabel: "  Etiqueta   con   espacios  ",
+        }),
+    ]);
+    const loaded = createInboxStore({ dataDir: dir, log: silentLog })
+        .get("inb-000000000009");
+    assert.equal(loaded.appLabel, "Etiqueta con espacios");
 });
 
 test("the store keeps only the newest maxItems rows", async (t) => {
@@ -280,4 +331,195 @@ test("list is newest first and honours the limit", async (t) => {
 
     assert.deepEqual(store.list().map((item) => item.id), [second.id, first.id]);
     assert.deepEqual(store.list({ limit: 1 }).map((item) => item.id), [second.id]);
+});
+
+// --- pruning closed items --------------------------------------------------
+
+const HOUR_MS = 60 * 60 * 1000;
+const NOW_MS = Date.UTC(2026, 10, 24, 12, 0, 0);
+
+function storedItem(id, state, updatedAt, overrides = {}) {
+    return {
+        id,
+        app: "whatsapp",
+        packageName: "com.whatsapp",
+        sender: "Ana",
+        conversation: "Equipo",
+        text: `text-${id}`,
+        postedAt: updatedAt,
+        receivedAt: updatedAt,
+        notificationKey: `key-${id}`,
+        status: "ready",
+        importance: "medium",
+        category: "Trabajo",
+        summary: "resumen",
+        suggestedReply: "",
+        error: null,
+        state,
+        updatedAt,
+        ...overrides,
+    };
+}
+
+async function writeItemsFile(dir, items) {
+    await writeFile(join(dir, "inbox.json"), JSON.stringify({ version: 1, items }), "utf8");
+}
+
+test("closed items older than 24 h are pruned on load; open items are never pruned", async (t) => {
+    const dir = await makeDir(t);
+    const stamp = (offsetMs) => new Date(NOW_MS + offsetMs).toISOString();
+
+    await writeItemsFile(dir, [
+        storedItem("inb-000000000001", "handled", stamp(-25 * HOUR_MS)),
+        storedItem("inb-000000000002", "replied", stamp(-48 * HOUR_MS)),
+        storedItem("inb-000000000003", "auto_replied", stamp(-30 * HOUR_MS)),
+        storedItem("inb-000000000004", "dismissed", stamp(-23 * HOUR_MS)),
+        storedItem("inb-000000000005", "open", stamp(-100 * HOUR_MS)),
+    ]);
+
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: () => new Date(NOW_MS) });
+    const ids = store.list().map((item) => item.id).sort();
+
+    assert.deepEqual(ids, ["inb-000000000004", "inb-000000000005"]);
+    assert.deepEqual(DEFAULT_PRUNE_AFTER_MS, 24 * HOUR_MS);
+    assert.deepEqual(CLOSED_STATES, ["handled", "replied", "auto_replied", "dismissed"]);
+
+    const onDisk = JSON.parse(await readFile(join(dir, "inbox.json"), "utf8"));
+    assert.deepEqual(onDisk.items.map((item) => item.id).sort(), [
+        "inb-000000000004",
+        "inb-000000000005",
+    ]);
+});
+
+test("exactly 24 h old is kept; older than 24 h is pruned", async (t) => {
+    const dir = await makeDir(t);
+    const stamp = (offsetMs) => new Date(NOW_MS + offsetMs).toISOString();
+
+    await writeItemsFile(dir, [
+        storedItem("inb-000000000001", "handled", stamp(-24 * HOUR_MS)),
+        storedItem("inb-000000000002", "handled", stamp(-24 * HOUR_MS - 1)),
+    ]);
+
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: () => new Date(NOW_MS) });
+
+    assert.deepEqual(store.list().map((item) => item.id), ["inb-000000000001"]);
+});
+
+test("list prunes expired closed items and persists the smaller file", async (t) => {
+    const dir = await makeDir(t);
+    let nowMs = NOW_MS;
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: () => new Date(nowMs) });
+
+    const open = store.add(message({ notificationKey: "open", text: "open" })).item;
+    const handled = store.add(message({ notificationKey: "handled", text: "handled" })).item;
+    store.update(handled.id, { state: "handled" });
+
+    nowMs += 24 * HOUR_MS + 1;
+
+    assert.deepEqual(store.list().map((item) => item.id), [open.id]);
+    assert.equal(store.get(handled.id), null);
+
+    const reloaded = createInboxStore({
+        dataDir: dir,
+        log: silentLog,
+        now: () => new Date(nowMs),
+    });
+    assert.deepEqual(reloaded.list().map((item) => item.id), [open.id]);
+});
+
+test("writes prune expired closed items; open items survive any age", async (t) => {
+    const dir = await makeDir(t);
+    let nowMs = NOW_MS;
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: () => new Date(nowMs) });
+
+    const open = store.add(message({ notificationKey: "open", text: "open" })).item;
+    const dismissed = store.add(message({ notificationKey: "dismissed", text: "dismissed" })).item;
+    store.update(dismissed.id, { state: "dismissed" });
+
+    nowMs += 30 * HOUR_MS;
+    store.add(message({ notificationKey: "later", text: "later" }));
+
+    assert.equal(store.get(dismissed.id), null);
+    assert.notEqual(store.get(open.id), null);
+});
+
+// --- inbox-management T4: digest-only items and conversation helpers --------
+
+test("a digestOnly item is stored ready, low and categorized Silenciado", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: tickingClock() });
+
+    const { item } = store.add(message({ digestOnly: true }));
+
+    assert.equal(item.status, "ready");
+    assert.equal(item.importance, "low");
+    assert.equal(item.category, "Silenciado");
+    assert.equal(item.summary, "");
+    assert.equal(item.suggestedReply, "");
+    assert.equal(item.error, null);
+    assert.equal(item.state, "open");
+
+    const plain = store.add(message({ notificationKey: "plain" })).item;
+    assert.equal(plain.status, "analyzing");
+    assert.equal(plain.importance, null);
+    assert.equal(plain.category, "");
+});
+
+test("openByConversation returns only that chat, oldest first, newest tail bounded", async (t) => {
+    const dir = await makeDir(t);
+    let tick = 0;
+    const store = createInboxStore({
+        dataDir: dir,
+        log: silentLog,
+        now: () => new Date(Date.UTC(2026, 10, 24, 10, 0, tick++)),
+    });
+
+    const first = store.add(message({ text: "uno", notificationKey: "k1" })).item;
+    const other = store.add(message({ conversation: "Otro", text: "otro", notificationKey: "k2" })).item;
+    const second = store.add(message({ text: "dos", notificationKey: "k3" })).item;
+    const third = store.add(message({ text: "tres", notificationKey: "k4" })).item;
+    store.update(second.id, { state: "handled" });
+
+    const open = store.openByConversation("whatsapp", "Equipo");
+    assert.deepEqual(open.map((item) => item.id), [first.id, third.id]);
+
+    const tail = store.openByConversation("whatsapp", "Equipo", 1);
+    assert.deepEqual(tail.map((item) => item.id), [third.id]);
+
+    assert.deepEqual(store.openByConversation("telegram", "Equipo"), []);
+    assert.notEqual(other.id, first.id);
+});
+
+test("closeConversation closes every open item of one chat in one call", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: tickingClock() });
+
+    const a = store.add(message({ text: "a", notificationKey: "a" })).item;
+    const b = store.add(message({ text: "b", notificationKey: "b" })).item;
+    const other = store.add(message({ conversation: "Otro", text: "c", notificationKey: "c" })).item;
+
+    const closed = store.closeConversation("whatsapp", "Equipo", "handled", "2026-11-24T13:00:00.000Z");
+
+    assert.deepEqual(closed.map((item) => item.id).sort(), [a.id, b.id].sort());
+    assert.ok(closed.every((item) => item.state === "handled"));
+    assert.equal(store.get(a.id).state, "handled");
+    assert.equal(store.get(other.id).state, "open");
+
+    assert.deepEqual(store.closeConversation("whatsapp", "Equipo", "dismissed"), []);
+    assert.throws(
+        () => store.closeConversation("whatsapp", "Equipo", "open"),
+        /invalid state/,
+    );
+});
+
+test("openConversationKeys lists only conversations with an open item", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: tickingClock() });
+
+    store.add(message({ text: "a", notificationKey: "a" }));
+    const done = store.add(message({ conversation: "Otro", text: "b", notificationKey: "b" })).item;
+    store.update(done.id, { state: "handled" });
+
+    const keys = [...store.openConversationKeys()];
+    assert.deepEqual(keys, ["whatsapp\u0000Equipo"]);
 });

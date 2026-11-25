@@ -43,6 +43,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,6 +55,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.idupi.app.data.inbox.InboxCaptureState
+import com.idupi.app.data.inbox.InstalledApp
+import com.idupi.app.data.inbox.InstalledApps
 import com.idupi.app.data.inbox.isInboxListenerEnabled
 import com.idupi.app.data.inbox.notificationListenerSettingsIntent
 import com.idupi.app.data.inbox.requestInboxListenerRebind
@@ -74,9 +77,10 @@ import com.idupi.app.ui.theme.TextSecondary
 import com.idupi.app.viewmodel.InboxAgentConfigState
 import com.idupi.app.viewmodel.InboxCaptureActionState
 import com.idupi.app.viewmodel.InboxSettingsViewModel
+import com.idupi.app.viewmodel.InstalledAppsState
 
 /**
- * Ajustes > ALERTAS (phone-inbox T5): notification access, monitored apps,
+ * Ajustes > ALERTAS (phone-inbox T5): notification access, followed apps,
  * reminder cadence, template auto-reply and the PC-side agent configuration.
  *
  * Every phone-side switch is persisted on change; the agent/model/effort is
@@ -90,6 +94,7 @@ fun InboxAlertsSection(viewModel: InboxSettingsViewModel) {
     val config by viewModel.agentConfig.collectAsState()
     val captureStatus by viewModel.captureStatus.collectAsState()
     val captureAction by viewModel.captureAction.collectAsState()
+    val installedApps by viewModel.installedApps.collectAsState()
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -109,6 +114,7 @@ fun InboxAlertsSection(viewModel: InboxSettingsViewModel) {
     LaunchedEffect(Unit) {
         viewModel.loadConfig()
         viewModel.refreshCaptureStatus()
+        viewModel.loadInstalledApps()
     }
 
     SettingsSection("ALERTAS") {
@@ -148,9 +154,18 @@ fun InboxAlertsSection(viewModel: InboxSettingsViewModel) {
             }
         )
 
-        MonitoredAppsCard(
+        FollowedAppsCard(
             settings = settings,
-            onToggleApp = { appId, enabled -> viewModel.setAppEnabled(appId, enabled) }
+            state = installedApps,
+            onToggleApp = { appId, followed -> viewModel.setAppFollowed(appId, followed) },
+            onReload = { viewModel.loadInstalledApps(force = true) }
+        )
+
+        SilencedChatsCard(
+            silenced = settings.silencedConversations,
+            onRemove = { conversationKey ->
+                viewModel.setConversationSilenced(conversationKey, silenced = false)
+            }
         )
 
         RemindersCard(
@@ -221,8 +236,8 @@ private fun NotificationAccessCard(enabled: Boolean, onOpenSettings: () -> Unit)
             }
             if (!enabled) {
                 Text(
-                    text = "Necesario para leer WhatsApp, Gmail y Outlook. Sin acceso, " +
-                        "la app no recibe mensajes ni puede responder.",
+                    text = "Necesario para leer las notificaciones de las apps que sigues. " +
+                        "Sin acceso, la app no recibe mensajes ni puede responder.",
                     style = AppTypography.bodySmall,
                     color = TextSecondary
                 )
@@ -277,7 +292,7 @@ private fun CaptureStatusCard(
             if (!status.listenerConnected) {
                 Text(
                     text = if (enabled) {
-                        "Android desconectó el lector; tocá Reconectar"
+                        "Android desconectó el lector; toca Reconectar"
                     } else {
                         "Sin acceso a notificaciones, el lector no puede escuchar."
                     },
@@ -366,9 +381,148 @@ private fun lastUploadLabel(status: InboxCaptureState, nowMillis: Long): String 
 }
 
 @Composable
-private fun MonitoredAppsCard(
+private fun FollowedAppsCard(
     settings: InboxSettings,
-    onToggleApp: (String, Boolean) -> Unit
+    state: InstalledAppsState,
+    onToggleApp: (String, Boolean) -> Unit,
+    onReload: () -> Unit
+) {
+    var query by rememberSaveable { mutableStateOf("") }
+    val followingCount = remember(state.inventory, settings.followedApps) {
+        state.inventory.followingCount(settings.followedApps)
+    }
+    val others = remember(state.inventory.others, query) {
+        InstalledApps.matching(state.inventory.others, query)
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SlateCard),
+        shape = AppShapes.card
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(AppSpacing.cardPadding)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
+        ) {
+            Text("Apps a seguir", style = AppTypography.bodyLarge, color = TextPrimary)
+            Text(
+                text = "Siguiendo $followingCount apps",
+                style = AppTypography.labelSmall,
+                color = StatusWorking
+            )
+            Text(
+                text = "Activa las apps cuyas notificaciones quieres ver en Alertas.",
+                style = AppTypography.bodySmall,
+                color = TextSecondary
+            )
+
+            if (state.isLoading) {
+                Text(
+                    text = "Leyendo apps instaladas…",
+                    style = AppTypography.bodySmall,
+                    color = TextSecondary
+                )
+            }
+            state.errorMessage?.let { message ->
+                Text(message, style = AppTypography.bodySmall, color = StatusError)
+                TextButton(onClick = onReload) {
+                    Text("Reintentar", style = AppTypography.labelSmall, color = PrimaryIndigo)
+                }
+            }
+
+            if (!state.isLoading && !state.inventory.isEmpty) {
+                state.inventory.presets.forEach { app ->
+                    AppFollowRow(app = app, followed = settings.followedApps, onToggle = onToggleApp)
+                }
+
+                Spacer(modifier = Modifier.size(AppSpacing.xs))
+                Text("Otras apps", style = AppTypography.bodySmall, color = TextSecondary)
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    label = { Text("Buscar apps", style = AppTypography.bodySmall) },
+                    singleLine = true,
+                    colors = inboxFieldColors(),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (others.isEmpty()) {
+                    Text(
+                        text = if (state.inventory.others.isEmpty()) {
+                            "No hay otras apps instaladas"
+                        } else {
+                            "No hay apps que coincidan"
+                        },
+                        style = AppTypography.bodySmall,
+                        color = TextSecondary
+                    )
+                } else {
+                    others.forEach { app ->
+                        AppFollowRow(
+                            app = app,
+                            followed = settings.followedApps,
+                            onToggle = onToggleApp
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AppFollowRow(
+    app: InstalledApp,
+    followed: Set<String>,
+    onToggle: (String, Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = AppSpacing.xxs),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = app.displayLabel,
+                style = AppTypography.bodySmall,
+                color = TextPrimary
+            )
+            // The package is what the server stores as the id for non-presets,
+            // so showing it keeps the row unambiguous.
+            if (app.preset == null) {
+                Text(
+                    text = app.packageName,
+                    style = AppTypography.labelSmall,
+                    color = TextSecondary
+                )
+            }
+        }
+        Switch(
+            checked = app.appId in followed,
+            onCheckedChange = { onToggle(app.appId, it) },
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = PrimaryIndigo,
+                uncheckedThumbColor = TextSecondary,
+                uncheckedTrackColor = SlateBg,
+                uncheckedBorderColor = SlateBorder
+            )
+        )
+    }
+}
+
+/**
+ * Chats silenced inside IDUPI (inbox-management T4). The hint is the whole
+ * contract: IDUPI can only read a chat the source app does not mute, so the
+ * owner un-mutes it there and marks it here. Removing a row restores the
+ * notifications on the next capture.
+ */
+@Composable
+private fun SilencedChatsCard(
+    silenced: Set<String>,
+    onRemove: (String) -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -381,32 +535,42 @@ private fun MonitoredAppsCard(
                 .fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
         ) {
-            Text("Apps monitoreadas", style = AppTypography.bodyLarge, color = TextPrimary)
-            InboxSettingsViewModel.MONITORED_APPS.forEach { app ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = AppSpacing.xxs),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = inboxAppLabel(app.id),
-                        style = AppTypography.bodySmall,
-                        color = TextPrimary,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Switch(
-                        checked = app.id in settings.enabledApps,
-                        onCheckedChange = { onToggleApp(app.id, it) },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.White,
-                            checkedTrackColor = PrimaryIndigo,
-                            uncheckedThumbColor = TextSecondary,
-                            uncheckedTrackColor = SlateBg,
-                            uncheckedBorderColor = SlateBorder
-                        )
-                    )
-                }
+            Text("Chats silenciados por IDUPI", style = AppTypography.bodyLarge, color = TextPrimary)
+            Text(
+                text = "Para que IDUPI lea un grupo silenciado, quítale el silencio en la app " +
+                    "original y márcalo aquí como silenciado.",
+                style = AppTypography.bodySmall,
+                color = TextSecondary
+            )
+            if (silenced.isEmpty()) {
+                Text(
+                    text = "No hay chats silenciados",
+                    style = AppTypography.bodySmall,
+                    color = TextSecondary
+                )
+            } else {
+                silenced
+                    .sortedBy { silencedConversationLabel(it) }
+                    .forEach { conversationKey ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = silencedConversationLabel(conversationKey),
+                                style = AppTypography.bodySmall,
+                                color = TextPrimary,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(onClick = { onRemove(conversationKey) }) {
+                                Text(
+                                    text = "Quitar",
+                                    style = AppTypography.labelSmall,
+                                    color = PrimaryIndigo
+                                )
+                            }
+                        }
+                    }
             }
         }
     }

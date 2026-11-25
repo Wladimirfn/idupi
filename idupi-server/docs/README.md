@@ -129,20 +129,157 @@ Source: [`lib/inbox-routes.mjs`](../lib/inbox-routes.mjs), store in
 
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| POST | `/api/v1/inbox/messages` | Bearer | Accept a captured notification (`app`, `packageName`, `sender`, `conversation`, `text`, `postedAt`, `notificationKey`); `202` with the stored item, `200` when the same `notificationKey` + `text` already exists |
+| POST | `/api/v1/inbox/messages` | Bearer | Accept a captured notification (`app`, `appLabel`, `packageName`, `sender`, `conversation`, `text`, `postedAt`, `notificationKey`); `app` is any followed app: a preset id or a package name matching `^[A-Za-z0-9_.]{1,120}# IDUPI server — documentation index
+
+The IDUPI server is a zero-dependency Node.js HTTP server that runs on the user's
+Windows PC. It owns the interactive PTY terminals, the PC-to-phone APK deliveries,
+the system metrics and process list, the remote screen stream and the legacy agent
+chat endpoints. The Android app and the PC CLIs talk to it over LAN or Tailscale.
+
+Everything except the loopback-only browser terminal page requires the bearer token.
+
+## Index
+
+| Document | Contents |
+|----------|----------|
+| [`phone.md`](phone.md) | Phone agent contract for PC agents: status snapshot, command queue, `idupi-phone` CLI, screen dump format |
+| [`sensors.md`](sensors.md) | Elevated sensor helper: install, uninstall, pinned hashes, version bumps |
+| [`../../README.md`](../../README.md) | Product overview, quick start, app screens, build |
+| [`../../PRIVACY.md`](../../PRIVACY.md) | Privacy policy |
+
+## Authentication
+
+- The token is read from `IDUPI_TOKEN` or from `.idupi-token` at the repository root.
+  It is generated on first start and printed in full only then (or with
+  `IDUPI_SHOW_TOKEN=1`); later starts print a masked value.
+- Every `/api/v1/*` route requires `Authorization: Bearer <token>`. A missing or
+  wrong token answers `401` with `WWW-Authenticate: Bearer`.
+- The only exception is the `/terminal/*` static page, which answers before the
+  token check **but only for loopback clients** (`127.0.0.1` / `::1`). Non-loopback
+  clients get `403`, so the page is never exposed to the LAN or Tailscale.
+- Handlers split out of `index.mjs` (`lib/pty-routes.mjs`, `lib/delivery-routes.mjs`,
+  `lib/system-metrics-routes.mjs`, `lib/os-processes-routes.mjs`,
+  `lib/screen-routes.mjs`, `lib/inbox-routes.mjs`, `lib/phone-routes.mjs`) are
+  mounted after `requireAuth`.
+
+## API routes
+
+### PTY terminals
+
+Source: [`lib/pty-routes.mjs`](../lib/pty-routes.mjs), manager in
+[`lib/pty-manager.mjs`](../lib/pty-manager.mjs).
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| GET | `/api/v1/pty` | Bearer | List live terminals |
+| POST | `/api/v1/pty` | Bearer | Create a terminal; body `{cols, rows, cwd?}`, answers `201 {id, pid, ...}` |
+| GET | `/api/v1/pty/{id}/stream` | Bearer | Chunked `application/octet-stream`: 256 KiB replay ring, then live output |
+| POST | `/api/v1/pty/{id}/input` | Bearer | Send input; body `{data}` (UTF-8 string) |
+| POST | `/api/v1/pty/{id}/resize` | Bearer | Resize the PTY; body `{cols, rows}` |
+| DELETE | `/api/v1/pty/{id}` | Bearer | Kill the terminal and its whole process tree; `404` when unknown |
+
+A PTY has one size; the last client to resize wins. Reconnecting to `stream`
+replays the ring before live bytes, so the phone, the browser page and
+`idupi-term` can share one terminal.
+
+Each listed terminal also carries `context`: the live `cwd` (read from the PEB
+of the running agent, falling back to the shell and then the launch cwd), the
+git `project` and `branch` (`detached: true` with the short sha as branch), and
+the `agent` running in it (`{id, name, pid}`, or `null` when only the shell is
+there). Source: [`lib/pty-context.mjs`](../lib/pty-context.mjs); it is sampled
+at most every 3 s, only while terminals exist, and any failure degrades to
+`null` fields instead of failing the list.
+
+### APK deliveries
+
+Source: [`lib/delivery-routes.mjs`](../lib/delivery-routes.mjs), registry in
+[`lib/delivery-registry.mjs`](../lib/delivery-registry.mjs).
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| GET | `/api/v1/deliveries` | Bearer | List published deliveries |
+| POST | `/api/v1/deliveries` | Bearer | Register an existing `.apk`; body `{path}` (absolute, regular file, max 300 MB); snapshots it and returns `{id, name, size, sha256, createdAt}` |
+| GET / HEAD | `/api/v1/deliveries/{id}/download` | Bearer | Stream the APK snapshot with `Content-Length`; HEAD returns headers only |
+| DELETE | `/api/v1/deliveries/{id}` | Bearer | Remove a delivery |
+
+Snapshots live in `idupi-server/deliveries/` (index plus `dlv-*.apk`); the newest
+10 entries are kept. The hash is computed while copying, so later rebuilds do not
+change the bytes of an already-published delivery.
+
+### PC observability
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| GET / HEAD | `/api/v1/system/metrics` | Bearer | CPU/RAM usage, GPU usage/temp/power/VRAM, CPU temp and power, storage per disk; unknown sensors are `null` |
+| GET / HEAD | `/api/v1/os/processes` | Bearer | All PC processes with memory, CPU, category and protection flag (2 s server cache) |
+| POST | `/api/v1/os/processes/{pid}/kill` | Bearer | End a process; `409 protected` for critical system processes, `404` when gone |
+
+Sources: [`lib/system-metrics.mjs`](../lib/system-metrics.mjs),
+[`lib/os-processes.mjs`](../lib/os-processes.mjs). CPU temperature and power come
+from the elevated helper described in [`sensors.md`](sensors.md) when it is
+installed; GPU data comes from `nvidia-smi`.
+
+### Terminal browser page
+
+Source: [`lib/terminal-web-routes.mjs`](../lib/terminal-web-routes.mjs), page in
+[`web/`](../web).
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| GET / HEAD | `/terminal/` | None; **loopback only** | Static page that lists, creates and attaches to PTYs |
+| GET / HEAD | `/terminal/app.js`, `/terminal/app.css` | None; loopback only | Page assets |
+| GET / HEAD | `/terminal/vendor/xterm.js`, `xterm.css`, `addon-fit.js` | None; loopback only | Vendored xterm.js reused from the app |
+
+`/terminal` redirects `301` to `/terminal/`. The page keeps the token in the URL
+fragment, stores it in `sessionStorage` and sends it as `Authorization: Bearer`
+to the API.
+
+### App data
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| GET | `/api/v1/status` | Bearer | Server and active-engine status |
+| GET | `/api/v1/projects` | Bearer | Registered projects |
+| POST | `/api/v1/projects/switch` | Bearer | Activate a project |
+| POST | `/api/v1/projects/add` | Bearer | Register a project |
+| POST | `/api/v1/projects/remove` (also `/delete`) | Bearer | Remove a project |
+| DELETE | `/api/v1/projects/{id}` | Bearer | Remove a project by id |
+| GET | `/api/v1/projects/{id}/files` | Bearer | List project files |
+| GET | `/api/v1/projects/{id}/file-content?path=` | Bearer | Read one project file |
+| GET | `/api/v1/fs/browse` | Bearer | Browse the filesystem to add a project |
+| GET | `/api/v1/models` | Bearer | Available models |
+| POST | `/api/v1/model/switch` | Bearer | Select a model |
+| GET | `/api/v1/commands` | Bearer | Available commands |
+| GET | `/api/v1/alerts` | Bearer | Supervisor alerts |
+
+### Phone inbox
+
+Source: [`lib/inbox-routes.mjs`](../lib/inbox-routes.mjs), store in
+[`lib/inbox-store.mjs`](../lib/inbox-store.mjs), agent runner in
+[`lib/inbox-agent.mjs`](../lib/inbox-agent.mjs).
+
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| POST | `/api/v1/inbox/messages` | Bearer | Accept a captured notification (`app`, `appLabel`, `packageName`, `sender`, `conversation`, `text`, `postedAt`, `notificationKey`, optional `digestOnly`); `app` is any followed app (preset id or a package name matching `^[A-Za-z0-9_.]{1,120}$`); `appLabel` is the optional PackageManager display name (trimmed, clipped to 60 chars); `digestOnly: true` stores the item as `ready` / `low` / category `Silenciado` without running the per-message agent; `202` with the stored item, `200` when the same `notificationKey` + `text` already exists |
 | GET | `/api/v1/inbox?limit=50` | Bearer | Newest-first items; `limit` is 1..200 |
 | POST | `/api/v1/inbox/{id}/state` | Bearer | Set `state` to `open`, `handled`, `replied`, `auto_replied` or `dismissed` |
 | POST | `/api/v1/inbox/{id}/retry` | Bearer | Re-queue the analysis; `202` with the item as `analyzing` |
+| POST | `/api/v1/inbox/digest` | Bearer | Summarize a conversation's open items (newest 60, ~12k chars of text) through the configured agent; `202` while `analyzing`, `200` with the cached digest when the included ids + texts did not change |
+| GET | `/api/v1/inbox/digest?app=&conversation=` | Bearer | Current digest state `{app, conversation, itemCount, summary, pendingForOwner, suggestedReply, status, error, updatedAt}` |
+| POST | `/api/v1/inbox/conversation/state` | Bearer | Close every open item of one `{app, conversation}` as `handled` or `dismissed` in one call |
 | GET | `/api/v1/inbox/config` | Bearer | `{agent, model, effort, agents, efforts}` |
 | PUT | `/api/v1/inbox/config` | Bearer | Validate and persist `{agent, model, effort}` |
 | GET | `/api/v1/inbox/models?agent=opencode` | Bearer | Cached OpenCode `provider/model` list; other agents return `[]` |
 
 Items and the agent config are persisted in `idupi-server/data/` (gitignored):
 `inbox.json` keeps the newest 500 items, `inbox-config.json` keeps
-`{agent, model, effort}`. Analysis runs one agent process at a time, with the
-message treated as untrusted data and every agent invoked without a shell from
-an empty temp directory. Auto-reply is a phone-side policy; this server only
-stores state.
+`{agent, model, effort}` and `inbox-digests.json` keeps one digest per
+conversation (pruned when the conversation has no open items). Analysis runs one
+agent process at a time, with the message treated as untrusted data and every
+agent invoked without a shell from an empty temp directory; the digest reuses
+the same runner, queue, no-tools hardening and per-message delimited blocks, and
+is keyed by a hash of the included item ids + texts. Auto-reply is a phone-side
+policy; this server only stores state.
 
 ### Phone agent
 
@@ -252,7 +389,7 @@ is unreachable.
 | `.idupi-token` | Access token (repo root) |
 | `idupi-server/projects.json` | Registered projects and active project |
 | `idupi-server/deliveries/` | Delivery index and APK snapshots (newest 10) |
-| `idupi-server/data/` | Phone inbox items/config and `phone-status.json` (gitignored) |
+| `idupi-server/data/` | Phone inbox items/config, conversation digests and `phone-status.json` (gitignored) |
 | `idupi-server/logs/` | Server stdout/stderr from `start-server.ps1` |
 | `%ProgramData%\IDUPI\` | Sensor helper, LibreHardwareMonitor DLLs and `sensors.json` |
 

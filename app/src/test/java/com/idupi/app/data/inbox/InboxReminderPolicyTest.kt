@@ -56,9 +56,9 @@ class InboxReminderPolicyTest {
         autoReply: Boolean = false,
         autoReplyDelayMinutes: Int = 30,
         template: String = "Hola, te contesto apenas pueda.",
-        apps: Set<String> = InboxApp.allIds,
+        apps: Set<String> = InboxApp.defaultFollowedIds,
     ) = InboxSettings(
-        enabledApps = apps,
+        followedApps = apps,
         reminderIntervalMinutes = intervalMinutes,
         remindMinImportance = minImportance,
         autoReplyEnabled = autoReply,
@@ -71,12 +71,14 @@ class InboxReminderPolicyTest {
         settings: InboxSettings = settings(),
         states: Map<String, InboxReminderPolicy.ItemState> = emptyMap(),
         liveActions: Set<String> = emptySet(),
+        silenced: Set<String> = emptySet(),
     ): List<InboxReminderPolicy.Action> = InboxReminderPolicy.decide(
         items = items,
         settings = settings,
         nowMillis = now,
         stateFor = { states[it] ?: InboxReminderPolicy.ItemState() },
-        hasLiveReplyAction = { it in liveActions }
+        hasLiveReplyAction = { it in liveActions },
+        isSilencedConversation = { it in silenced }
     )
 
     private fun conversationKey(app: String = InboxApp.WHATSAPP.id, conversation: String = "Ana") =
@@ -186,7 +188,7 @@ class InboxReminderPolicyTest {
     }
 
     @Test
-    fun `an app the owner stopped monitoring produces no actions`() {
+    fun `an app the owner stopped following produces no actions`() {
         val actions = decide(
             items = listOf(item(app = InboxApp.GMAIL.id)),
             settings = settings(apps = setOf(InboxApp.WHATSAPP.id))
@@ -196,8 +198,8 @@ class InboxReminderPolicyTest {
     }
 
     @Test
-    fun `an unknown app is never processed`() {
-        assertTrue(decide(listOf(item(app = "telegram"))).isEmpty())
+    fun `an unfollowed app is never processed`() {
+        assertTrue(decide(listOf(item(app = "com.spotify.music"))).isEmpty())
     }
 
     // --- Importance gate ---
@@ -475,5 +477,60 @@ class InboxReminderPolicyTest {
             it is InboxReminderPolicy.Action.AutoReply
         })
         assertTrue(decide(listOf(item(state = InboxItemState.AUTO_REPLIED))).isEmpty())
+    }
+
+    // --- silence but read (inbox-management T4) ----------------------------
+
+    @Test
+    fun `a silenced conversation gets no reminder below high importance`() {
+        val mediumGate = settings(minImportance = "medium")
+        val medium = item(importance = "medium")
+
+        assertTrue(decide(listOf(medium), mediumGate).any {
+            it is InboxReminderPolicy.Action.Remind
+        })
+        assertTrue(decide(
+            items = listOf(medium),
+            settings = mediumGate,
+            silenced = setOf(conversationKey())
+        ).isEmpty())
+    }
+
+    @Test
+    fun `a silenced conversation still reminds at high importance`() {
+        val actions = decide(
+            items = listOf(item(importance = "high")),
+            silenced = setOf(conversationKey())
+        )
+
+        assertEquals(
+            listOf(InboxReminderPolicy.Action.Remind("i1")),
+            actions
+        )
+    }
+
+    @Test
+    fun `silencing one conversation does not silence another`() {
+        val other = item(id = "i2", conversation = "Beto", importance = "medium")
+
+        val actions = decide(
+            items = listOf(item(importance = "medium"), other),
+            settings = settings(minImportance = "medium"),
+            silenced = setOf(conversationKey())
+        )
+
+        assertEquals(listOf(InboxReminderPolicy.Action.Remind("i2")), actions)
+    }
+
+    @Test
+    fun `silencing does not block the template auto-reply`() {
+        val actions = decide(
+            items = listOf(item(receivedAt = minutesAgo(60))),
+            settings = settings(autoReply = true),
+            liveActions = setOf(conversationKey()),
+            silenced = setOf(conversationKey())
+        )
+
+        assertEquals(1, actions.count { it is InboxReminderPolicy.Action.AutoReply })
     }
 }
