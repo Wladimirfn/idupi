@@ -19,8 +19,9 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
 /**
- * DataStore-backed [SettingsRepository] for the app theme (T9) and the
- * phone-side Alertas settings (phone-inbox T2).
+ * DataStore-backed [SettingsRepository] for the app theme (T9), the phone-side
+ * Alertas settings (phone-inbox T2) and the phone status reporting switch
+ * (phone-agent T2).
  *
  * Every value has a safe default, so a fresh install and an install upgrading
  * from a build without these keys both land on dark + Índigo instead of
@@ -111,6 +112,24 @@ class DataStoreSettingsRepository(
         dataStore.edit { prefs -> prefs[INBOX_AUTO_REPLY_TEMPLATE_KEY] = template }
     }
 
+    // Missing key means ON: status reporting is opt-out, so an upgraded install
+    // starts reporting without the owner having to touch anything.
+    override val phoneStatusEnabled: Flow<Boolean> =
+        dataStore.data.map { prefs -> prefs[PHONE_STATUS_ENABLED_KEY] ?: true }
+
+    override suspend fun setPhoneStatusEnabled(enabled: Boolean) {
+        dataStore.edit { prefs -> prefs[PHONE_STATUS_ENABLED_KEY] = enabled }
+    }
+
+    // Missing key means OFF: command execution is opt-in twice (system grant
+    // plus this switch), so a fresh or upgraded install never executes a tap.
+    override val phoneControlEnabled: Flow<Boolean> =
+        dataStore.data.map { prefs -> prefs[PHONE_CONTROL_ENABLED_KEY] ?: false }
+
+    override suspend fun setPhoneControlEnabled(enabled: Boolean) {
+        dataStore.edit { prefs -> prefs[PHONE_CONTROL_ENABLED_KEY] = enabled }
+    }
+
     private inline fun <reified T : Enum<T>> enumValue(raw: String?, fallback: T): T =
         raw?.let { stored -> enumValues<T>().firstOrNull { it.name == stored } } ?: fallback
 
@@ -135,5 +154,13 @@ class DataStoreSettingsRepository(
             intPreferencesKey("inbox_auto_reply_delay_minutes")
         val INBOX_AUTO_REPLY_TEMPLATE_KEY: Preferences.Key<String> =
             stringPreferencesKey("inbox_auto_reply_template")
+
+        /** phone-agent T2: periodic status reporting to the PC; default ON. */
+        val PHONE_STATUS_ENABLED_KEY: Preferences.Key<Boolean> =
+            booleanPreferencesKey("phone_status_enabled")
+
+        /** phone-agent T3: execute PC commands through accessibility; default OFF. */
+        val PHONE_CONTROL_ENABLED_KEY: Preferences.Key<Boolean> =
+            booleanPreferencesKey("phone_control_enabled")
     }
 }

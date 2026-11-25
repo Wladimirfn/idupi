@@ -26,6 +26,19 @@ interface SettingsRepository {
     /** Observed Alertas capture/reminder/auto-reply configuration. */
     val inboxSettings: Flow<InboxSettings>
 
+    /**
+     * Observed "send the phone status to the PC" switch (phone-agent T2).
+     * Missing value means ON: status reporting is opt-out.
+     */
+    val phoneStatusEnabled: Flow<Boolean>
+
+    /**
+     * Observed "control from the PC" master switch (phone-agent T3). Missing
+     * value means OFF: execution needs both this switch and the system
+     * accessibility grant.
+     */
+    val phoneControlEnabled: Flow<Boolean>
+
     suspend fun setThemeMode(mode: ThemeMode)
 
     suspend fun setThemePreset(preset: ThemePreset)
@@ -45,20 +58,32 @@ interface SettingsRepository {
     suspend fun setInboxAutoReplyDelayMinutes(minutes: Int)
 
     suspend fun setInboxAutoReplyTemplate(template: String)
+
+    suspend fun setPhoneStatusEnabled(enabled: Boolean)
+
+    suspend fun setPhoneControlEnabled(enabled: Boolean)
 }
 
 /** In-memory [SettingsRepository] backed by [MutableStateFlow]s. */
 class InMemorySettingsRepository(
     initial: ThemeSettings = ThemeSettings(),
     initialInbox: InboxSettings = InboxSettings(),
+    initialPhoneStatusEnabled: Boolean = true,
+    initialPhoneControlEnabled: Boolean = false,
 ) : SettingsRepository {
 
     private val _themeSettings = MutableStateFlow(initial)
     private val _inboxSettings = MutableStateFlow(initialInbox)
+    private val _phoneStatusEnabled = MutableStateFlow(initialPhoneStatusEnabled)
+    private val _phoneControlEnabled = MutableStateFlow(initialPhoneControlEnabled)
 
     override val themeSettings: Flow<ThemeSettings> = _themeSettings.asStateFlow()
 
     override val inboxSettings: Flow<InboxSettings> = _inboxSettings.asStateFlow()
+
+    override val phoneStatusEnabled: Flow<Boolean> = _phoneStatusEnabled.asStateFlow()
+
+    override val phoneControlEnabled: Flow<Boolean> = _phoneControlEnabled.asStateFlow()
 
     override suspend fun setThemeMode(mode: ThemeMode) {
         _themeSettings.update { it.copy(mode = mode) }
@@ -96,5 +121,13 @@ class InMemorySettingsRepository(
 
     override suspend fun setInboxAutoReplyTemplate(template: String) {
         _inboxSettings.update { it.copy(autoReplyTemplate = template) }
+    }
+
+    override suspend fun setPhoneStatusEnabled(enabled: Boolean) {
+        _phoneStatusEnabled.value = enabled
+    }
+
+    override suspend fun setPhoneControlEnabled(enabled: Boolean) {
+        _phoneControlEnabled.value = enabled
     }
 }

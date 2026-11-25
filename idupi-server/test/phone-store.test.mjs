@@ -1,0 +1,375 @@
+// Tests for the phone agent store (phone-agent, T1).
+//
+// Run (from repo root):
+//   node --test idupi-server/test/phone-store.test.mjs
+
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import {
+    COMMAND_ID_PATTERN,
+    COMMAND_TYPES,
+    createPhoneStore,
+    normalizeCommandArgs,
+} from "../lib/phone-store.mjs";
+
+const silentLog = { log() {}, info() {}, warn() {}, error() {} };
+
+async function makeDir(t) {
+    const dir = await mkdtemp(join(tmpdir(), "idupi-phone-store-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    return dir;
+}
+
+function makeClock(start = "2026-11-24T12:00:00.000Z") {
+    let current = new Date(start);
+    return {
+        now: () => current,
+        advance(ms) {
+            current = new Date(current.getTime() + ms);
+        },
+    };
+}
+
+function snapshot(overrides = {}) {
+    return {
+        battery: { percent: 87, charging: true },
+        signal: { level: 4, dbm: -78, operator: "Claro", networkType: "LTE" },
+        ...overrides,
+    };
+}
+
+test("recordStatus keeps the latest snapshot plus a server receivedAt", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const store = createPhoneStore({ dataDir: dir, now: clock.now, log: silentLog });
+
+    const latest = store.recordStatus(snapshot());
+
+    assert.equal(latest.battery.percent, 87);
+    assert.equal(latest.receivedAt, "2026-11-24T12:00:00.000Z");
+    const info = store.getStatusInfo();
+    assert.deepEqual(info.latest, latest);
+    assert.equal(info.online, true);
+    assert.equal(info.lastSeenAt, "2026-11-24T12:00:00.000Z");
+    assert.equal(info.history.length, 1);
+});
+
+test("recordStatus persists and a new store reloads latest + history", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const first = createPhoneStore({ dataDir: dir, now: clock.now, log: silentLog });
+    first.recordStatus(snapshot());
+
+    const second = createPhoneStore({ dataDir: dir, now: clock.now, log: silentLog });
+    const info = second.getStatusInfo();
+
+    assert.equal(info.latest.battery.percent, 87);
+    assert.equal(info.history.length, 1);
+    // A recent snapshot still counts as a live phone after a restart.
+    assert.equal(info.online, true);
+
+    const raw = JSON.parse(await readFile(join(dir, "phone-status.json"), "utf8"));
+    assert.equal(raw.version, 1);
+    assert.equal(raw.latest.battery.percent, 87);
+    assert.equal(raw.history.length, 1);
+});
+
+test("history samples at most once per interval and prunes by age and cap", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const store = createPhoneStore({
+        dataDir: dir,
+        now: clock.now,
+        log: silentLog,
+        historyIntervalMs: 60_000,
+        historyLimit: 2,
+        historyTtlMs: 5 * 60_000,
+    });
+
+    store.recordStatus(snapshot({ battery: { percent: 1 } }));
+    clock.advance(30_000);
+    store.recordStatus(snapshot({ battery: { percent: 2 } }));
+    // Within the sampling interval: latest changes, history does not.
+    assert.equal(store.getStatusInfo().latest.battery.percent, 2);
+    assert.equal(store.getStatusInfo().history.length, 1);
+
+    clock.advance(30_000);
+    store.recordStatus(snapshot({ battery: { percent: 3 } }));
+    assert.equal(store.getStatusInfo().history.length, 2);
+
+    clock.advance(60_000);
+    store.recordStatus(snapshot({ battery: { percent: 4 } }));
+    // Cap at 2: the oldest sample is dropped.
+    assert.deepEqual(
+        store.getStatusInfo().history.map((entry) => entry.battery.percent),
+        [3, 4],
+    );
+
+    // Older than the 5 min TTL: everything but the newest is gone.
+    clock.advance(10 * 60_000);
+    store.recordStatus(snapshot({ battery: { percent: 5 } }));
+    assert.deepEqual(
+        store.getStatusInfo().history.map((entry) => entry.battery.percent),
+        [5],
+    );
+});
+
+test("recordStatus rejects non-objects and oversized payloads", async (t) => {
+    const dir = await makeDir(t);
+    const store = createPhoneStore({ dataDir: dir, now: makeClock().now, log: silentLog });
+
+    assert.throws(() => store.recordStatus([]), /JSON object/);
+    assert.throws(() => store.recordStatus("x"), /JSON object/);
+
+    const tiny = createPhoneStore({
+        dataDir: dir,
+        now: makeClock().now,
+        log: silentLog,
+        maxStatusBytes: 64,
+    });
+    assert.throws(() => tiny.recordStatus({ blob: "x".repeat(200) }), /exceeds 64 bytes/);
+});
+
+test("online follows the 2 min window and every poll marks the phone seen", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const store = createPhoneStore({ dataDir: dir, now: clock.now, log: silentLog });
+
+    store.recordStatus(snapshot());
+    clock.advance(3 * 60_000);
+    assert.equal(store.getStatusInfo().online, false);
+
+    store.markSeen();
+    assert.equal(store.getStatusInfo().online, true);
+    assert.equal(store.getStatusInfo().lastSeenAt, "2026-11-24T12:03:00.000Z");
+});
+
+test("rejects an invalid status file instead of crashing", async (t) => {
+    const dir = await makeDir(t);
+    await writeFile(join(dir, "phone-status.json"), "{ not json", "utf8");
+    const store = createPhoneStore({ dataDir: dir, now: makeClock().now, log: silentLog });
+    assert.equal(store.getStatusInfo().latest, null);
+    assert.equal(store.getStatusInfo().online, false);
+});
+
+test("normalizeCommandArgs validates every command type", () => {
+    assert.deepEqual(normalizeCommandArgs("screen", undefined), {});
+    assert.deepEqual(normalizeCommandArgs("status", {}), {});
+    assert.deepEqual(normalizeCommandArgs("tap", { text: "Iniciar sesión" }), {
+        text: "Iniciar sesión",
+    });
+    assert.deepEqual(normalizeCommandArgs("tap", { id: "com.app:id/ok" }), {
+        id: "com.app:id/ok",
+    });
+    assert.deepEqual(normalizeCommandArgs("long_press", { x: 10, y: 20 }), { x: 10, y: 20 });
+    assert.deepEqual(normalizeCommandArgs("type", { text: "hola", submit: true }), {
+        text: "hola",
+        submit: true,
+    });
+    assert.deepEqual(normalizeCommandArgs("type", { text: "hola", submit: false }), {
+        text: "hola",
+    });
+    assert.deepEqual(normalizeCommandArgs("scroll", { direction: "up" }), { direction: "up" });
+    assert.deepEqual(normalizeCommandArgs("global", { action: "quick_settings" }), {
+        action: "quick_settings",
+    });
+    assert.deepEqual(normalizeCommandArgs("open", { app: "com.whatsapp" }), {
+        app: "com.whatsapp",
+    });
+    assert.deepEqual(normalizeCommandArgs("wait", { ms: 0 }), { ms: 0 });
+
+    const invalid = [
+        ["nope", {}],
+        ["screen", { extra: 1 }],
+        ["tap", {}],
+        ["tap", { text: "a", id: "b" }],
+        ["tap", { x: 1 }],
+        ["tap", { x: -1, y: 2 }],
+        ["tap", { text: "   " }],
+        ["long_press", { y: 2 }],
+        ["type", { text: "" }],
+        ["type", { text: "hi", submit: "yes" }],
+        ["scroll", { direction: "sideways" }],
+        ["global", { action: "unlock" }],
+        ["open", { app: "" }],
+        ["open", { app: "x", extra: true }],
+        ["wait", { ms: 10_001 }],
+        ["wait", { ms: 1.5 }],
+    ];
+    for (const [type, args] of invalid) {
+        assert.throws(
+            () => normalizeCommandArgs(type, args),
+            (err) => err.code === "INVALID_COMMAND",
+            `${type} ${JSON.stringify(args)} should be rejected`,
+        );
+    }
+});
+
+test("createCommand builds a pending command that expires after 60 s", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const store = createPhoneStore({ dataDir: dir, now: clock.now, log: silentLog });
+
+    const command = store.createCommand({ type: "tap", args: { text: "OK" } });
+
+    assert.match(command.id, COMMAND_ID_PATTERN);
+    assert.ok(COMMAND_TYPES.includes(command.type));
+    assert.deepEqual(command.args, { text: "OK" });
+    assert.equal(command.state, "pending");
+    assert.equal(command.createdAt, "2026-11-24T12:00:00.000Z");
+    assert.equal(command.expiresAt, "2026-11-24T12:01:00.000Z");
+    assert.equal(command.deliveredAt, null);
+    assert.equal(command.finishedAt, null);
+    assert.equal(command.result, null);
+    assert.equal(command.error, null);
+});
+
+test("takeNext delivers the oldest pending command and skips nothing silently", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const store = createPhoneStore({ dataDir: dir, now: clock.now, log: silentLog });
+
+    assert.equal(store.takeNext(), null);
+    const first = store.createCommand({ type: "screen" });
+    clock.advance(1000);
+    const second = store.createCommand({ type: "global", args: { action: "home" } });
+
+    const delivered = store.takeNext();
+    assert.equal(delivered.id, first.id);
+    assert.equal(delivered.state, "delivered");
+    assert.equal(delivered.deliveredAt, "2026-11-24T12:00:01.000Z");
+
+    const next = store.takeNext();
+    assert.equal(next.id, second.id);
+    assert.equal(store.takeNext(), null);
+});
+
+test("pending commands expire after 60 s and are never delivered", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const store = createPhoneStore({ dataDir: dir, now: clock.now, log: silentLog });
+
+    const command = store.createCommand({ type: "tap", args: { text: "OK" } });
+    clock.advance(61_000);
+
+    assert.equal(store.takeNext(), null);
+    assert.equal(store.getCommand(command.id).state, "expired");
+});
+
+test("finishCommand records done and failed, then refuses a second report", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const store = createPhoneStore({ dataDir: dir, now: clock.now, log: silentLog });
+
+    const doneCommand = store.createCommand({ type: "screen" });
+    store.takeNext();
+    clock.advance(500);
+    const done = store.finishCommand(doneCommand.id, {
+        ok: true,
+        result: { text: "[0] TextView \"Hola\"" },
+    });
+    assert.equal(done.ok, true);
+    assert.equal(done.command.state, "done");
+    assert.equal(done.command.finishedAt, "2026-11-24T12:00:00.500Z");
+    assert.deepEqual(done.command.result, { text: "[0] TextView \"Hola\"" });
+    assert.equal(done.command.error, null);
+
+    const repeated = store.finishCommand(doneCommand.id, { ok: true });
+    assert.deepEqual(repeated, { ok: false, reason: "finished" });
+
+    const failedCommand = store.createCommand({ type: "tap", args: { text: "OK" } });
+    store.finishCommand(failedCommand.id, { ok: false, error: "no node found" });
+    const failed = store.getCommand(failedCommand.id);
+    assert.equal(failed.state, "failed");
+    assert.equal(failed.error, "no node found");
+    assert.equal(failed.result, null);
+
+    assert.deepEqual(store.finishCommand("phc-000000000000", { ok: true }), {
+        ok: false,
+        reason: "not_found",
+    });
+});
+
+test("finishCommand refuses expired commands and bad bodies", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const store = createPhoneStore({ dataDir: dir, now: clock.now, log: silentLog });
+
+    const command = store.createCommand({ type: "screen" });
+    clock.advance(61_000);
+    assert.deepEqual(store.finishCommand(command.id, { ok: true }), {
+        ok: false,
+        reason: "expired",
+    });
+
+    const fresh = store.createCommand({ type: "screen" });
+    assert.throws(() => store.finishCommand(fresh.id, { ok: "yes" }), /boolean/);
+
+    const tiny = createPhoneStore({
+        dataDir: dir,
+        now: clock.now,
+        log: silentLog,
+        maxResultBytes: 64,
+    });
+    const tinyCommand = tiny.createCommand({ type: "screen" });
+    assert.throws(
+        () => tiny.finishCommand(tinyCommand.id, { ok: true, result: { blob: "x".repeat(200) } }),
+        /exceeds/,
+    );
+});
+
+test("the queue keeps at most the last N finished commands", async (t) => {
+    const dir = await makeDir(t);
+    const store = createPhoneStore({
+        dataDir: dir,
+        now: makeClock().now,
+        log: silentLog,
+        maxFinished: 3,
+    });
+
+    const ids = [];
+    for (let index = 0; index < 6; index += 1) {
+        const command = store.createCommand({ type: "wait", args: { ms: 0 } });
+        ids.push(command.id);
+        store.finishCommand(command.id, { ok: true });
+    }
+
+    const listed = store.listCommands({ limit: 100 });
+    assert.equal(listed.length, 3);
+    assert.deepEqual(listed.map((command) => command.id), [ids[5], ids[4], ids[3]]);
+});
+
+test("listCommands is newest first and caps the limit", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const store = createPhoneStore({ dataDir: dir, now: clock.now, log: silentLog });
+
+    store.createCommand({ type: "screen" });
+    clock.advance(1000);
+    store.createCommand({ type: "global", args: { action: "back" } });
+
+    const listed = store.listCommands({ limit: 1 });
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].type, "global");
+    assert.equal(store.listCommands({ limit: 100 }).length, 2);
+});
+
+test("subscribers hear about enqueue, delivery and result", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const store = createPhoneStore({ dataDir: dir, now: clock.now, log: silentLog });
+    const events = [];
+    const unsubscribe = store.subscribe(() => events.push(events.length + 1));
+
+    const command = store.createCommand({ type: "screen" });
+    store.takeNext();
+    store.finishCommand(command.id, { ok: true });
+    unsubscribe();
+    store.createCommand({ type: "screen" });
+
+    assert.equal(events.length, 3);
+});

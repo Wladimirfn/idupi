@@ -2,6 +2,7 @@ package com.idupi.app.data.remote
 
 import android.util.Log
 import com.idupi.app.IduPiApp
+import com.idupi.app.data.phone.PhoneStatus
 import com.idupi.app.domain.model.*
 import com.idupi.app.domain.repository.IduPiClient
 import com.idupi.app.service.IduPiForegroundService
@@ -41,6 +42,7 @@ import kotlinx.coroutines.flow.merge
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 /**
@@ -113,6 +115,18 @@ private data class UiResponsePayload(
     val value: JsonElement,
     val token: String,
     val sessionId: String,
+)
+
+/**
+ * Result posted to `POST /api/v1/phone/commands/{id}/result` (phone-agent T3).
+ * Defaults stay null so kotlinx omits them; the server treats a missing result
+ * or error exactly like an explicit null.
+ */
+@Serializable
+private data class PhoneCommandResultPayload(
+    val ok: Boolean,
+    val result: JsonElement? = null,
+    val error: String? = null,
 )
 
 /**
@@ -891,6 +905,49 @@ class RealIduPiClient : IduPiClient {
         send(HttpMethod.Get, "/api/v1/inbox/models") {
             parameter("agent", agent)
         }.body<InboxModelsEnvelope>().models
+
+    // --- Phone status reporting (phone-agent T2) ---
+
+    override suspend fun postPhoneStatus(status: PhoneStatus) {
+        send(HttpMethod.Post, "/api/v1/phone/status") {
+            contentType(ContentType.Application.Json)
+            setBody(status)
+        }
+    }
+
+    // --- Phone control (phone-agent T3) ---
+
+    /**
+     * Long-polls for the next command. The request timeout must outlive the
+     * server's hold, or the client would cancel a healthy poll every cycle.
+     * A 204 is the normal "nothing queued" answer and is not an error.
+     */
+    override suspend fun getNextPhoneCommand(waitSeconds: Int): String? {
+        val wait = waitSeconds.coerceIn(1, 30)
+        val timeoutMillis = wait * 1000L + 15_000L
+        val response = send(HttpMethod.Get, "/api/v1/phone/commands/next") {
+            parameter("wait", wait)
+            timeout {
+                requestTimeoutMillis = timeoutMillis
+                socketTimeoutMillis = timeoutMillis
+            }
+        }
+        if (response.status.value == 204) return null
+        val body = response.body<JsonObject>()
+        return body["command"]?.toString()
+    }
+
+    override suspend fun postPhoneCommandResult(
+        commandId: String,
+        ok: Boolean,
+        result: JsonElement?,
+        error: String?,
+    ) {
+        send(HttpMethod.Post, "/api/v1/phone/commands/$commandId/result") {
+            contentType(ContentType.Application.Json)
+            setBody(PhoneCommandResultPayload(ok = ok, result = result, error = error))
+        }
+    }
 
     companion object {
         private const val TAG = "RealIduPiClient"
