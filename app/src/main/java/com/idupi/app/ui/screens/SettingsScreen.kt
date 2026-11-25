@@ -49,6 +49,7 @@ import com.idupi.app.ui.theme.ThemePalettes
 import com.idupi.app.viewmodel.InboxSettingsViewModel
 import com.idupi.app.viewmodel.MainViewModel
 import com.idupi.app.viewmodel.CalendarSettingsViewModel
+import com.idupi.app.viewmodel.HealthSettingsViewModel
 import com.idupi.app.viewmodel.PhoneAgentSettingsViewModel
 import java.util.Locale
 
@@ -59,6 +60,7 @@ fun SettingsScreen(
     inboxViewModel: InboxSettingsViewModel,
     phoneAgentViewModel: PhoneAgentSettingsViewModel,
     calendarViewModel: CalendarSettingsViewModel,
+    healthViewModel: HealthSettingsViewModel,
     onMenuClick: () -> Unit,
     onNavigateToConnection: () -> Unit,
     onNavigateToWelcome: () -> Unit,
@@ -114,6 +116,8 @@ fun SettingsScreen(
             PhoneAgentSection(phoneAgentViewModel)
 
             CalendarSection(calendarViewModel)
+
+            HealthSection(healthViewModel)
 
             AboutSection()
 

@@ -61,6 +61,7 @@ fun AppNavigation() {
     val inboxSettingsViewModel: InboxSettingsViewModel = viewModel()
     val phoneAgentSettingsViewModel: PhoneAgentSettingsViewModel = viewModel()
     val calendarSettingsViewModel: CalendarSettingsViewModel = viewModel()
+    val healthSettingsViewModel: HealthSettingsViewModel = viewModel()
     val calendarViewModel: CalendarViewModel = viewModel()
     val projectsViewModel: ProjectsViewModel = viewModel()
     val terminalsViewModel: TerminalsViewModel = viewModel()
@@ -313,6 +314,7 @@ fun AppNavigation() {
                                 inboxViewModel = inboxSettingsViewModel,
                                 phoneAgentViewModel = phoneAgentSettingsViewModel,
                                 calendarViewModel = calendarSettingsViewModel,
+                                healthViewModel = healthSettingsViewModel,
                                 onMenuClick = { scope.launch { drawerState.open() } },
                                 onNavigateToConnection = { navigateTo(Screen.CONNECTION) },
                                 onNavigateToWelcome = { navigateTo(Screen.WELCOME) },
