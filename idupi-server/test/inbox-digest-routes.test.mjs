@@ -57,14 +57,18 @@ async function waitFor(check, timeoutMs = 3000) {
     }
 }
 
+// One fixed clock for routes, digests AND the item store: a store on the real
+// clock prunes items the routes closed at the fixed time once a day has passed.
+const FIXED_NOW = () => new Date("2026-11-24T12:00:00.000Z");
+
 async function startHarness(t, { runner = null } = {}) {
     const dir = await mkdtemp(join(tmpdir(), "idupi-inbox-digest-routes-"));
     t.after(() => rm(dir, { recursive: true, force: true }));
-    const store = createInboxStore({ dataDir: dir, log: silentLog });
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: FIXED_NOW });
     const digestStore = createInboxDigestStore({
         dataDir: dir,
         log: silentLog,
-        now: () => new Date("2026-11-24T12:00:00.000Z"),
+        now: FIXED_NOW,
     });
     const fakeRunner = runner || {
         run: async () => ({ ...RESULT }),
@@ -74,7 +78,7 @@ async function startHarness(t, { runner = null } = {}) {
         store,
         digestStore,
         runner: fakeRunner,
-        now: () => new Date("2026-11-24T12:00:00.000Z"),
+        now: FIXED_NOW,
     });
 
     const server = http.createServer(async (req, res) => {
