@@ -302,3 +302,8 @@ then the owner wants the whole chain merged to main.
   the whole summary failed to decode. Fixed (optional workout/topApp fields,
   decode test with the live shape); int fields verified integer in the live
   summary. 50 / 1.49-salud, 868 tests.
+- Docs: docs/GUIA-CONFIGURACION.md (architecture, programs, step-by-step for
+  Alertas, phone assistant, calendar, Salud and wireless ADB, verification,
+  known problems from the live sessions); README requirements, screens and
+  doc links refreshed; PRIVACY.md covers notifications, accessibility, usage
+  access, calendar, Health Connect, AI analysis and data/ retention.
