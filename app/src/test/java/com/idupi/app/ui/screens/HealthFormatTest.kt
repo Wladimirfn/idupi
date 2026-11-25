@@ -74,4 +74,44 @@ class HealthFormatTest {
             healthConnectStatusText(HealthConnectAvailability.UNAVAILABLE),
         )
     }
+
+    @Test
+    fun `adb status copy names the connection and the tools`() {
+        val connected = com.idupi.app.domain.model.HealthAdbStatus(
+            adb = com.idupi.app.domain.model.HealthAdbTool(path = "adb.exe", found = true),
+            scrcpy = com.idupi.app.domain.model.HealthScrcpyTool(
+                path = "scrcpy.exe",
+                found = true,
+                version = "5.0.1",
+            ),
+            connected = true,
+            serial = "192.168.1.50:37123",
+            targets = listOf(
+                com.idupi.app.domain.model.HealthAdbTarget(
+                    serial = "192.168.1.50:37123",
+                    network = "lan",
+                    model = "SM-S928B",
+                ),
+            ),
+        )
+        assertEquals(
+            "Teléfono conectado: 192.168.1.50:37123",
+            healthAdbStatusText(connected),
+        )
+        assertEquals(
+            "ADB encontrado · scrcpy 5.0.1 · Guardado: 192.168.1.50:37123 · SM-S928B",
+            healthAdbDetail(connected),
+        )
+
+        val disconnected = com.idupi.app.domain.model.HealthAdbStatus(
+            adb = com.idupi.app.domain.model.HealthAdbTool(path = "adb.exe", found = true),
+            scrcpy = com.idupi.app.domain.model.HealthScrcpyTool(found = false),
+            connected = false,
+        )
+        assertEquals("Sin teléfono conectado por ADB", healthAdbStatusText(disconnected))
+        assertEquals(
+            "ADB encontrado · scrcpy no encontrado",
+            healthAdbDetail(disconnected),
+        )
+    }
 }

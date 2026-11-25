@@ -3,6 +3,7 @@ package com.idupi.app.ui.screens
 import com.idupi.app.data.health.HealthConnectAvailability
 import com.idupi.app.data.health.HealthReportState
 import com.idupi.app.data.health.HealthRoute
+import com.idupi.app.domain.model.HealthAdbStatus
 
 /**
  * User-facing labels of Ajustes > SALUD (phone-health T2). Neutral Latin
@@ -30,6 +31,31 @@ internal fun healthRouteLabel(wire: String): String = when (wire) {
     HealthRoute.HIDDEN_DISPLAY.wire -> HealthRoute.HIDDEN_DISPLAY.label
     else -> HealthRoute.NOT_SUPPORTED.label
 }
+
+/** PC hidden-reading headline for Ajustes > SALUD. */
+internal fun healthAdbStatusText(status: HealthAdbStatus): String = if (status.connected) {
+    val serial = status.serial?.takeIf { it.isNotBlank() }
+    if (serial != null) "Teléfono conectado: $serial" else "Teléfono conectado"
+} else {
+    "Sin teléfono conectado por ADB"
+}
+
+/** adb/scrcpy/saved targets in one line, hiding what is missing. */
+internal fun healthAdbDetail(status: HealthAdbStatus): String = buildList {
+    add(if (status.adb.found) "ADB encontrado" else "ADB no encontrado")
+    add(
+        if (status.scrcpy.found) {
+            val version = status.scrcpy.version?.takeIf { it.isNotBlank() }
+            if (version != null) "scrcpy $version" else "scrcpy encontrado"
+        } else {
+            "scrcpy no encontrado"
+        },
+    )
+    status.targets.firstOrNull()?.let { target ->
+        val model = target.model?.takeIf { it.isNotBlank() }
+        add("Guardado: ${target.serial}" + (model?.let { " · $it" } ?: ""))
+    }
+}.joinToString(" · ")
 
 /**
  * Last health report, as the owner reads it: relative time, whether it

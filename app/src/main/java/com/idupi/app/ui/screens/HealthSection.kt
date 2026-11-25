@@ -80,11 +80,15 @@ fun HealthSection(viewModel: HealthSettingsViewModel) {
     LaunchedEffect(Unit) {
         HealthReporting.start(context)
         viewModel.refresh()
+        viewModel.refreshAdb()
     }
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) viewModel.refresh()
+            if (event == Lifecycle.Event.ON_RESUME) {
+                viewModel.refresh()
+                viewModel.refreshAdb()
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -117,6 +121,7 @@ fun HealthSection(viewModel: HealthSettingsViewModel) {
                     }
             },
             onSendNow = viewModel::sendNow,
+            onReadHuawei = viewModel::readHuaweiNow,
         )
     }
 }
@@ -130,6 +135,7 @@ private fun HealthCard(
     onOpenHealthConnect: () -> Unit,
     onInstallHealthConnect: () -> Unit,
     onSendNow: () -> Unit,
+    onReadHuawei: () -> Unit,
 ) {
     val now = System.currentTimeMillis()
     val available = state.availability == HealthConnectAvailability.AVAILABLE
@@ -283,6 +289,66 @@ private fun HealthCard(
                             )
                         }
                     }
+                }
+            }
+
+            Divider(color = SlateBorder)
+
+            Text(
+                text = "Lectura desde la PC",
+                style = AppTypography.titleSmall,
+                color = TextSecondary,
+            )
+            val adb = state.adbStatus
+            if (adb == null) {
+                Text(
+                    text = if (state.isLoadingAdb) {
+                        "Consultando el estado del PC..."
+                    } else {
+                        "No se pudo consultar el PC. Revisa la conexión."
+                    },
+                    style = AppTypography.bodySmall,
+                    color = TextSecondary,
+                )
+            } else {
+                Text(
+                    text = healthAdbStatusText(adb),
+                    style = AppTypography.bodyLarge,
+                    color = if (adb.connected) StatusConnected else TextSecondary,
+                )
+                Text(
+                    text = healthAdbDetail(adb),
+                    style = AppTypography.bodySmall,
+                    color = TextSecondary,
+                )
+            }
+            Text(
+                text = "IDUPI abre Huawei Health en una pantalla oculta del teléfono, " +
+                    "lee los datos y la cierra. La pantalla real no se enciende.",
+                style = AppTypography.bodySmall,
+                color = TextSecondary,
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm),
+            ) {
+                Button(
+                    onClick = onReadHuawei,
+                    enabled = !state.isReadingHuawei,
+                    shape = AppShapes.button,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = PrimaryIndigo,
+                        contentColor = Color.White,
+                    ),
+                ) {
+                    Text("Leer Huawei Health ahora", style = AppTypography.bodySmall)
+                }
+                if (state.isReadingHuawei) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        color = PrimaryIndigo,
+                    )
                 }
             }
 

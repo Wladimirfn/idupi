@@ -37,6 +37,14 @@ class HealthSettingsViewModelTest {
         sourcesProvider: suspend () -> List<HealthInstalledApp> = { sources },
         reportResult: suspend () -> Boolean = { true },
         reportState: MutableStateFlow<HealthReportState> = MutableStateFlow(HealthReportState()),
+        adbStatus: suspend () -> com.idupi.app.domain.model.HealthAdbStatus? = { null },
+        startRefresh: suspend () -> com.idupi.app.domain.model.HealthRefreshJob = {
+            com.idupi.app.domain.model.HealthRefreshJob(id = "hgj-0123456789ab", status = "queued")
+        },
+        pollRefresh: suspend (String) -> com.idupi.app.domain.model.HealthRefreshJob = {
+            com.idupi.app.domain.model.HealthRefreshJob(id = it, status = "done")
+        },
+        maxPollAttempts: Int = 5,
     ) = HealthSettingsViewModel(
         availabilityProvider = availability,
         grantedProvider = granted,
@@ -44,6 +52,11 @@ class HealthSettingsViewModelTest {
         reportStateFlow = reportState,
         requiredPermissions = required,
         reportNow = reportResult,
+        adbStatusProvider = adbStatus,
+        startHuaweiRefresh = startRefresh,
+        pollHuaweiRefresh = pollRefresh,
+        pollDelayMillis = 10,
+        maxPollAttempts = maxPollAttempts,
     )
 
     @Test
@@ -162,5 +175,133 @@ class HealthSettingsViewModelTest {
         )
 
         assertEquals(7, vm.reportState.value.sampleCount)
+    }
+
+    // --- PC hidden read (phone-health T3) ---
+
+    @Test
+    fun `refreshAdb loads the PC status without touching the summary`() = runTest {
+        var adbCalls = 0
+        val vm = viewModel(
+            adbStatus = {
+                adbCalls += 1
+                com.idupi.app.domain.model.HealthAdbStatus(
+                    adb = com.idupi.app.domain.model.HealthAdbTool(path = "adb.exe", found = true),
+                    scrcpy = com.idupi.app.domain.model.HealthScrcpyTool(found = true, version = "5.0.1"),
+                    connected = true,
+                    serial = "192.168.1.50:37123",
+                )
+            },
+        )
+        advanceUntilIdle()
+
+        vm.refreshAdb()
+        advanceUntilIdle()
+
+        val status = vm.state.value.adbStatus
+        assertEquals("192.168.1.50:37123", status?.serial)
+        assertEquals(true, status?.connected)
+        assertEquals(false, vm.state.value.isLoadingAdb)
+        assertEquals(1, adbCalls)
+    }
+
+    @Test
+    fun `a failing adb status keeps the screen usable`() = runTest {
+        val vm = viewModel(adbStatus = { throw IllegalStateException("PC down") })
+        advanceUntilIdle()
+
+        vm.refreshAdb()
+        advanceUntilIdle()
+
+        assertEquals(null, vm.state.value.adbStatus)
+        assertEquals(false, vm.state.value.isLoadingAdb)
+    }
+
+    @Test
+    fun `readHuaweiNow polls, reports the phone side and refreshes the sources`() = runTest {
+        var reports = 0
+        var sourceCalls = 0
+        var polls = 0
+        val vm = viewModel(
+            sourcesProvider = {
+                sourceCalls += 1
+                sources
+            },
+            reportResult = {
+                reports += 1
+                true
+            },
+            pollRefresh = { id ->
+                polls += 1
+                com.idupi.app.domain.model.HealthRefreshJob(
+                    id = id,
+                    status = if (polls < 2) "running" else "done",
+                )
+            },
+        )
+        advanceUntilIdle()
+        val before = sourceCalls
+
+        vm.readHuaweiNow()
+        advanceUntilIdle()
+
+        assertEquals(2, polls)
+        assertEquals(1, reports)
+        assertEquals(before + 1, sourceCalls)
+        assertEquals(false, vm.state.value.isReadingHuawei)
+        assertEquals(HealthSettingsViewModel.MESSAGE_HUAWEI_DONE, vm.feedback.value.message)
+        assertEquals(true, vm.feedback.value.success)
+    }
+
+    @Test
+    fun `readHuaweiNow with a timeout says so`() = runTest {
+        val vm = viewModel(
+            pollRefresh = { id ->
+                com.idupi.app.domain.model.HealthRefreshJob(id = id, status = "running")
+            },
+            maxPollAttempts = 2,
+        )
+        advanceUntilIdle()
+
+        vm.readHuaweiNow()
+        advanceUntilIdle()
+
+        assertEquals(HealthSettingsViewModel.MESSAGE_HUAWEI_TIMEOUT, vm.feedback.value.message)
+        assertEquals(false, vm.feedback.value.success)
+        assertEquals(false, vm.state.value.isReadingHuawei)
+    }
+
+    @Test
+    fun `readHuaweiNow with a failed job offers the failure copy`() = runTest {
+        val vm = viewModel(
+            pollRefresh = { id ->
+                com.idupi.app.domain.model.HealthRefreshJob(id = id, status = "failed")
+            },
+        )
+        advanceUntilIdle()
+
+        vm.readHuaweiNow()
+        advanceUntilIdle()
+
+        assertEquals(HealthSettingsViewModel.MESSAGE_HUAWEI_FAILED, vm.feedback.value.message)
+        assertEquals(false, vm.feedback.value.success)
+    }
+
+    @Test
+    fun `two taps while reading huawei start one job`() = runTest {
+        var starts = 0
+        val vm = viewModel(
+            startRefresh = {
+                starts += 1
+                com.idupi.app.domain.model.HealthRefreshJob(id = "hgj-0123456789ab", status = "queued")
+            },
+        )
+        advanceUntilIdle()
+
+        vm.readHuaweiNow()
+        vm.readHuaweiNow()
+        advanceUntilIdle()
+
+        assertEquals(1, starts)
     }
 }
