@@ -90,11 +90,16 @@ data class HealthSleepStages(
     val awake: Int? = null,
 )
 
-/** One workout inside `metrics.workouts` (server caps at 50 entries). */
+/**
+ * One workout inside `metrics.workouts` (server caps at 50 entries). Every
+ * field is optional on the wire: the Huawei hidden read only knows the minutes
+ * of the last session, so a required `type` made the whole summary undecodable
+ * and the Salud screen fell back to "no data".
+ */
 @Serializable
 data class HealthWorkout(
-    val type: String,
-    val minutes: Int,
+    val type: String = "",
+    val minutes: Int = 0,
     val start: String? = null,
     val kcal: Double? = null,
 )
@@ -102,6 +107,6 @@ data class HealthWorkout(
 /** One `metrics.topApps` entry: label + whole minutes, never a package name. */
 @Serializable
 data class HealthTopApp(
-    val label: String,
-    val minutes: Int,
+    val label: String = "",
+    val minutes: Int = 0,
 )

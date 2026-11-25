@@ -234,4 +234,35 @@ class HealthSerializationTest {
 
         assertEquals(42, element["unlocks"]!!.jsonPrimitive.int)
     }
+
+    @Test
+    fun `summary with a Huawei workout without type still decodes`() {
+        // Live shape from the PC (values invented): the hidden Huawei read only
+        // knows the minutes of the last session, so the workout has no type.
+        val summary = Json { ignoreUnknownKeys = true }.decodeFromString(
+            HealthSummary.serializer(),
+            """
+            {
+              "rangeDays": 7,
+              "tzOffsetMinutes": -180,
+              "days": [],
+              "latest": {
+                "date": "2026-11-24",
+                "metrics": {
+                  "steps": 2400, "sleepMinutes": 450, "spo2Pct": 97,
+                  "workouts": [ { "minutes": 15 } ],
+                  "topApps": [ { "label": "YouTube", "minutes": 40 } ],
+                  "stressLabel": "Normal", "wakeTime": "08:00"
+                },
+                "sources": { "steps": "huawei_health", "workouts": "huawei_health" },
+                "capturedAt": "2026-11-24T23:42:53.313Z"
+              }
+            }
+            """.trimIndent(),
+        )
+        val workout = summary.latest!!.metrics.workouts!!.single()
+        assertEquals("", workout.type)
+        assertEquals(15, workout.minutes)
+        assertEquals(2400, summary.latest!!.metrics.steps)
+    }
 }
