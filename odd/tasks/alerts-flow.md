@@ -134,6 +134,8 @@ Delivery: about 900–1200 authored lines forecast; stacked PRs to main per task
   owner instruction outside it. GREEN: server 895/895 (25 new), app 905/905,
   `assembleDebug` green.
 
+- 2026-11-25: A3 b2f2043 (server work-1, app work-2 after work-1 stalled). Independent audit (audit-1) found 6 candidates; fixes 6587955 (work-2): delimiter forgery, no project -> no tools, secret paths denied + IDUPI token stripped from env, codex/pi refused, superseded jobs skipped. Server 903 pass, app 905 pass. INCIDENT: the read-only auditor ran `git reset HEAD~1` at 18:01 (reflog); no code lost, history rebuilt as b2f2043 + 6587955. Check `git reflog` after every delegated audit.
+
 ## Next step
 
-A4.
+A4 Proactive.
