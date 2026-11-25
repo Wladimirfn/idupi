@@ -70,7 +70,13 @@ TDD: not applicable (media and docs only).
   Pantalla remota. Alertas showed only the Huawei sleep report (allowed). Found and
   fixed: default PowerShell PTY printed UTF-8 as mojibake -> e6ba50f (856 tests
   pass, code page 65001 verified). Takes effect at the next server restart.
+- PR #26 opened (screens + UTF-8 fix). guion.md written (12 scenes, ~7:35).
+- T2 (design-2, IDU-20261125115733-design-2-yqtv, 16.5 min): style-brief.md,
+  art-direction.md, composition/index.html, keyframes/e00-styleboard.png (e03
+  terminals hero). Proof gaps flagged: e04 idupi-push PC output, e06 idle stream,
+  e07 app picker, e08 conflict banner, e09 AI summary card. Voicebox started
+  (profiles: Alex, Dora, Qwen*, cloned Eric). Wireless ADB went offline afterwards.
 
 ## Next step
 
-T2 (style question to the owner, then preproduction).
+Owner approval of e00 + art direction; then T3 extra captures (Alertas app picker, Salud summary card, real idupi-push output) when wireless ADB is back.
