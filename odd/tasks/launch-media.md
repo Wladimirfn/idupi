@@ -94,7 +94,14 @@ TDD: not applicable (media and docs only).
   Audio gate PASS with Whisper turbo. Skill change: voz_validator.py honors
   IDU_STT_MODEL and knows pc/tailscale/claude(cloud) renderings (3 copies,
   incl. cross cli/skills-bundle, uncommitted there).
+- Independent audit (consult-1) blocked e06/e08/e09 and asked real captures for
+  e01/e03/e04/e07/e10/e11. Draft render v1 (unaudited review cut, 5:12, 34 MB)
+  sent to the phone. Owner approved demo captures: real remote screen of a clean
+  GitHub window, agent answer, idupi-push send, agenda conflicts, PC proposal
+  prompt (rejected afterwards), connection form. Incidents (all deleted, unused):
+  user Brave tab on monitor 1, real Alertas messages, phone gallery opened on the
+  hidden display; one stray tap changed app background color, reverted.
 
 ## Next step
 
-Independent visual audit (consult-1, opencode) -> delivery render with audio/mix-hq.wav -> motion gate -> send MP4 to the phone.
+Owner reviews Download/IDUPI-video-borrador-v1.mp4. Then: e07 capture from owner test email, design-2 integrates new real captures (agente-real, push-real, entregas-nueva, remoto-vivo, agenda-choques, agenda-propuesta, conexion) and recomposes e08/e09, re-audit, final render.
