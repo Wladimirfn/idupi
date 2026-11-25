@@ -34,6 +34,7 @@ enum class Screen(val title: String) {
     DASHBOARD("Dashboard"),
     ALERTS("Alertas"),
     AGENDA("Agenda"),
+    HEALTH("Salud"),
     PROJECTS("Proyectos"),
     TERMINALS("Terminales"),
     CONSOLE("Procesos"),
@@ -61,6 +62,8 @@ fun AppNavigation() {
     val inboxSettingsViewModel: InboxSettingsViewModel = viewModel()
     val phoneAgentSettingsViewModel: PhoneAgentSettingsViewModel = viewModel()
     val calendarSettingsViewModel: CalendarSettingsViewModel = viewModel()
+    val healthSettingsViewModel: HealthSettingsViewModel = viewModel()
+    val healthSaludViewModel: HealthSaludViewModel = viewModel()
     val calendarViewModel: CalendarViewModel = viewModel()
     val projectsViewModel: ProjectsViewModel = viewModel()
     val terminalsViewModel: TerminalsViewModel = viewModel()
@@ -215,6 +218,7 @@ fun AppNavigation() {
                                     Screen.PROJECTS to Icons.Default.Folder,
                                     Screen.ALERTS to Icons.Default.Notifications,
                                     Screen.AGENDA to Icons.Default.CalendarMonth,
+                                    Screen.HEALTH to Icons.Default.Favorite,
                                     Screen.REMOTE to Icons.AutoMirrored.Filled.ScreenShare,
                                     Screen.SETTINGS to Icons.Default.Settings
                                 )
@@ -287,6 +291,10 @@ fun AppNavigation() {
                                 viewModel = calendarViewModel,
                                 onMenuClick = { scope.launch { drawerState.open() } }
                             )
+                            Screen.HEALTH -> HealthSaludScreen(
+                                viewModel = healthSaludViewModel,
+                                onMenuClick = { scope.launch { drawerState.open() } }
+                            )
                             Screen.PROJECTS -> ProjectsScreen(
                                 viewModel = projectsViewModel,
                                 onMenuClick = { scope.launch { drawerState.open() } }
@@ -313,6 +321,7 @@ fun AppNavigation() {
                                 inboxViewModel = inboxSettingsViewModel,
                                 phoneAgentViewModel = phoneAgentSettingsViewModel,
                                 calendarViewModel = calendarSettingsViewModel,
+                                healthViewModel = healthSettingsViewModel,
                                 onMenuClick = { scope.launch { drawerState.open() } },
                                 onNavigateToConnection = { navigateTo(Screen.CONNECTION) },
                                 onNavigateToWelcome = { navigateTo(Screen.WELCOME) },

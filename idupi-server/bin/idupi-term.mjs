@@ -60,7 +60,7 @@ const SERVER_UNREACHABLE =
     `No se pudo conectar con IDUPI en ${HOST}:`;
 const SERVER_UNREACHABLE_HINT =
     ". ¿Está corriendo? (idupi-server/scripts/start-server.ps1)";
-const TOKEN_REJECTED = "Token rechazado: revisá .idupi-token.";
+const TOKEN_REJECTED = "Token rechazado: revisa .idupi-token.";
 
 let port = 8788;
 let token = "";

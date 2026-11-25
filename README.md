@@ -31,10 +31,14 @@ En resumen:
 | # | Necesitas | Para qué |
 |---|-----------|----------|
 | 1 | Windows 10 u 11 | El servidor y el helper de pantalla/PTY solo existen para Windows |
-| 2 | [Node.js](https://nodejs.org/) 20+ | Ejecuta el servidor (sin dependencias: no hay `npm install`) |
+| 2 | [Node.js](https://nodejs.org/) 22+ (probado con 24) | Ejecuta el servidor (sin dependencias: no hay `npm install`) |
 | 3 | [Go](https://go.dev/dl/) 1.21+ | Compila el helper de captura y PTY la primera vez, de forma automática |
 | 4 | [Tailscale](https://tailscale.com/) (gratis), recomendado | Conecta teléfono y PC fuera de casa sin abrir puertos del router |
 | 5 | Un teléfono Android | Donde corre la app |
+| 6 | Un agente de IA en la terminal (OpenCode, Claude Code, Codex o Pi) | Analiza Alertas y escribe los resúmenes de Salud |
+| 7 | Android SDK Platform-Tools (`adb`) y [scrcpy](https://github.com/Genymobile/scrcpy), opcionales | Leer Huawei/Honor Health desde la PC con el teléfono bloqueado |
+
+> Para Alertas, el asistente del teléfono, el calendario y Salud, sigue la **[Guía de configuración](docs/GUIA-CONFIGURACION.md)**: tiene el paso a paso, los permisos y las soluciones a los problemas comunes.
 
 ## Puesta en marcha
 
@@ -100,7 +104,7 @@ En la app:
 
 ## La app, pantalla por pantalla
 
-La app abre en **Terminales**; el resto de las pantallas se abren desde el menú lateral. El orden del menú es: Terminales, Entregas, Procesos, Dashboard, Proyectos, Alertas, Escritorio Remoto y Ajustes.
+La app abre en **Terminales**; el resto de las pantallas se abren desde el menú lateral. El orden del menú es: Terminales, Entregas, Procesos, Dashboard, Proyectos, Alertas, Agenda, Salud, Escritorio Remoto y Ajustes.
 
 | Pantalla | Qué hace |
 |----------|----------|
@@ -109,9 +113,11 @@ La app abre en **Terminales**; el resto de las pantallas se abren desde el menú
 | **Procesos** | Lista todos los procesos de la PC con búsqueda, filtros y opción de finalizar. |
 | **Dashboard** | Salud del PC en vivo: uso de CPU, RAM, GPU, temperaturas, potencia y discos. |
 | **Proyectos** | Proyectos registrados en el servidor: activar, agregar y navegar archivos. |
-| **Alertas** | Avisos del supervisor y solicitudes de aprobación o rechazo de planes. |
+| **Alertas** | Mensajes de WhatsApp, correo y otras apps, con importancia, resumen y respuesta sugerida. |
+| **Agenda** | Calendario del teléfono (Google, Outlook, Samsung) en vista de lista, semana o mes, y propuestas del PC. |
+| **Salud** | Datos de salud y bienestar digital del día, tendencias de 7 días y resumen con IA. |
 | **Escritorio Remoto** | Vista de la pantalla de la PC, trackpad, teclado, portapapeles y monitores. |
-| **Ajustes** | Tema de la app y datos del perfil de conexión. |
+| **Ajustes** | Conexión, tema, Alertas, asistente del teléfono, calendario, salud y comandos de la PC. |
 
 ### Terminales
 
@@ -143,10 +149,12 @@ Las lecturas que el hardware no expone se muestran como **"no disponible"**, nun
 
 Lista todos los procesos del sistema, no solo los que administra el servidor. Incluye búsqueda, orden, detalle de memoria y CPU, y filtros por categoría: **Apps**, **Segundo plano**, **Windows**, **Agentes** e **IDUPI**. Finalizar un proceso pide confirmación y los procesos críticos del sistema están protegidos: el servidor responde con un error en lugar de terminarlos.
 
-### Proyectos, Alertas y Escritorio Remoto
+### Proyectos, Alertas, Agenda, Salud y Escritorio Remoto
 
 - **Proyectos**: lista, activación, alta y exploración de archivos de los proyectos registrados en el servidor.
-- **Alertas**: avisos del supervisor con acciones para aprobar o rechazar planes.
+- **Alertas**: bandeja de mensajes capturados de las notificaciones. Cada uno trae importancia, resumen y respuesta sugerida, y los grupos muestran un resumen de lo no visto. Configuración: [Guía](docs/GUIA-CONFIGURACION.md#3-alertas-whatsapp-correo-y-otras-apps).
+- **Agenda**: calendarios del teléfono, eventos desde las alertas y propuestas del PC que se guardan solo si las apruebas.
+- **Salud**: Health Connect, bienestar digital y Huawei Health leído desde la PC. Ver la [Guía](docs/GUIA-CONFIGURACION.md#6-salud-y-bienestar).
 - **Escritorio Remoto**: monitores, vista en vivo, trackpad, entrada de teclado, portapapeles y ajuste de calidad.
 
 ### Ajustes
@@ -276,12 +284,14 @@ gradlew :app:testDebugUnitTest
 
 | Documento | Contenido |
 |-----------|-----------|
+| [`docs/GUIA-CONFIGURACION.md`](docs/GUIA-CONFIGURACION.md) | Paso a paso de Alertas, asistente del teléfono, calendario, Salud y ADB inalámbrico, con solución de problemas |
+| [`idupi-server/docs/phone.md`](idupi-server/docs/phone.md) | Asistente del teléfono, calendario y salud para agentes |
 | [`idupi-server/docs/README.md`](idupi-server/docs/README.md) | Rutas de la API, scripts del servidor y CLIs |
 | [`idupi-server/docs/sensors.md`](idupi-server/docs/sensors.md) | Helper de sensores: instalación, hashes y actualización |
 | [`docs/remote-screen-module.md`](docs/remote-screen-module.md) | Diseño del módulo de pantalla remota |
 | [`PRIVACY.md`](PRIVACY.md) | Política de privacidad |
 
-## Apoyá el proyecto
+## Apoya el proyecto
 
 IDUPI es libre y gratis. Si te sirve y quieres colaborar con el mantenimiento, puedes invitarme un café:
 

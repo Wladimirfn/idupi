@@ -8,7 +8,7 @@ import http from "node:http";
 import { spawn, execSync, execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { readdirSync, statSync, readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, unlinkSync, openSync, readSync, closeSync } from "node:fs";
-import { homedir, networkInterfaces } from "node:os";
+import { homedir, networkInterfaces, tmpdir } from "node:os";
 import { join, basename, relative, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -84,6 +84,23 @@ import { createPhoneRoutes } from "./lib/phone-routes.mjs";
 // phone. Times are UTC; day boundaries use the phone's reported offset.
 import { createPhoneCalendarStore } from "./lib/phone-calendar-store.mjs";
 import { createPhoneCalendarRoutes } from "./lib/phone-calendar-routes.mjs";
+// Phone health (phone-health, T1/T3/T4): ADB connection manager, hidden virtual
+// display reader, daily health store, the 3 h refresh scheduler, the cached
+// daily digest and the disabled Huawei Health Kit connector shape. Saving and
+// reading health data is read-only on the phone: the reader never taps.
+import { createAdbConnection } from "./lib/adb-connection.mjs";
+import { createHiddenDisplayReader } from "./lib/hidden-display-reader.mjs";
+import { createHealthStore } from "./lib/health-store.mjs";
+import {
+    createHealthCollector,
+    createHealthRoutes,
+    createHealthScheduler,
+} from "./lib/health-routes.mjs";
+import {
+    createHealthDigest,
+    createHealthDigestStore,
+} from "./lib/health-digest.mjs";
+import { futureHealthSources } from "./lib/huawei-health-kit.mjs";
 // Browser view of those same PTYs (live-shared-terminals T2): loopback-only
 // static files, served before auth because they hold no secrets.
 import { createTerminalWebRoutes } from "./lib/terminal-web-routes.mjs";
@@ -1341,6 +1358,49 @@ const phoneStore = createPhoneStore({
 });
 const handlePhoneRoute = createPhoneRoutes({ store: phoneStore });
 const handlePhoneCalendarRoute = createPhoneCalendarRoutes({ store: phoneCalendarStore });
+
+// Phone health (phone-health, T1/T3/T4): the ADB link, the hidden-display
+// reader, the daily store and the digest. The scheduler only runs when a target
+// is already saved, so a machine that never paired with the phone stays quiet.
+// The digest reuses the inbox agent runner and config (same hardened no-tools
+// execution) and is regenerated at most every 3 h after new health inputs.
+const healthDataDir = fileURLToPath(new URL("./data", import.meta.url));
+const adbConnection = createAdbConnection({
+    dataDir: healthDataDir,
+    run: execFileAsync,
+});
+const hiddenDisplayReader = createHiddenDisplayReader({
+    connection: adbConnection,
+    run: execFileAsync,
+    tmpDir: tmpdir(),
+});
+const healthStore = createHealthStore({
+    dataDir: healthDataDir,
+});
+const healthCollector = createHealthCollector({
+    reader: hiddenDisplayReader,
+    store: healthStore,
+});
+const healthDigest = createHealthDigest({
+    digestStore: createHealthDigestStore({ dataDir: healthDataDir }),
+    healthStore,
+    calendarStore: phoneCalendarStore,
+    runner: inboxRunner,
+    getConfig: () => inboxStore.getConfig(),
+});
+const healthRoutes = createHealthRoutes({
+    store: healthStore,
+    adb: adbConnection,
+    collector: healthCollector,
+    digest: healthDigest,
+    futureSources: () => futureHealthSources({ dataDir: healthDataDir }),
+    onInputsChanged: () => healthDigest.maybeAutoGenerate(),
+});
+const handleHealthRoute = healthRoutes.handle;
+const healthScheduler = createHealthScheduler({
+    adb: adbConnection,
+    triggerRefresh: healthRoutes.triggerRefresh,
+});
 
 /**
  * Resolves WHAT to spawn for an inbox agent without a shell. Mirrors the
@@ -3292,6 +3352,10 @@ const handleRequest = async (req, res) => {
     if (await handlePhoneCalendarRoute(req, res, pathname)) return;
     // Phone agent status and command queue (lib/phone-routes.mjs).
     if (await handlePhoneRoute(req, res, pathname)) return;
+    // Phone health: samples, summary, sources, refresh jobs and the ADB link
+    // (lib/health-routes.mjs). Mounted after the phone agent because the
+    // /health subtree has no overlap with it.
+    if (await handleHealthRoute(req, res, pathname)) return;
 
     // 0. Stream de eventos del chat (SSE). Long-lived: no responde y sigue abierto.
     if (pathname === "/api/v1/chat/stream" && req.method === "GET") {
@@ -5609,6 +5673,10 @@ process.on("exit", () => {
 // so the test suite can import this module and exercise the sessions functions
 // without starting the HTTP server. Production never sets this variable.
 if (process.env.IDUPI_NO_LISTEN !== "1") {
+    // The health scheduler is opt-out by itself: without a saved ADB target it
+    // returns before touching adb. The interval is unref'd, so it never keeps
+    // the process alive on shutdown.
+    healthScheduler.start();
     server.listen(PORT, "0.0.0.0", () => {
     console.log(`✅ IDUPI Server listo y escuchando en el Puerto: ${PORT}`);
     console.log("-------------------------------------------------");

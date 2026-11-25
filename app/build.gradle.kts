@@ -32,8 +32,8 @@ android {
         // "which APK am I running" is answerable from the system settings.
         // Same-versionCode installs get silently skipped by some phone
         // installers -- that is how a stale build masqueraded as the new one.
-        versionCode = 48
-        versionName = "1.47-agenda-views"
+        versionCode = 50
+        versionName = "1.49-salud"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -100,6 +100,11 @@ dependencies {
 
     // DataStore-backed settings persistence (PR 3 / Task 4.2).
     implementation(libs.androidx.datastore.preferences)
+
+    // Health Connect (phone-health T2): the phone reads steps, heart rate,
+    // sleep and friends from the platform store. Pinned to the last stable
+    // release; alpha/beta builds are not a base for a health data reader.
+    implementation(libs.androidx.health.connect.client)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

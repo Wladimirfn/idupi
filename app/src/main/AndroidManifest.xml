@@ -21,13 +21,58 @@
     <uses-permission android:name="android.permission.READ_CALENDAR" />
     <uses-permission android:name="android.permission.WRITE_CALENDAR" />
 
+    <!-- Phone health (phone-health T2): read-only Health Connect record types.
+         Health Connect grants each one separately; Ajustes > SALUD asks for
+         them together and partial grants are a normal answer. The names must
+         match HealthPermission.getReadPermission() for the record types in
+         HealthConnectPermissions. -->
+    <uses-permission android:name="android.permission.health.READ_STEPS" />
+    <uses-permission android:name="android.permission.health.READ_DISTANCE" />
+    <uses-permission android:name="android.permission.health.READ_TOTAL_CALORIES_BURNED" />
+    <uses-permission android:name="android.permission.health.READ_ACTIVE_CALORIES_BURNED" />
+    <uses-permission android:name="android.permission.health.READ_HEART_RATE" />
+    <uses-permission android:name="android.permission.health.READ_RESTING_HEART_RATE" />
+    <uses-permission android:name="android.permission.health.READ_SLEEP" />
+    <uses-permission android:name="android.permission.health.READ_EXERCISE" />
+    <uses-permission android:name="android.permission.health.READ_WEIGHT" />
+    <uses-permission android:name="android.permission.health.READ_OXYGEN_SATURATION" />
+    <!-- Additional access (Android 14+): the 3 h report runs while the app is
+         in the background. It is requested with the rest but not counted as a
+         record permission, because older Health Connect builds cannot grant
+         it. -->
+    <uses-permission
+        android:name="android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND" />
+
     <!-- Phone control enumerates launchable apps to resolve `open <label>`.
-         Without this package-visibility declaration Android 11+ hides them. -->
+         Without this package-visibility declaration Android 11+ hides them.
+         Health Connect needs its own package entry, the health-app catalog is
+         listed one package per app (never QUERY_ALL_PACKAGES) so detection can
+         tell which ones are installed, and MAIN/HOME lets the wellbeing
+         aggregation exclude the launchers from screen time. -->
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
+        <package android:name="com.google.android.apps.healthdata" />
+        <package android:name="com.sec.android.app.shealth" />
+        <package android:name="com.mi.health" />
+        <package android:name="com.xiaomi.wearable" />
+        <package android:name="com.xiaomi.hm.health" />
+        <package android:name="com.huami.watch.hmwatchmanager" />
+        <package android:name="com.google.android.apps.fitness" />
+        <package android:name="com.fitbit.FitbitMobile" />
+        <package android:name="com.garmin.android.apps.connectmobile" />
+        <package android:name="com.withings.wiscale2" />
+        <package android:name="fi.polar.polarflow" />
+        <package android:name="com.ouraring.oura" />
+        <package android:name="com.strava" />
+        <package android:name="com.huawei.health" />
+        <package android:name="com.hihonor.health" />
     </queries>
 
     <!-- Phone status reporting (phone-agent T2): usage minutes per app and the
@@ -101,6 +146,32 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/idupi_accessibility_service" />
         </service>
+
+        <!-- Phone health (phone-health T2). Health Connect opens this screen
+             from the permission dialog ("why does IDUPI need this?"), so it
+             must be exported and match the documented action. -->
+        <activity
+            android:name="com.idupi.app.data.health.HealthPermissionsRationaleActivity"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="androidx.health.ACTION_SHOW_PERMISSIONS_RATIONALE" />
+            </intent-filter>
+        </activity>
+
+        <!-- Android 14+ reaches the same rationale from the system Health
+             Connect screens through this alias; the platform permission keeps
+             it callable only by the system. -->
+        <activity-alias
+            android:name="com.idupi.app.data.health.ViewPermissionUsageActivity"
+            android:exported="true"
+            android:permission="android.permission.START_VIEW_PERMISSION_USAGE"
+            android:targetActivity="com.idupi.app.data.health.HealthPermissionsRationaleActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW_PERMISSION_USAGE" />
+                <category android:name="android.intent.category.HEALTH_PERMISSIONS" />
+            </intent-filter>
+        </activity-alias>
 
         <!-- PackageInstaller session verdicts for PC-pushed APKs. The system
              targets this component explicitly, so it stays unexported. -->

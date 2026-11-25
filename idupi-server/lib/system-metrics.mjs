@@ -76,11 +76,11 @@ const LOGICAL_DISK_SCRIPT =
     "Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3' | Select-Object DeviceID,VolumeName,FileSystem,Size,FreeSpace | ConvertTo-Json";
 
 const SENSORS_INSTALL_HINT =
-    "Para temperatura y consumo del CPU, instalá el servicio de sensores con permisos de administrador: idupi-server\\scripts\\install-sensors-helper.ps1 (alternativa: LibreHardwareMonitor con 'Remote Web Server' activado en el puerto 8085)";
+    "Para temperatura y consumo del CPU, instala el servicio de sensores con permisos de administrador: idupi-server\\scripts\\install-sensors-helper.ps1 (alternativa: LibreHardwareMonitor con 'Remote Web Server' activado en el puerto 8085)";
 const SENSORS_STALE_HINT =
-    "El servicio de sensores no está corriendo: sensors.json tiene más de 10 segundos sin actualizarse. Revisá la tarea programada 'IDUPI Sensors' (se instala con idupi-server\\scripts\\install-sensors-helper.ps1; alternativa: LibreHardwareMonitor con 'Remote Web Server' en el puerto 8085)";
+    "El servicio de sensores no está corriendo: sensors.json tiene más de 10 segundos sin actualizarse. Revisa la tarea programada 'IDUPI Sensors' (se instala con idupi-server\\scripts\\install-sensors-helper.ps1; alternativa: LibreHardwareMonitor con 'Remote Web Server' en el puerto 8085)";
 const SENSORS_NO_DRIVER_HINT =
-    "El servicio de sensores corre, pero LibreHardwareMonitor no puede leer el CPU. Volvé a ejecutar idupi-server\\scripts\\install-sensors-helper.ps1: instala el driver PawnIO y la versión fija de LibreHardwareMonitor que el helper necesita";
+    "El servicio de sensores corre, pero LibreHardwareMonitor no puede leer el CPU. Vuelve a ejecutar idupi-server\\scripts\\install-sensors-helper.ps1: instala el driver PawnIO y la versión fija de LibreHardwareMonitor que el helper necesita";
 const GPU_HINT =
     "No se detectó nvidia-smi: no hay métricas de GPU disponibles en esta PC";
 

@@ -5,6 +5,7 @@ import android.content.Intent
 import android.view.accessibility.AccessibilityEvent
 import com.idupi.app.data.IduPiClientProvider
 import com.idupi.app.data.calendar.CalendarReporting
+import com.idupi.app.data.health.HealthReporting
 import com.idupi.app.data.phone.PhoneStatusReporting
 import com.idupi.app.data.settings.SettingsProvider
 import kotlinx.coroutines.CoroutineScope
@@ -43,6 +44,7 @@ class IdupiAccessibilityService : AccessibilityService() {
         super.onServiceConnected()
         PhoneStatusReporting.start(this)
         CalendarReporting.start(this)
+        HealthReporting.start(this)
 
         settingsJob?.cancel()
         settingsJob = scope.launch {

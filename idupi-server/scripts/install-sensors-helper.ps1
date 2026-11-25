@@ -80,7 +80,7 @@ function Show-SensorReadback {
     $temperature = $data.cpu.temperatureC
     $power = $data.cpu.powerW
     if ($null -eq $temperature -and $null -eq $power) {
-        Write-Output "Sin valores todavía: revisá que la tarea esté corriendo con permisos de administrador."
+        Write-Output "Sin valores todavía: revisa que la tarea esté corriendo con permisos de administrador."
         return
     }
 
@@ -101,7 +101,7 @@ function Show-InstallSummary {
 
 function Show-PawnIoUninstallNote {
     Write-Output "PawnIO no se desinstala: es un driver compartido que otras herramientas pueden usar."
-    Write-Output "Si querés quitarlo igual, desinstalalo desde 'Aplicaciones' de Windows."
+    Write-Output "Si quieres quitarlo igual, desinstálalo desde 'Aplicaciones' de Windows."
 }
 
 function Resolve-Account {
@@ -291,7 +291,7 @@ function Install-PawnIo {
             Start-Sleep -Milliseconds 500
         }
         if (-not (Test-PawnIoInstalled)) {
-            throw "El instalador de PawnIO terminó, pero el servicio '$PawnIoServiceName' no aparece. Revisá el instalador manualmente."
+            throw "El instalador de PawnIO terminó, pero el servicio '$PawnIoServiceName' no aparece. Revisa el instalador manualmente."
         }
         Write-Output "PawnIO: driver instalado (servicio '$PawnIoServiceName')."
     } finally {
@@ -419,7 +419,7 @@ if (-not $IsAdmin) {
     try {
         $elevated = Start-Process -FilePath "powershell.exe" -Verb RunAs -ArgumentList $argList -Wait -PassThru
     } catch {
-        Write-Output "No se pudo pedir permisos de administrador. Ejecutá este script desde una consola elevada."
+        Write-Output "No se pudo pedir permisos de administrador. Ejecuta este script desde una consola elevada."
         exit 1
     }
     if ($null -eq $elevated -or $elevated.ExitCode -ne 0) {
@@ -594,5 +594,5 @@ while ((Get-Date) -lt $deadline) {
 Show-InstallSummary
 if (-not $freshSample) {
     Write-Output "No apareció una lectura nueva en $SensorsFile después de 10 segundos."
-    Write-Output "Revisá el estado con: Get-ScheduledTask -TaskName '$TaskName' | Get-ScheduledTaskInfo"
+    Write-Output "Revisa el estado con: Get-ScheduledTask -TaskName '$TaskName' | Get-ScheduledTaskInfo"
 }

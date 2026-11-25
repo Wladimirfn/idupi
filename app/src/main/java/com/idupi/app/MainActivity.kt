@@ -8,6 +8,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import com.idupi.app.data.connection.ConnectionStorage
 import com.idupi.app.data.calendar.CalendarNotifier
+import com.idupi.app.data.health.HealthReporting
 import com.idupi.app.data.inbox.InboxCaptureDiagnostics
 import com.idupi.app.data.inbox.InboxNotifier
 import com.idupi.app.data.inbox.isInboxListenerEnabled
@@ -35,6 +36,9 @@ class MainActivity : ComponentActivity() {
         com.idupi.app.data.IduPiClientProvider.configureFromStorage(this)
         // The delivery poller needs the client configured first.
         (application as IduPiApp).startDeliveryWatcher()
+        // phone-health T2: the 3 h health reporter is process-wide and
+        // idempotent; the resume hook below is the app-start path.
+        HealthReporting.start(this)
 
         requestNotificationPermissionOnce()
 
@@ -77,6 +81,8 @@ class MainActivity : ComponentActivity() {
         if (isInboxListenerEnabled(this) && !InboxCaptureDiagnostics.state.value.listenerConnected) {
             requestInboxListenerRebind(this)
         }
+        // Health report on app start/resume at most every 30 minutes.
+        HealthReporting.onAppResumed()
     }
 
     override fun onNewIntent(intent: Intent) {

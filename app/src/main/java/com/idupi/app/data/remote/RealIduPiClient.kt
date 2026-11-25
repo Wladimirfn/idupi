@@ -2,6 +2,7 @@ package com.idupi.app.data.remote
 
 import android.util.Log
 import com.idupi.app.IduPiApp
+import com.idupi.app.data.health.HealthSamplesUpload
 import com.idupi.app.data.phone.PhoneStatus
 import com.idupi.app.domain.model.*
 import com.idupi.app.domain.repository.IduPiClient
@@ -44,6 +45,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * Thrown when the server is reachable but rejects the request. Carries the real
@@ -976,6 +979,51 @@ class RealIduPiClient : IduPiClient {
             setBody(ProposalDecisionPayload(decision = decision, eventId = eventId))
         }.body<ProposalDecisionEnvelope>().proposal
 
+    // --- Phone health (phone-health T2) ---
+
+    override suspend fun postHealthSamples(upload: HealthSamplesUpload) {
+        send(HttpMethod.Post, "/api/v1/health/samples") {
+            contentType(ContentType.Application.Json)
+            setBody(upload)
+        }
+    }
+
+    override suspend fun getHealthSummary(days: Int): HealthSummary =
+        send(HttpMethod.Get, "/api/v1/health/summary") {
+            parameter("days", days.coerceIn(1, 120))
+        }.body()
+
+    override suspend fun getHealthSources(): HealthSourcesResponse =
+        send(HttpMethod.Get, "/api/v1/health/sources").body()
+
+    override suspend fun refreshHealth(sources: List<String>): HealthRefreshJob =
+        send(HttpMethod.Post, "/api/v1/health/refresh") {
+            contentType(ContentType.Application.Json)
+            setBody(HealthRefreshRequest(sources = sources.takeIf { it.isNotEmpty() }))
+        }.body<HealthRefreshEnvelope>().job
+
+    override suspend fun getHealthRefresh(id: String): HealthRefreshJob =
+        send(HttpMethod.Get, "/api/v1/health/refresh/$id").body<HealthRefreshEnvelope>().job
+
+    override suspend fun getHealthDigest(date: String?): HealthDigest =
+        send(HttpMethod.Get, "/api/v1/health/digest") {
+            if (date != null) parameter("date", date)
+        }.body()
+
+    override suspend fun requestHealthDigest(refresh: Boolean, date: String?): HealthDigest =
+        send(HttpMethod.Post, "/api/v1/health/digest") {
+            contentType(ContentType.Application.Json)
+            // Built by hand so an absent date is omitted instead of encoded as
+            // an explicit null the server would have to ignore.
+            setBody(buildJsonObject {
+                put("refresh", refresh)
+                if (date != null) put("date", date)
+            })
+        }.body()
+
+    override suspend fun getHealthAdbStatus(): HealthAdbStatus =
+        send(HttpMethod.Get, "/api/v1/health/adb").body()
+
     // --- Phone control (phone-agent T3) ---
 
     /**
@@ -1025,6 +1073,14 @@ private data class ProposalDecisionPayload(val decision: String, val eventId: St
 /** The decision route wraps the updated proposal. */
 @Serializable
 private data class ProposalDecisionEnvelope(val proposal: PhoneCalendarProposal)
+
+/** `POST /api/v1/health/refresh` body; an empty list keeps the server default. */
+@Serializable
+private data class HealthRefreshRequest(val sources: List<String>? = null)
+
+/** Both health refresh routes wrap the job. */
+@Serializable
+private data class HealthRefreshEnvelope(val job: HealthRefreshJob)
 
 // --- Phone inbox wire payloads (phone-inbox T2) ---
 
