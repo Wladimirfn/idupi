@@ -1,5 +1,6 @@
 package com.idupi.app.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -52,6 +54,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.idupi.app.domain.model.PtyInfo
+import com.idupi.app.domain.model.ptyDisplay
+import com.idupi.app.ui.theme.AccentPurple
 import com.idupi.app.ui.theme.AppShapes
 import com.idupi.app.ui.theme.AppSpacing
 import com.idupi.app.ui.theme.AppTypography
@@ -61,6 +65,8 @@ import com.idupi.app.ui.theme.SlateBorder
 import com.idupi.app.ui.theme.SlateCard
 import com.idupi.app.ui.theme.StatusConnected
 import com.idupi.app.ui.theme.StatusError
+import com.idupi.app.ui.theme.StatusTerminal
+import com.idupi.app.ui.theme.StatusWorking
 import com.idupi.app.ui.theme.TextPrimary
 import com.idupi.app.ui.theme.TextSecondary
 import com.idupi.app.viewmodel.TerminalsViewModel
@@ -265,13 +271,14 @@ private fun ColumnScope.ErrorState(onRetry: () -> Unit) {
 
 @Composable
 private fun PtyListItem(pty: PtyInfo, onClick: () -> Unit) {
+    val display = ptyDisplay(pty)
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick),
         shape = AppShapes.card,
         color = SlateCard,
-        border = androidx.compose.foundation.BorderStroke(1.dp, SlateBorder)
+        border = BorderStroke(1.dp, SlateBorder)
     ) {
         Row(
             modifier = Modifier
@@ -295,49 +302,64 @@ private fun PtyListItem(pty: PtyInfo, onClick: () -> Unit) {
                 )
             }
 
+            // Everything stacks in ONE Column: a Box would overlap the rows
+            // (regression already seen on the Dashboard).
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                Text(
-                    text = shellNameOf(pty),
-                    style = AppTypography.bodySmall.copy(
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 13.sp
-                    ),
-                    color = TextPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = pty.shell ?: "shell",
-                    style = AppTypography.labelSmall.copy(fontSize = 10.sp),
-                    color = TextSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                if (!pty.cwd.isNullOrBlank()) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
                     Text(
-                        text = pty.cwd,
-                        style = AppTypography.labelSmall.copy(fontSize = 10.sp),
+                        text = display.title,
+                        modifier = Modifier.weight(1f),
+                        style = AppTypography.bodySmall.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp
+                        ),
+                        color = TextPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    AgentBadge(agentId = display.agentId, label = display.agentLabel)
+                }
+                if (display.pathLine != null) {
+                    // Leading-ellipsis compaction keeps the project folder
+                    // (the useful end of the path) always visible.
+                    Text(
+                        text = display.pathLine,
+                        style = AppTypography.codeMono.copy(fontSize = 10.sp),
                         color = TextSecondary.copy(alpha = 0.8f),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                Text(
-                    text = buildString {
-                        append("PID ${pty.pid} · ${pty.cols} x ${pty.rows}")
-                        if (pty.alive) {
-                            append(" · Activa")
-                        } else {
-                            append(" · Finalizada")
-                            pty.exitCode?.let { append(" (código $it)") }
-                        }
-                    },
-                    style = AppTypography.labelSmall.copy(fontSize = 10.sp),
-                    color = TextSecondary
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (display.branchLabel != null) {
+                        BranchChip(label = display.branchLabel, detached = display.detached)
+                    }
+                    Text(
+                        text = buildString {
+                            append("PID ${pty.pid} · ${pty.cols} x ${pty.rows}")
+                            if (pty.alive) {
+                                append(" · Activa")
+                            } else {
+                                append(" · Finalizada")
+                                pty.exitCode?.let { append(" (código $it)") }
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        style = AppTypography.labelSmall.copy(fontSize = 9.sp),
+                        color = TextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
                 if (!pty.alive && !pty.error.isNullOrBlank()) {
                     Text(
                         text = pty.error,
@@ -360,15 +382,82 @@ private fun PtyListItem(pty: PtyInfo, onClick: () -> Unit) {
 }
 
 /**
- * The shell's executable name (the terminal's title): the first token of the
- * command, without its directory. Falls back to "Terminal" when the server did
- * not report the shell.
+ * Small pill with a dot for the agent running in the terminal ("Claude Code",
+ * "OpenCode", ...). A plain shell gets the muted "Shell" label.
  */
-private fun shellNameOf(pty: PtyInfo): String {
-    val executable = pty.shell
-        ?.substringBefore(' ')
-        ?.substringAfterLast('\\')
-        ?.substringAfterLast('/')
-        ?.ifBlank { null }
-    return executable ?: "Terminal"
+@Composable
+private fun AgentBadge(agentId: String?, label: String) {
+    val accent = agentAccent(agentId)
+    Surface(
+        shape = AppShapes.pill,
+        color = accent.copy(alpha = 0.15f),
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.45f))
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(5.dp)
+                    .clip(CircleShape)
+                    .background(accent)
+            )
+            Text(
+                text = label,
+                style = AppTypography.labelSmall.copy(
+                    fontSize = 9.sp,
+                    fontWeight = FontWeight.Medium
+                ),
+                color = accent,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+/**
+ * One accent per agent id, drawn from the theme palette (a light tone on the
+ * card, same alpha treatment as the connection chip). Unknown ids and the
+ * plain shell stay muted so the terminal is still the focus.
+ */
+@Composable
+private fun agentAccent(agentId: String?): Color = when (agentId) {
+    "claude" -> AccentPurple
+    "opencode" -> PrimaryIndigo
+    "codex" -> StatusConnected
+    "cmdc" -> StatusWorking
+    "mcode" -> StatusTerminal
+    "kimi" -> AccentPurple
+    "qwen" -> PrimaryIndigo
+    "gemini" -> StatusConnected
+    "pi" -> StatusTerminal
+    else -> TextSecondary
+}
+
+/**
+ * The branch chip ("⎇ main"). A detached HEAD shows the short sha with the
+ * distinct amber style plus the "sin rama" suffix, so it never reads like a
+ * normal branch.
+ */
+@Composable
+private fun BranchChip(label: String, detached: Boolean) {
+    val accent = if (detached) StatusWorking else PrimaryIndigo
+    Surface(
+        shape = AppShapes.pill,
+        color = accent.copy(alpha = 0.12f),
+        border = BorderStroke(1.dp, accent.copy(alpha = 0.4f))
+    ) {
+        Text(
+            text = "⎇ $label",
+            modifier = Modifier
+                .padding(horizontal = 6.dp, vertical = 1.dp)
+                .widthIn(max = 150.dp),
+            style = AppTypography.labelSmall.copy(fontSize = 9.sp),
+            color = accent,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
 }

@@ -48,6 +48,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.idupi.app.domain.model.ptyHeaderDisplay
 import com.idupi.app.ui.components.PtyExtraKeysBar
 import com.idupi.app.ui.components.PtyTerminalView
 import com.idupi.app.ui.components.PtyTerminalWebController
@@ -68,6 +69,16 @@ import com.idupi.app.ui.theme.TextSecondary
 import com.idupi.app.viewmodel.PtyConnectionState
 import com.idupi.app.viewmodel.PtyTerminalEvent
 import com.idupi.app.viewmodel.PtyTerminalViewModel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+
+/**
+ * Header context cadence. The live cwd / branch / agent changes on the PC
+ * without this app acting (`cd`, `git checkout`, `claude`), so the header is
+ * refreshed while the screen is visible; 5 s is fresh enough for a label and
+ * cheap against the terminal stream.
+ */
+private const val HEADER_REFRESH_MS = 5_000L
 
 /**
  * Full-screen interactive terminal: xterm.js renders raw VT bytes streamed by
@@ -85,6 +96,7 @@ fun PtyTerminalScreen(
     onBack: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val headerInfo by viewModel.headerInfo.collectAsState()
     val controller = remember { PtyTerminalWebController() }
     var ctrlArmed by remember { mutableStateOf(false) }
     var altArmed by remember { mutableStateOf(false) }
@@ -102,6 +114,21 @@ fun PtyTerminalScreen(
         viewModel.prepare(ptyId)
         onDispose { viewModel.detach() }
     }
+
+    // The header context (project, branch, agent) changes on the PC without
+    // this app acting, so it is read once on open and refreshed while the
+    // screen stays visible. The effect dies with the composition, so nothing
+    // polls after leaving the terminal.
+    LaunchedEffect(Unit) {
+        while (isActive) {
+            viewModel.refreshHeader()
+            delay(HEADER_REFRESH_MS)
+        }
+    }
+
+    // Project / branch / agent replace the static PTY id: two terminals in the
+    // same folder are told apart by the project and what runs in them.
+    val header = ptyHeaderDisplay(headerInfo ?: uiState.pty, uiState.terminalId)
 
     // Kotlin -> xterm: raw VT chunks, base64 for a quoting-safe JS string.
     LaunchedEffect(controller) {
@@ -133,12 +160,14 @@ fun PtyTerminalScreen(
                 title = {
                     Column(modifier = Modifier.padding(end = 8.dp)) {
                         Text(
-                            "Terminal interactiva",
+                            text = header.title,
                             style = AppTypography.appBarTitle,
-                            color = TextPrimary
+                            color = TextPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            text = uiState.pty?.shell ?: uiState.terminalId ?: "Nueva terminal",
+                            text = header.subtitle,
                             style = AppTypography.labelSmall,
                             color = TextSecondary,
                             maxLines = 1,

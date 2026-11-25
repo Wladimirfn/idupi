@@ -49,6 +49,14 @@ A PTY has one size; the last client to resize wins. Reconnecting to `stream`
 replays the ring before live bytes, so the phone, the browser page and
 `idupi-term` can share one terminal.
 
+Each listed terminal also carries `context`: the live `cwd` (read from the PEB
+of the running agent, falling back to the shell and then the launch cwd), the
+git `project` and `branch` (`detached: true` with the short sha as branch), and
+the `agent` running in it (`{id, name, pid}`, or `null` when only the shell is
+there). Source: [`lib/pty-context.mjs`](../lib/pty-context.mjs); it is sampled
+at most every 3 s, only while terminals exist, and any failure degrades to
+`null` fields instead of failing the list.
+
 ### APK deliveries
 
 Source: [`lib/delivery-routes.mjs`](../lib/delivery-routes.mjs), registry in

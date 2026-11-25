@@ -71,6 +71,11 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "pty" {
 		os.Exit(runPty(os.Args[2:]))
 	}
+	// One-shot process current-directory reader for the terminal context
+	// (see proccwd_windows.go); prints JSON and exits.
+	if len(os.Args) > 1 && os.Args[1] == "proc-cwd" {
+		os.Exit(runProcCwd(os.Args[2:], os.Stdout))
+	}
 	if len(os.Args) > 1 && os.Args[1] == "--audio-loopback" {
 		if err := runAudioLoopback(os.Stdout); err != nil {
 			fmt.Fprintln(os.Stderr, "[audio-loopback]", err)
