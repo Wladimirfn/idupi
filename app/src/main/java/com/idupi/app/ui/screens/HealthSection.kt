@@ -105,7 +105,7 @@ fun HealthSection(viewModel: HealthSettingsViewModel) {
             report = report,
             feedback = feedback,
             onRequestPermissions = {
-                permissionLauncher.launch(HealthConnectPermissions.READ_PERMISSIONS)
+                permissionLauncher.launch(HealthConnectPermissions.REQUEST_PERMISSIONS)
             },
             onOpenHealthConnect = {
                 runCatching { context.startActivity(healthConnectSettingsIntent()) }

@@ -86,6 +86,18 @@ object HealthConnectPermissions {
         RECORD_TYPES.mapTo(linkedSetOf()) { HealthPermission.getReadPermission(it) }
 
     /**
+     * Additional access the periodic reporter needs on Android 14+
+     * (`READ_HEALTH_DATA_IN_BACKGROUND`). It is requested together with the
+     * record permissions but never counted as a record permission: older
+     * Health Connect builds cannot grant it.
+     */
+    val BACKGROUND_PERMISSION: String =
+        HealthPermission.PERMISSION_READ_HEALTH_DATA_IN_BACKGROUND
+
+    /** Everything one dialog asks for. */
+    val REQUEST_PERMISSIONS: Set<String> = READ_PERMISSIONS + BACKGROUND_PERMISSION
+
+    /**
      * Granted permissions; empty when Health Connect is missing or the query
      * fails. Partial grants are a normal answer, not an error.
      */

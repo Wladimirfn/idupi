@@ -36,6 +36,12 @@
     <uses-permission android:name="android.permission.health.READ_EXERCISE" />
     <uses-permission android:name="android.permission.health.READ_WEIGHT" />
     <uses-permission android:name="android.permission.health.READ_OXYGEN_SATURATION" />
+    <!-- Additional access (Android 14+): the 3 h report runs while the app is
+         in the background. It is requested with the rest but not counted as a
+         record permission, because older Health Connect builds cannot grant
+         it. -->
+    <uses-permission
+        android:name="android.permission.health.READ_HEALTH_DATA_IN_BACKGROUND" />
 
     <!-- Phone control enumerates launchable apps to resolve `open <label>`.
          Without this package-visibility declaration Android 11+ hides them.
