@@ -52,7 +52,7 @@ draft) ready to review.
       error mails) auto-run the A3 investigation against the matching project;
       messages/mails with a reply action get a "Respuesta lista" notification.
       Setting to turn it off. Nothing is ever sent automatically.
-- [ ] A5 Release: version bump, build, auto-push the APK to the phone, server
+- [x] A5 Release: version bump, build, auto-push the APK to the phone, server
       restart (check `idupi-term ls` first), PRs.
 
 ## Acceptance criteria
@@ -152,6 +152,8 @@ Delivery: about 900–1200 authored lines forecast; stacked PRs to main per task
   GREEN: app 929/929 (24 new incl. a pre-existing missing import in
   `InboxFormatTest`), `testDebugUnitTest assembleDebug` green. Not committed (A5).
 
+- 2026-11-25: A4 server 62f3b8a + app 38e11ef (work-2; first run crashed exit 8 after server GREEN). A5: 1.50-alertas (versionCode 51) built, same signing cert, auto-pushed to the phone (dlv-ff0a32e2c3bc). Server 918 pass, app 929 pass. Server restart pending (this Claude session lives in an IDUPI PTY).
+
 ## Next step
 
-A5 Release.
+Owner restarts the server, installs 1.50 and tries Interactuar/Promociones; then merge the PR and start block B.
