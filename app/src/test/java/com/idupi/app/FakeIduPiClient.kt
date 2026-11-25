@@ -758,6 +758,42 @@ class FakeIduPiClient : IduPiClient {
         return healthRefreshToReturn
     }
 
+    var healthDigestToReturn: com.idupi.app.domain.model.HealthDigest =
+        com.idupi.app.domain.model.HealthDigest()
+    var healthAdbStatusToReturn: com.idupi.app.domain.model.HealthAdbStatus =
+        com.idupi.app.domain.model.HealthAdbStatus()
+    var failHealthDigestWith: Exception? = null
+    var failHealthAdbWith: Exception? = null
+
+    /** Every `requestHealthDigest` call: (refresh, date) in order. */
+    val healthDigestRequests = mutableListOf<Pair<Boolean, String?>>()
+
+    /** Every `getHealthDigest` date, in order (null means today). */
+    val healthDigestFetches = mutableListOf<String?>()
+
+    override suspend fun getHealthDigest(date: String?): com.idupi.app.domain.model.HealthDigest {
+        maybeFail()
+        failHealthDigestWith?.let { throw it }
+        healthDigestFetches += date
+        return healthDigestToReturn
+    }
+
+    override suspend fun requestHealthDigest(
+        refresh: Boolean,
+        date: String?,
+    ): com.idupi.app.domain.model.HealthDigest {
+        maybeFail()
+        failHealthDigestWith?.let { throw it }
+        healthDigestRequests += refresh to date
+        return healthDigestToReturn
+    }
+
+    override suspend fun getHealthAdbStatus(): com.idupi.app.domain.model.HealthAdbStatus {
+        maybeFail()
+        failHealthAdbWith?.let { throw it }
+        return healthAdbStatusToReturn
+    }
+
     // --- Phone control (phone-agent T3) ---
 
     /**

@@ -45,6 +45,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * Thrown when the server is reachable but rejects the request. Carries the real
@@ -1002,6 +1004,25 @@ class RealIduPiClient : IduPiClient {
 
     override suspend fun getHealthRefresh(id: String): HealthRefreshJob =
         send(HttpMethod.Get, "/api/v1/health/refresh/$id").body<HealthRefreshEnvelope>().job
+
+    override suspend fun getHealthDigest(date: String?): HealthDigest =
+        send(HttpMethod.Get, "/api/v1/health/digest") {
+            if (date != null) parameter("date", date)
+        }.body()
+
+    override suspend fun requestHealthDigest(refresh: Boolean, date: String?): HealthDigest =
+        send(HttpMethod.Post, "/api/v1/health/digest") {
+            contentType(ContentType.Application.Json)
+            // Built by hand so an absent date is omitted instead of encoded as
+            // an explicit null the server would have to ignore.
+            setBody(buildJsonObject {
+                put("refresh", refresh)
+                if (date != null) put("date", date)
+            })
+        }.body()
+
+    override suspend fun getHealthAdbStatus(): HealthAdbStatus =
+        send(HttpMethod.Get, "/api/v1/health/adb").body()
 
     // --- Phone control (phone-agent T3) ---
 

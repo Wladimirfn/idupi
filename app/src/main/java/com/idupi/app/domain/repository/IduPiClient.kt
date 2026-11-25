@@ -172,6 +172,18 @@ interface IduPiClient {
     suspend fun getHealthRefresh(id: String): HealthRefreshJob
 
     /**
+     * Daily digest (phone-health T3). [getHealthDigest] reads the cached record
+     * for an owner-local date (today when null) and never runs the agent;
+     * [requestHealthDigest] asks for a generation (or a forced one) and answers
+     * immediately with `analyzing` or the cached `ready` record.
+     */
+    suspend fun getHealthDigest(date: String? = null): HealthDigest
+    suspend fun requestHealthDigest(refresh: Boolean = false, date: String? = null): HealthDigest
+
+    /** PC hidden-reading state (ADB, scrcpy, saved targets) for Ajustes > SALUD. */
+    suspend fun getHealthAdbStatus(): HealthAdbStatus
+
+    /**
      * Pending PC proposals, newest first (phone-calendar T3). The PC never
      * writes to a calendar: the owner approves or rejects each one here.
      */

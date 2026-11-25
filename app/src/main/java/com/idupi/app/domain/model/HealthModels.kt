@@ -34,6 +34,18 @@ data class HealthSourcesResponse(
     val sources: List<HealthSourceInfo> = emptyList(),
     val installedApps: List<HealthInstalledApp> = emptyList(),
     val tzOffsetMinutes: Int? = null,
+    /** Planned connectors that cannot capture yet (Huawei Health Kit). */
+    val futureSources: List<HealthFutureSource> = emptyList(),
+)
+
+/** A source IDUPI will read once its registration exists; never a capture. */
+@Serializable
+data class HealthFutureSource(
+    val id: String = "",
+    val label: String = "",
+    val enabled: Boolean = false,
+    val configured: Boolean = false,
+    val reason: String = "",
 )
 
 @Serializable
@@ -70,4 +82,61 @@ data class HealthRefreshJob(
     val finishedAt: String? = null,
     val results: List<HealthRefreshResult> = emptyList(),
     val error: String? = null,
+)
+
+/**
+ * Daily digest (phone-health T3): the agent's neutral-Spanish summary of today
+ * against the week, plus highlights, kind non-medical recommendations and notes
+ * that cross the numbers with the agenda.
+ *
+ * `status` is `ready`, `analyzing` or `failed`. `available` is false when the
+ * window has no health or wellbeing data: the agent was not run.
+ */
+@Serializable
+data class HealthDigest(
+    val date: String = "",
+    val status: String = "ready",
+    val summary: String = "",
+    val highlights: List<String> = emptyList(),
+    val recommendations: List<String> = emptyList(),
+    val agendaNotes: List<String> = emptyList(),
+    val error: String? = null,
+    val updatedAt: String? = null,
+    val available: Boolean = true,
+) {
+    val isAnalyzing: Boolean get() = status == "analyzing"
+    val isFailed: Boolean get() = status == "failed"
+    val hasContent: Boolean get() = summary.isNotBlank()
+}
+
+/** `GET /api/v1/health/adb`: PC-side hidden-reading state for Ajustes > SALUD. */
+@Serializable
+data class HealthAdbStatus(
+    val adb: HealthAdbTool = HealthAdbTool(),
+    val scrcpy: HealthScrcpyTool = HealthScrcpyTool(),
+    val connected: Boolean = false,
+    val serial: String? = null,
+    val via: String? = null,
+    val targets: List<HealthAdbTarget> = emptyList(),
+)
+
+@Serializable
+data class HealthAdbTool(
+    val path: String = "",
+    val found: Boolean = false,
+)
+
+@Serializable
+data class HealthScrcpyTool(
+    val path: String = "",
+    val found: Boolean = false,
+    val version: String? = null,
+)
+
+@Serializable
+data class HealthAdbTarget(
+    val serial: String = "",
+    val network: String = "",
+    val model: String? = null,
+    val lastConnectedAt: String? = null,
 )
