@@ -228,6 +228,7 @@ test("a corrupt items file degrades to an empty inbox instead of throwing", asyn
         agent: DEFAULT_AGENT,
         model: DEFAULT_MODEL,
         effort: DEFAULT_EFFORT,
+        proactive: true,
     });
 });
 
@@ -239,10 +240,16 @@ test("config defaults are the verified opencode model and persist through setCon
         agent: "opencode",
         model: "opencode-go/deepseek-v4.1-flash",
         effort: "max",
+        proactive: true,
     });
 
     const saved = store.setConfig({ agent: "claude", model: "claude-haiku-4-5", effort: "low" });
-    assert.deepEqual(saved, { agent: "claude", model: "claude-haiku-4-5", effort: "low" });
+    assert.deepEqual(saved, {
+        agent: "claude",
+        model: "claude-haiku-4-5",
+        effort: "low",
+        proactive: true,
+    });
 
     const reloaded = createInboxStore({ dataDir: dir, log: silentLog });
     assert.deepEqual(reloaded.getConfig(), saved);
@@ -255,7 +262,12 @@ test("setConfig rejects unknown agents, efforts and empty models", async (t) => 
     assert.throws(() => store.setConfig({ agent: "aider", model: DEFAULT_MODEL, effort: "low" }), /unknown agent/);
     assert.throws(() => store.setConfig({ agent: "opencode", model: DEFAULT_MODEL, effort: "ultra" }), /unknown effort/);
     assert.throws(() => store.setConfig({ agent: "opencode", model: "  ", effort: "low" }), /model is required/);
-    assert.deepEqual(store.getConfig(), { agent: DEFAULT_AGENT, model: DEFAULT_MODEL, effort: DEFAULT_EFFORT });
+    assert.deepEqual(store.getConfig(), {
+        agent: DEFAULT_AGENT,
+        model: DEFAULT_MODEL,
+        effort: DEFAULT_EFFORT,
+        proactive: true,
+    });
 });
 
 test("update writes analysis fields, states and a fresh updatedAt; unknown ids return null", async (t) => {
@@ -287,6 +299,84 @@ test("update writes analysis fields, states and a fresh updatedAt; unknown ids r
     assert.equal(store.update("inb-ffffffffffff", { state: "handled" }), null);
     assert.throws(() => store.update(item.id, { state: "done" }), /invalid state/);
     assert.throws(() => store.update(item.id, { status: "queued" }), /invalid status/);
+});
+
+test("technical and projectHint persist and old items decode as false/empty", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: tickingClock() });
+
+    const { item } = store.add(message());
+    const ready = store.update(item.id, {
+        status: "ready",
+        importance: "high",
+        summary: "El deploy falló",
+        technical: true,
+        projectHint: "idupi-server",
+    });
+
+    assert.equal(ready.technical, true);
+    assert.equal(ready.projectHint, "idupi-server");
+
+    const reloaded = createInboxStore({ dataDir: dir, log: silentLog });
+    const stored = reloaded.get(item.id);
+    assert.equal(stored.technical, true);
+    assert.equal(stored.projectHint, "idupi-server");
+
+    // A file written before A4 has neither field.
+    await writeFile(join(dir, "inbox.json"), JSON.stringify({
+        version: 1,
+        items: [{
+            id: "inb-0123456789ab",
+            app: "gmail",
+            text: "viejo",
+            receivedAt: "2026-11-24T10:00:00.000Z",
+            notificationKey: "old-1",
+            status: "ready",
+            importance: "high",
+            state: "open",
+        }],
+    }), "utf8");
+    const oldStore = createInboxStore({ dataDir: dir, log: silentLog });
+    const old = oldStore.get("inb-0123456789ab");
+    assert.equal(old.technical, false);
+    assert.equal(old.projectHint, "");
+});
+
+test("a malformed projectHint is clipped to one sanitized line on update", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog });
+    const { item } = store.add(message());
+
+    const ready = store.update(item.id, {
+        status: "ready",
+        technical: true,
+        projectHint: `  idupi\n  server  ${"y".repeat(200)}`,
+    });
+
+    assert.equal(ready.projectHint.includes("\n"), false);
+    assert.equal(ready.projectHint.length <= 80, true);
+});
+
+test("config includes proactive (default true) and persists a false value", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog });
+
+    assert.equal(store.getConfig().proactive, true);
+
+    const saved = store.setConfig({
+        agent: "opencode",
+        model: DEFAULT_MODEL,
+        effort: "max",
+        proactive: false,
+    });
+    assert.equal(saved.proactive, false);
+    assert.equal(createInboxStore({ dataDir: dir, log: silentLog }).getConfig().proactive, false);
+
+    assert.throws(
+        () => store.setConfig({ agent: "opencode", model: DEFAULT_MODEL, effort: "max", proactive: "yes" }),
+        /invalid proactive/,
+    );
+    assert.equal(store.getConfig().proactive, false);
 });
 
 test("related returns up to five earlier items of the same app and conversation", async (t) => {
@@ -591,6 +681,7 @@ function interaction(overrides = {}) {
         startedAt: "2026-11-24T10:00:00.000Z",
         finishedAt: "2026-11-24T10:02:00.000Z",
         error: null,
+        auto: false,
         ...overrides,
     };
 }
@@ -624,6 +715,27 @@ test("the interaction round-trips through a store reload and can be replaced", a
 
     const cleared = reloaded.update(item.id, { interaction: null });
     assert.equal(cleared.interaction, null);
+});
+
+test("the auto flag persists with the interaction and defaults to false", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: tickingClock() });
+    const { item } = store.add(message());
+
+    const manual = store.update(item.id, { interaction: interaction() });
+    assert.equal(manual.interaction.auto, false);
+
+    const auto = store.update(item.id, { interaction: interaction({ auto: true }) });
+    assert.equal(auto.interaction.auto, true);
+
+    const reloaded = createInboxStore({ dataDir: dir, log: silentLog });
+    assert.equal(reloaded.get(item.id).interaction.auto, true);
+
+    // A file from before A4 has no flag: it decodes as an owner-run job.
+    const raw = JSON.parse(await readFile(join(dir, "inbox.json"), "utf8"));
+    delete raw.items[0].interaction.auto;
+    await writeFile(join(dir, "inbox.json"), JSON.stringify(raw), "utf8");
+    assert.equal(createInboxStore({ dataDir: dir, log: silentLog }).get(item.id).interaction.auto, false);
 });
 
 test("a malformed stored interaction is dropped instead of breaking the item", async (t) => {

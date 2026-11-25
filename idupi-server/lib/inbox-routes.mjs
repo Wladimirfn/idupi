@@ -11,6 +11,7 @@ import { statSync } from "node:fs";
 
 import {
     AGENTS,
+    AUTO_INTERACTION_INSTRUCTION,
     EFFORTS,
     INTERACTION_UNSUPPORTED_MESSAGE,
     MAX_INTERACTION_INSTRUCTION_CHARS,
@@ -48,6 +49,9 @@ const MAX_LIMIT = 200;
 const MAX_ERROR_CHARS = 300;
 const MAX_CONVERSATION_CHARS = 200;
 const RELATED_CONTEXT_LIMIT = 5;
+// Proactive matching (alerts-flow A4): a shared substring shorter than this
+// never selects a project, so "api" and "web" cannot claim every repo.
+const PROACTIVE_MIN_TOKEN_CHARS = 4;
 // App-facing counts: the first argument of str.slice is a JS index.
 const MAX_TEXT_CHARS = DEFAULT_MAX_TEXT_CHARS;
 
@@ -255,18 +259,30 @@ export function createInboxRoutes({
             try {
                 const result = await runner.run(config, item, related);
                 const event = result?.event ?? null;
-                store.update(id, {
+                const ready = store.update(id, {
                     status: "ready",
                     importance: result?.importance ?? null,
                     category: result?.category ?? "",
                     summary: result?.summary ?? "",
                     suggestedReply: result?.suggestedReply ?? "",
                     promotion: result?.promotion === true,
+                    technical: result?.technical === true,
+                    projectHint: result?.projectHint ?? "",
                     event,
                     eventConflicts: calendarEventConflicts(event),
                     error: null,
                     updatedAt: stamp(),
                 });
+                // alerts-flow A4: a ready high technical alert with no work on
+                // it yet may get its investigation started by itself. Failures
+                // here must never mark the classification as failed.
+                if (ready) {
+                    try {
+                        maybeStartProactiveInteraction(ready, config);
+                    } catch {
+                        // Proactive work is a bonus; the analysis already landed.
+                    }
+                }
             } catch (err) {
                 try {
                     store.update(id, {
@@ -833,6 +849,7 @@ export function createInboxRoutes({
         startedAt = null,
         finishedAt = null,
         error = null,
+        auto = false,
     }) {
         return {
             status,
@@ -843,11 +860,12 @@ export function createInboxRoutes({
             startedAt,
             finishedAt,
             error,
+            auto: auto === true,
         };
     }
 
     /** One investigation. Failures become short safe text on the item. */
-    async function runInteractionJob({ id, token, instruction, project, startedAt }) {
+    async function runInteractionJob({ id, token, instruction, project, startedAt, auto = false }) {
         try {
             // A newer interaction replaced this one while it waited in the
             // queue: do not read the item and do not spawn a process for it.
@@ -870,6 +888,7 @@ export function createInboxRoutes({
                         answer: String(answer ?? ""),
                         startedAt,
                         finishedAt: stamp(),
+                        auto,
                     }),
                     updatedAt: stamp(),
                 });
@@ -884,6 +903,7 @@ export function createInboxRoutes({
                             startedAt,
                             finishedAt: stamp(),
                             error: shortError(err),
+                            auto,
                         }),
                         updatedAt: stamp(),
                     });
@@ -901,6 +921,129 @@ export function createInboxRoutes({
         interactionTail = interactionTail
             .then(() => runInteractionJob(job), () => runInteractionJob(job))
             .catch(() => {});
+    }
+
+    // --- Proactive investigations (alerts-flow A4) -------------------------
+
+    /**
+     * Normalizes `name` and paths to the tokens the hint is matched against.
+     * Both sides go through the same lowering so a hint typed by the model in
+     * any case still meets "IDUPI-server".
+     */
+    function matchTokens(...values) {
+        const tokens = new Set();
+        for (const value of values) {
+            const text = String(value ?? "").toLowerCase().trim();
+            if (text.length > 0) tokens.add(text);
+        }
+        return tokens;
+    }
+
+    /**
+     * Whether `hint` names `token`: equality, or a substring covering at least
+     * four characters (`api` never matches, `idupi` matches `idupi-server`).
+     * The short floor keeps a two-letter token from matching every project.
+     */
+    function hintMatches(hint, token) {
+        if (hint.length === 0 || token.length === 0) return false;
+        if (hint === token) return true;
+        const shorter = hint.length <= token.length ? hint : token;
+        if (shorter.length < PROACTIVE_MIN_TOKEN_CHARS) return false;
+        return token.includes(hint) || hint.includes(token);
+    }
+
+    /**
+     * Picks the one linked project an alert is about, or null. The hint wins;
+     * the item text is the fallback for an analysis that named no project.
+     * Two matches are ambiguous and skipped: a wrong project would send the
+     * agent reading the wrong repository.
+     */
+    function matchProactiveProject(item) {
+        const listed = typeof projects === "function" ? projects() : [];
+        if (!Array.isArray(listed) || listed.length === 0) return null;
+
+        const candidates = [
+            String(item?.projectHint ?? "").toLowerCase().trim(),
+            String(item?.text ?? "").toLowerCase(),
+        ].filter((hint) => hint.length > 0);
+
+        const usable = listed.filter((entry) => entry && typeof entry.path === "string");
+        for (const hint of candidates) {
+            const matches = usable.filter((entry) => {
+                const lastSegment = entry.path.split(/[\\/]/).filter(Boolean).pop() ?? "";
+                const tokens = matchTokens(entry.name, entry.id, lastSegment);
+                for (const token of tokens) {
+                    if (hintMatches(hint, token.toLowerCase())) return true;
+                }
+                return false;
+            });
+            if (matches.length === 1) {
+                const match = matches[0];
+                return {
+                    id: String(match.id),
+                    name: String(match.name ?? match.id),
+                    path: String(match.path ?? ""),
+                };
+            }
+            if (matches.length > 1) return null;
+        }
+        return null;
+    }
+
+    /** The registry project as the interaction needs it, or null. */
+    function proactiveProjectTarget(entry) {
+        if (!entry || entry.path.length === 0) return null;
+        let stats = null;
+        try {
+            stats = statSync(entry.path);
+        } catch {
+            return null;
+        }
+        return stats && stats.isDirectory() ? entry : null;
+    }
+
+    /**
+     * Starts the A4 investigation for a freshly ready item when every gate
+     * holds: proactive on, high importance, technical, nothing interactive on
+     * the item yet, exactly one linked project and an agent with the read-only
+     * profile. Otherwise it does nothing, which is the common case.
+     */
+    function maybeStartProactiveInteraction(item, config) {
+        if (!item || config?.proactive !== true) return;
+        if (item.importance !== "high" || item.technical !== true) return;
+        if (item.promotion === true) return;
+        if (item.interaction) return;
+        if (!interactionRunner || typeof interactionRunner.runInteraction !== "function") return;
+        const supported = typeof interactionRunner.supports === "function"
+            ? interactionRunner.supports(config.agent) === true
+            : supportsReadOnlyInteraction(config.agent);
+        if (!supported) return;
+
+        const project = proactiveProjectTarget(matchProactiveProject(item));
+        if (!project) return;
+
+        const startedAt = stamp();
+        const token = (interactionTokens.get(item.id) ?? 0) + 1;
+        interactionTokens.set(item.id, token);
+        const updated = store.update(item.id, {
+            interaction: interactionShape({
+                status: "running",
+                instruction: AUTO_INTERACTION_INSTRUCTION,
+                project,
+                startedAt,
+                auto: true,
+            }),
+            updatedAt: startedAt,
+        });
+        if (!updated) return;
+        enqueueInteraction({
+            id: item.id,
+            token,
+            instruction: AUTO_INTERACTION_INSTRUCTION,
+            project,
+            startedAt,
+            auto: true,
+        });
     }
 
     /** Trimmed owner instruction, 1..MAX characters. */
@@ -1045,6 +1188,7 @@ export function createInboxRoutes({
             agent: config.agent,
             model: config.model,
             effort: config.effort,
+            proactive: config.proactive !== false,
             agents: AGENTS,
             efforts: EFFORTS,
         });
@@ -1077,6 +1221,7 @@ export function createInboxRoutes({
             agent: config.agent,
             model: config.model,
             effort: config.effort,
+            proactive: config.proactive !== false,
             agents: AGENTS,
             efforts: EFFORTS,
         });

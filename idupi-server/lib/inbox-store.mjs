@@ -13,7 +13,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { AGENTS, EFFORTS, MAX_INTERACTION_ANSWER_CHARS, MAX_INTERACTION_INSTRUCTION_CHARS } from "./inbox-agent.mjs";
+import { AGENTS, EFFORTS, MAX_INTERACTION_ANSWER_CHARS, MAX_INTERACTION_INSTRUCTION_CHARS, MAX_PROJECT_HINT_CHARS } from "./inbox-agent.mjs";
 
 export const ITEM_ID_PATTERN = /^inb-[0-9a-f]{12}$/;
 
@@ -62,6 +62,9 @@ export const DEFAULT_EFFORT = "max";
 // non-flash opencode-go/deepseek-v4.1* model, so the flash variant is the
 // verified default.
 export const DEFAULT_MODEL = "opencode-go/deepseek-v4.1-flash";
+// Proactive work (alerts-flow A4): on by default, because IDUPI's whole point
+// is to land work ready to review. Nothing is ever sent to a third party.
+export const DEFAULT_PROACTIVE = true;
 
 const ITEMS_FILE = "inbox.json";
 const CONFIG_FILE = "inbox-config.json";
@@ -158,6 +161,9 @@ function sanitizeStoredInteraction(value) {
         startedAt: toIso(value.startedAt, null),
         finishedAt: toIso(value.finishedAt, null),
         error: value.error ? clip(String(value.error), MAX_ERROR_CHARS) : null,
+        // Proactive jobs (alerts-flow A4) are marked so the app can say IDUPI
+        // did the work itself. Missing on items from before A4: false.
+        auto: value.auto === true,
     };
 }
 
@@ -196,8 +202,13 @@ export function createInboxStore({
 
     /** @type {object[]} insertion order: oldest first */
     const items = [];
-    /** @type {{ agent: string, model: string, effort: string }} */
-    let config = { agent: DEFAULT_AGENT, model: DEFAULT_MODEL, effort: DEFAULT_EFFORT };
+    /** @type {{ agent: string, model: string, effort: string, proactive: boolean }} */
+    let config = {
+        agent: DEFAULT_AGENT,
+        model: DEFAULT_MODEL,
+        effort: DEFAULT_EFFORT,
+        proactive: DEFAULT_PROACTIVE,
+    };
 
     let tempCounter = 0;
 
@@ -302,6 +313,9 @@ export function createInboxStore({
                 suggestedReply: clip(candidate.suggestedReply, 1200),
                 // Items written before alerts-flow A2 have no flag: false.
                 promotion: candidate.promotion === true,
+                // Proactive classification (alerts-flow A4); old items: false/empty.
+                technical: candidate.technical === true,
+                projectHint: singleLine(candidate.projectHint, MAX_PROJECT_HINT_CHARS),
                 // Items written before alerts-flow A3 have no interaction: null.
                 interaction: sanitizeStoredInteraction(candidate.interaction),
                 event: sanitizeStoredEvent(candidate.event),
@@ -355,6 +369,10 @@ export function createInboxStore({
             agent: candidate.agent,
             model: clip(candidate.model.trim(), MAX_CONFIG_MODEL_CHARS),
             effort: candidate.effort,
+            // A file written before alerts-flow A4 has no flag: keep it on.
+            proactive: typeof parsed?.proactive === "boolean"
+                ? parsed.proactive
+                : DEFAULT_PROACTIVE,
         };
     }
 
@@ -406,6 +424,9 @@ export function createInboxStore({
             summary: "",
             suggestedReply: "",
             promotion: false,
+            // Filled by the analysis (alerts-flow A4).
+            technical: false,
+            projectHint: "",
             // Interactuar (alerts-flow A3): filled by the route, not the capture.
             interaction: null,
             event: null,
@@ -576,6 +597,13 @@ export function createInboxStore({
             if (typeof patch.promotion !== "boolean") throw new Error("invalid promotion");
             item.promotion = patch.promotion;
         }
+        if ("technical" in patch) {
+            if (typeof patch.technical !== "boolean") throw new Error("invalid technical");
+            item.technical = patch.technical;
+        }
+        if ("projectHint" in patch) {
+            item.projectHint = singleLine(patch.projectHint, MAX_PROJECT_HINT_CHARS);
+        }
         if ("interaction" in patch) {
             item.interaction = sanitizeStoredInteraction(patch.interaction);
         }
@@ -595,8 +623,9 @@ export function createInboxStore({
     }
 
     /**
-     * Validates and persists { agent, model, effort }. Throws on invalid input;
-     * the route maps that to 400.
+     * Validates and persists { agent, model, effort, proactive }. Throws on
+     * invalid input; the route maps that to 400. `proactive` is optional: an
+     * older app that does not send it keeps the stored value (alerts-flow A4).
      */
     function setConfig(next = {}) {
         const agent = String(next.agent ?? "");
@@ -606,8 +635,10 @@ export function createInboxStore({
         if (!EFFORTS.includes(effort)) throw new Error("unknown effort");
         if (model.length === 0) throw new Error("model is required");
         if (model.length > MAX_CONFIG_MODEL_CHARS) throw new Error("model is too long");
+        const proactive = next.proactive === undefined ? config.proactive : next.proactive;
+        if (typeof proactive !== "boolean") throw new Error("invalid proactive");
 
-        config = { agent, model, effort };
+        config = { agent, model, effort, proactive };
         persistConfig();
         return getConfig();
     }

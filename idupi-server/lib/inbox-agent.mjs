@@ -37,6 +37,21 @@ export const MAX_CATEGORY_CHARS = 60;
 export const MAX_SUMMARY_CHARS = 600;
 export const MAX_SUGGESTED_REPLY_CHARS = 1200;
 
+/**
+ * Proactive technical alerts (alerts-flow A4): the project name the agent read
+ * in the alert, single line and clipped so it can be matched against the
+ * linked projects without carrying a paragraph of untrusted text.
+ */
+export const MAX_PROJECT_HINT_CHARS = 80;
+
+/**
+ * Fixed instruction for the automatic investigation (alerts-flow A4). It is
+ * the owner's own trusted text, never the alert, and it asks for a read-only
+ * analysis: nothing is modified and nothing is sent anywhere.
+ */
+export const AUTO_INTERACTION_INSTRUCTION =
+    "Revisa si esta alerta afecta a este proyecto: qué falla, dónde mirar en el código y qué harías para resolverlo. No modifiques nada.";
+
 /** Interactuar caps (alerts-flow A3): the owner's instruction and the answer. */
 export const MAX_INTERACTION_INSTRUCTION_CHARS = 2000;
 export const MAX_INTERACTION_ANSWER_CHARS = 6000;
@@ -392,7 +407,7 @@ export function buildInboxPrompt(item, related = [], context = {}) {
         `Owner's current date and time: ${nowText}. Resolve relative dates ("mañana", "el martes", "la semana que viene") against it.`,
         "",
         "Answer with ONLY one JSON object and no other text and no markdown fences:",
-        '{"importance":"high|medium|low","category":"<short Spanish label>","summary":"<Spanish, at most 3 sentences>","suggestedReply":"<Spanish reply in the owner voice, or an empty string when no reply is appropriate>","promotion":true|false,"event":{"title":"...","start":"<ISO-8601 with the owner offset>","end":"<ISO-8601 with the owner offset>","allDay":false,"location":"..."}|null}',
+        '{"importance":"high|medium|low","category":"<short Spanish label>","summary":"<Spanish, at most 3 sentences>","suggestedReply":"<Spanish reply in the owner voice, or an empty string when no reply is appropriate>","promotion":true|false,"technical":true|false,"projectHint":"<repo, service or project name mentioned, or an empty string>","event":{"title":"...","start":"<ISO-8601 with the owner offset>","end":"<ISO-8601 with the owner offset>","allDay":false,"location":"..."}|null}',
         "",
         "Rules:",
         '- importance: "high" when the owner must act soon, "medium" when it matters but can wait, "low" for everything else.',
@@ -400,6 +415,8 @@ export function buildInboxPrompt(item, related = [], context = {}) {
         "- summary: at most 3 factual sentences in neutral Latin American Spanish, based only on the message.",
         "- suggestedReply: natural first-person reply in the owner's voice, in neutral Latin American Spanish; empty string when no reply is appropriate.",
         '- promotion: true for marketing, store offers, campaigns, newsletters, promotional mail or SMS and generic bulk notifications from an app; false for anything a person wrote and for anything the owner must act on (bank security alerts, deliveries in progress, bills due, verification codes). Promotions always use importance "low" and an empty suggestedReply.',
+        '- technical: true for alerts from build, deploy or CI systems and for warnings about servers, apps or services (Render, Vercel, GitHub, Google Cloud, Supabase, Sentry and similar): failed deploys or builds, crashes, error spikes, security or infrastructure notices. False for personal messages and promotions.',
+        '- projectHint: the repo, service or project name the message mentions (for example "idupi-server"), on one line, at most 80 characters; empty string when none is named. Use the exact spelling from the message; never invent one.',
         '- language: write summary, category and suggestedReply in neutral Latin American Spanish, second person "tú" (use "usted" when the sender writes formally or it is work mail); never voseo or regional slang (Argentine, Spanish-from-Spain "vosotros", etc.); match the sender\'s formality.',
         "- event: an object only when the message proposes or confirms a concrete meeting, appointment, deadline or maintenance that has a date; otherwise null. Never infer one from vague text like \"nos vemos pronto\".",
         "- event.start and event.end: ISO-8601 with the owner's offset (for example 2026-11-25T10:00:00-03:00). When the message gives only a start, omit end and the owner will use one hour; when it gives only a date, set allDay to true.",
@@ -679,6 +696,15 @@ export function parseAgentResult(agent, stdout) {
     // promotion is forced to low importance with no reply: the app never shows
     // a reply button for it and never groups it as an actionable message.
     const promotion = parsed.promotion === true;
+    // Proactive technical alerts (alerts-flow A4). A promotion is never
+    // technical and never names a project: there is no investigation to run
+    // for an offer, so both fields are forced empty.
+    const technical = !promotion && parsed.technical === true;
+    // Only a string names a project; a number or object from a confused model
+    // must not become a hint the matcher could act on.
+    const projectHint = promotion || typeof parsed.projectHint !== "string"
+        ? ""
+        : sanitizeUntrusted(clip(singleLine(parsed.projectHint), MAX_PROJECT_HINT_CHARS));
 
     if (summary.length === 0) {
         throw new Error("agent returned an empty summary");
@@ -690,6 +716,8 @@ export function parseAgentResult(agent, stdout) {
         summary,
         suggestedReply: promotion ? "" : suggestedReply,
         promotion,
+        technical,
+        projectHint,
         // A bad event is data loss for this item, never a failed analysis.
         event: normalizeExtractedEvent(parsed.event),
     };

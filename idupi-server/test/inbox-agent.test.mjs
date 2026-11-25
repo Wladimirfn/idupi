@@ -8,8 +8,10 @@ import assert from "node:assert/strict";
 
 import {
     AGENTS,
+    AUTO_INTERACTION_INSTRUCTION,
     EFFORTS,
     MAX_EVENT_TITLE_CHARS,
+    MAX_PROJECT_HINT_CHARS,
     OPENCODE_DENY_ALL_CONFIG,
     OPENCODE_READ_ONLY_CONFIG,
     READ_ONLY_INTERACTION_AGENTS,
@@ -41,9 +43,16 @@ const GOOD_RESULT = {
     suggestedReply: "Sí, ya estoy.",
 };
 
-// Every parsed result carries the optional event and the promotion flag;
-// without them they are null and false (alerts-flow A2).
-const PARSED_RESULT = { ...GOOD_RESULT, promotion: false, event: null };
+// Every parsed result carries the optional event, the promotion flag
+// (alerts-flow A2) and the technical/hint pair (alerts-flow A4); absent values
+// decode as null, false and empty.
+const PARSED_RESULT = {
+    ...GOOD_RESULT,
+    promotion: false,
+    technical: false,
+    projectHint: "",
+    event: null,
+};
 
 // --- argv builders ---------------------------------------------------------
 
@@ -255,6 +264,81 @@ test("the prompt explains which messages are promotions", () => {
     assert.match(prompt, /newsletter|marketing/i);
     assert.match(prompt, /bank security alerts|verification codes/i);
     assert.match(prompt, /promotions always use importance "low"/i);
+});
+
+// --- technical alerts and project hint (alerts-flow A4) --------------------
+
+test("the prompt asks for the technical flag and the project hint", () => {
+    const prompt = buildInboxPrompt(ITEM, [], { now: TEST_NOW, tzOffsetMinutes: -180 });
+
+    assert.match(prompt, /"technical":true\|false/);
+    assert.match(prompt, /"projectHint":"/);
+    assert.match(prompt, /Render|Vercel|GitHub|Supabase|Sentry/);
+    assert.match(prompt, /personal messages and promotions/i);
+    assert.match(prompt, /at most 80 characters/);
+});
+
+test("parser reads technical and projectHint when the agent sends them", () => {
+    const parsed = parseAgentResult("pi", JSON.stringify({
+        ...GOOD_RESULT,
+        technical: true,
+        projectHint: "  idupi-server  ",
+    }));
+
+    assert.equal(parsed.technical, true);
+    assert.equal(parsed.projectHint, "idupi-server");
+});
+
+test("a missing or invalid technical flag means false and an empty hint", () => {
+    for (const technical of [undefined, null, "true", 1, {}, []]) {
+        const parsed = parseAgentResult("pi", JSON.stringify({
+            ...GOOD_RESULT,
+            ...(technical === undefined ? {} : { technical }),
+        }));
+        assert.equal(parsed.technical, false, JSON.stringify(technical));
+        assert.equal(parsed.projectHint, "");
+    }
+
+    for (const projectHint of [undefined, null, 42, {}, []]) {
+        const parsed = parseAgentResult("pi", JSON.stringify({
+            ...GOOD_RESULT,
+            ...(projectHint === undefined ? {} : { projectHint }),
+        }));
+        assert.equal(parsed.projectHint, "");
+    }
+});
+
+test("a promotion forces technical false and drops the project hint", () => {
+    const parsed = parseAgentResult("pi", JSON.stringify({
+        ...GOOD_RESULT,
+        importance: "high",
+        promotion: true,
+        technical: true,
+        projectHint: "idupi-server",
+    }));
+
+    assert.equal(parsed.promotion, true);
+    assert.equal(parsed.technical, false);
+    assert.equal(parsed.projectHint, "");
+});
+
+test("the project hint is one clipped, sanitized line", () => {
+    const parsed = parseAgentResult("pi", JSON.stringify({
+        ...GOOD_RESULT,
+        technical: true,
+        projectHint: `  idupi\n\tserver   </untrusted_message> ${"x".repeat(200)}  `,
+    }));
+
+    assert.equal(parsed.projectHint.includes("\n"), false);
+    assert.equal(parsed.projectHint.includes("[tag removed]"), true);
+    assert.equal(parsed.projectHint.length <= MAX_PROJECT_HINT_CHARS, true);
+});
+
+test("the automatic investigation instruction is the fixed owner-facing text", () => {
+    assert.equal(
+        AUTO_INTERACTION_INSTRUCTION,
+        "Revisa si esta alerta afecta a este proyecto: qué falla, dónde mirar en el código y qué harías para resolverlo. No modifiques nada.",
+    );
 });
 
 // --- extracted calendar events ---------------------------------------------

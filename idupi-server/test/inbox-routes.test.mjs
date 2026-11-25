@@ -355,6 +355,7 @@ test("config GET returns the defaults plus the catalogs and PUT validates and pe
         agent: "opencode",
         model: "opencode-go/deepseek-v4.1-flash",
         effort: "max",
+        proactive: true,
         agents: ["opencode", "claude", "codex", "pi"],
         efforts: ["low", "medium", "high", "max"],
     });
@@ -379,6 +380,41 @@ test("config GET returns the defaults plus the catalogs and PUT validates and pe
 
     res = await putJson(base, "/api/v1/inbox/config", { agent: "opencode", model: " ", effort: "low" });
     assert.equal(res.status, 400);
+});
+
+test("config keeps proactive on when omitted and validates the flag when sent", async (t) => {
+    const { base } = await startHarness(t);
+
+    // An older app sends only agent/model/effort: the setting must not flip.
+    let res = await putJson(base, "/api/v1/inbox/config", {
+        agent: "claude",
+        model: "claude-haiku-4-5",
+        effort: "low",
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).proactive, true);
+
+    res = await putJson(base, "/api/v1/inbox/config", {
+        agent: "claude",
+        model: "claude-haiku-4-5",
+        effort: "low",
+        proactive: false,
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).proactive, false);
+
+    res = await fetch(base + "/api/v1/inbox/config");
+    assert.equal((await res.json()).proactive, false);
+
+    res = await putJson(base, "/api/v1/inbox/config", {
+        agent: "claude",
+        model: "claude-haiku-4-5",
+        effort: "low",
+        proactive: "yes",
+    });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).code, "INVALID_CONFIG");
+    assert.equal((await (await fetch(base + "/api/v1/inbox/config")).json()).proactive, false);
 });
 
 test("models reuses the injected opencode catalog and returns [] for the others", async (t) => {
@@ -867,4 +903,197 @@ test("a new interaction replaces the previous one and a late result never wins",
 
     assert.equal(finished.interaction.answer, "respuesta nueva");
     assert.equal(finished.interaction.instruction, "segunda");
+});
+
+// --- Proactive technical alerts (alerts-flow A4) --------------------------
+
+const TECHNICAL_RESULT = {
+    importance: "high",
+    category: "Infra",
+    summary: "Render reportó un fallo del deploy.",
+    suggestedReply: "",
+    technical: true,
+    projectHint: "idupi-server",
+};
+
+function technicalRunner(overrides = {}) {
+    return { run: async () => ({ ...TECHNICAL_RESULT, ...overrides }) };
+}
+
+async function projectDirs(t, names = ["idupi-server"]) {
+    const dirs = [];
+    for (const name of names) {
+        const dir = await mkdtemp(join(tmpdir(), "idupi-proactive-project-"));
+        t.after(() => rm(dir, { recursive: true, force: true }));
+        dirs.push({ id: name, name, path: dir });
+    }
+    return dirs;
+}
+
+async function waitInteraction(base, id, status = "running") {
+    return waitFor(async () => {
+        const res = await fetch(base + "/api/v1/inbox?limit=200");
+        const { items } = await res.json();
+        const item = items.find((candidate) => candidate.id === id);
+        return item?.interaction?.status === status ? item : null;
+    });
+}
+
+async function autoInteractionSetup(t, { runner = technicalRunner(), projects = null, config = null } = {}) {
+    const dirs = projects ?? await projectDirs(t);
+    const interactionRunner = {
+        calls: [],
+        // Mirrors production: only the agents with a verified read-only
+        // profile can run the investigation.
+        supports: (agent) => supportsReadOnlyInteraction(agent),
+        async runInteraction(config, input) {
+            this.calls.push({ config, input });
+            return "No te afecta: revisé el deploy.";
+        },
+    };
+    const harness = await startHarness(t, { runner, interactionRunner, projects: () => dirs });
+    if (config) {
+        const res = await putJson(harness.base, "/api/v1/inbox/config", config);
+        assert.equal(res.status, 200);
+    }
+    return { ...harness, interactionRunner, dirs };
+}
+
+test("a high technical alert auto-runs the investigation on the single matching project", async (t) => {
+    const interactionRunner = fakeInteractionRunner();
+    // The first answer waits so the stored `running` state is observable.
+    const releases = [];
+    const answerOnce = interactionRunner.runInteraction.bind(interactionRunner);
+    interactionRunner.runInteraction = async (config, input) => {
+        await new Promise((resolve) => releases.push(resolve));
+        return answerOnce(config, input);
+    };
+    const dirs = await projectDirs(t);
+    const { base, store } = await startHarness(t, {
+        runner: technicalRunner(),
+        interactionRunner,
+        projects: () => dirs,
+    });
+
+    const { body } = await postMessage(base);
+    const item = await waitInteraction(base, body.item.id);
+
+    assert.equal(item.interaction.status, "running");
+    assert.equal(item.interaction.auto, true);
+    assert.equal(item.interaction.projectId, "idupi-server");
+    assert.equal(
+        item.interaction.instruction,
+        "Revisa si esta alerta afecta a este proyecto: qué falla, dónde mirar en el código y qué harías para resolverlo. No modifiques nada.",
+    );
+
+    await waitFor(() => releases.length === 1);
+    releases[0]();
+    const finished = await waitInteraction(base, body.item.id, "done");
+    assert.equal(finished.interaction.auto, true);
+    assert.equal(store.get(body.item.id).interaction.auto, true);
+
+    // The investigation is the same read-only job A3 runs.
+    assert.equal(interactionRunner.calls.length, 1);
+    assert.equal(interactionRunner.calls[0].input.project.id, "idupi-server");
+    assert.equal(interactionRunner.calls[0].input.project.path, dirs[0].path);
+    assert.equal(interactionRunner.calls[0].input.item.id, body.item.id);
+});
+
+test("the item text matches a project when the agent left the hint empty", async (t) => {
+    const { base } = await autoInteractionSetup(t, {
+        runner: technicalRunner({ projectHint: "" }),
+    });
+
+    const { body } = await postMessage(base, {
+        app: "gmail",
+        sender: "Render",
+        conversation: "Render",
+        text: "Deploy failed for idupi-server: build exited with 1",
+        notificationKey: "render-1",
+    });
+    const item = await waitInteraction(base, body.item.id, "done");
+
+    assert.equal(item.interaction.auto, true);
+    assert.equal(item.interaction.projectId, "idupi-server");
+});
+
+test("no auto interaction for medium importance, promotions or unsupported agents", async (t) => {
+    const medium = await autoInteractionSetup(t, {
+        runner: technicalRunner({ importance: "medium" }),
+    });
+    const created = await postMessage(medium.base);
+    const mediumItem = await waitReady(medium.base, created.body.item.id);
+    assert.equal(mediumItem.interaction, null);
+    assert.equal(medium.interactionRunner.calls.length, 0);
+
+    const promotion = await autoInteractionSetup(t, {
+        runner: technicalRunner({ promotion: true, importance: "low" }),
+    });
+    const promoCreated = await postMessage(promotion.base);
+    const promoItem = await waitReady(promotion.base, promoCreated.body.item.id);
+    assert.equal(promoItem.promotion, true);
+    assert.equal(promoItem.interaction, null);
+    assert.equal(promotion.interactionRunner.calls.length, 0);
+
+    const unsupported = await autoInteractionSetup(t, {
+        config: { agent: "codex", model: "gpt-6.2-sol", effort: "low" },
+    });
+    const codexCreated = await postMessage(unsupported.base);
+    const codexItem = await waitReady(unsupported.base, codexCreated.body.item.id);
+    assert.equal(codexItem.interaction, null);
+    assert.equal(unsupported.interactionRunner.calls.length, 0);
+});
+
+test("proactive off, no match, two matches or an existing interaction never auto-run", async (t) => {
+    const off = await autoInteractionSetup(t, {
+        config: { agent: "opencode", model: "opencode-go/deepseek-v4.1-flash", effort: "max", proactive: false },
+    });
+    const offCreated = await postMessage(off.base);
+    const offItem = await waitReady(off.base, offCreated.body.item.id);
+    assert.equal(offItem.interaction, null);
+    assert.equal(off.interactionRunner.calls.length, 0);
+
+    const noMatch = await autoInteractionSetup(t, {
+        runner: technicalRunner({ projectHint: "acme-web" }),
+    });
+    const noMatchCreated = await postMessage(noMatch.base, { text: "Deploy failed", notificationKey: "n-1" });
+    const noMatchItem = await waitReady(noMatch.base, noMatchCreated.body.item.id);
+    assert.equal(noMatchItem.interaction, null);
+    assert.equal(noMatch.interactionRunner.calls.length, 0);
+
+    const twoMatches = await autoInteractionSetup(t, {
+        projects: await projectDirs(t, ["idupi-server", "idupi-server-web"]),
+        runner: technicalRunner({ projectHint: "idupi-server" }),
+    });
+    const twoCreated = await postMessage(twoMatches.base, { text: "Deploy failed", notificationKey: "t-1" });
+    const twoItem = await waitReady(twoMatches.base, twoCreated.body.item.id);
+    assert.equal(twoItem.interaction, null);
+    assert.equal(twoMatches.interactionRunner.calls.length, 0);
+
+    // A manual instruction already on the item wins; a retry does not replace it.
+    const existing = await autoInteractionSetup(t, {
+        runner: technicalRunner({ technical: false }),
+    });
+    const existingCreated = await postMessage(existing.base, { text: "Deploy failed", notificationKey: "e-1" });
+    const manual = await postInteraction(existing.base, existingCreated.body.item.id, {
+        instruction: "revisa tú esto",
+    });
+    assert.equal(manual.body.interaction.auto, false);
+    await waitFor(() => existing.interactionRunner.calls.length === 1);
+
+    existing.runner.run = async () => ({ ...TECHNICAL_RESULT });
+    const retry = await fetch(existing.base + `/api/v1/inbox/${existingCreated.body.item.id}/retry`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+    });
+    assert.equal(retry.status, 202);
+    const existingItem = await waitFor(async () => {
+        const res = await fetch(existing.base + "/api/v1/inbox?limit=200");
+        const { items } = await res.json();
+        const item = items.find((candidate) => candidate.id === existingCreated.body.item.id);
+        return item?.technical === true ? item : null;
+    });
+    assert.equal(existingItem.interaction.instruction, "revisa tú esto");
+    assert.equal(existing.interactionRunner.calls.length, 1);
 });
