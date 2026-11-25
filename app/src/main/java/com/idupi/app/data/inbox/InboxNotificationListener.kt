@@ -6,6 +6,7 @@ import android.service.notification.StatusBarNotification
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.idupi.app.data.IduPiClientProvider
+import com.idupi.app.data.calendar.CalendarReporting
 import com.idupi.app.data.phone.PhoneStatusReporting
 import com.idupi.app.data.settings.SettingsProvider
 import com.idupi.app.domain.model.InboxApp
@@ -140,6 +141,9 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
         // exists. The reporter is process-wide and idempotent, so T3's
         // accessibility service can start the same instance without a second loop.
         PhoneStatusReporting.start(this)
+        // phone-calendar T2: the same long-lived host carries the calendar
+        // reporter and its ContentObserver.
+        CalendarReporting.start(this)
         // Notifications already in the shade are never re-posted by the system:
         // this scan is the only way they reach the PC.
         scope.launch { runInitialScan() }
@@ -152,6 +156,7 @@ class InboxNotificationListener : NotificationListenerService(), InboxScanHost {
         stopSettingsWatch()
         stopReminderLoop()
         PhoneStatusReporting.stop()
+        CalendarReporting.stop()
         super.onListenerDisconnected()
     }
 

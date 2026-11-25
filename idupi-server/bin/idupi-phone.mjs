@@ -34,6 +34,14 @@ Uso:
   idupi-phone quick-settings            Abre los ajustes rápidos
   idupi-phone open <app>                Abre una app (paquete o nombre visible)
   idupi-phone wait <ms>                 Espera en el teléfono (0..10000)
+  idupi-phone calendar [agenda] [--days N] [--json]
+                                        Agenda de los calendarios del teléfono (7 días por defecto)
+  idupi-phone calendar free [--days N] [--min M]
+                                        Espacios libres (mínimo 30 min por defecto)
+  idupi-phone calendar propose --title T --start ISO [--end ISO] [--all-day]
+                               [--location L] [--notes N]
+                                        Propone un evento; se escribe solo si lo apruebas en el teléfono
+  idupi-phone calendar proposals        Propuestas pendientes de aprobación
   idupi-phone log                       Últimos comandos
   idupi-phone help                      Muestra esta ayuda
 
@@ -194,6 +202,8 @@ export function parseArgs(argv = []) {
         return { command: "log" };
     }
 
+    if (head === "calendar") return parseCalendarArgs(rest);
+
     if (Object.prototype.hasOwnProperty.call(GLOBAL_SHORTCUTS, head)) {
         if (rest.length > 0) {
             return { command: "help", error: `Uso: idupi-phone ${head}` };
@@ -205,6 +215,151 @@ export function parseArgs(argv = []) {
         return { command: "help", error: `Opción desconocida: ${head}` };
     }
     return { command: "help", error: `Comando desconocido: ${head}` };
+}
+
+const CALENDAR_USAGE =
+    "Uso: idupi-phone calendar [agenda] [--days N] [--json] | " +
+    "idupi-phone calendar free [--days N] [--min M] | " +
+    "idupi-phone calendar propose --title T --start ISO [--end ISO] [--all-day] " +
+    "[--location L] [--notes N] | idupi-phone calendar proposals";
+
+/** Calendar subcommands share one parser; values are plain argv entries. */
+function parseCalendarArgs(rest) {
+    const args = Array.isArray(rest) ? [...rest] : [];
+    if (args.length === 0) {
+        return { command: "calendar", action: "agenda", days: 7, json: false };
+    }
+    const [sub, ...tail] = args;
+    // "agenda" is optional: `calendar --days 3` means `calendar agenda --days 3`.
+    if (sub.startsWith("--")) return parseAgendaArgs(args);
+    if (sub === "agenda") return parseAgendaArgs(tail);
+    if (sub === "free") return parseFreeArgs(tail);
+    if (sub === "propose") return parseProposeArgs(tail);
+    if (sub === "proposals") {
+        if (tail.length > 0) return { command: "help", error: CALENDAR_USAGE };
+        return { command: "calendar", action: "proposals" };
+    }
+    return { command: "help", error: CALENDAR_USAGE };
+}
+
+function parseDays(raw, fallback, max) {
+    if (raw === undefined) return fallback;
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 1 || value > max) return null;
+    return value;
+}
+
+function parseAgendaArgs(tail) {
+    let days = 7;
+    let json = false;
+    for (let index = 0; index < tail.length; index += 1) {
+        const token = tail[index];
+        if (token === "--json") {
+            json = true;
+            continue;
+        }
+        if (token === "--days") {
+            const value = parseDays(tail[index + 1], 7, 30);
+            if (value === null) return { command: "help", error: CALENDAR_USAGE };
+            days = value;
+            index += 1;
+            continue;
+        }
+        return { command: "help", error: CALENDAR_USAGE };
+    }
+    return { command: "calendar", action: "agenda", days, json };
+}
+
+function parseFreeArgs(tail) {
+    let days = 7;
+    let min = 30;
+    for (let index = 0; index < tail.length; index += 1) {
+        const token = tail[index];
+        if (token === "--days") {
+            const value = parseDays(tail[index + 1], 7, 62);
+            if (value === null) return { command: "help", error: CALENDAR_USAGE };
+            days = value;
+            index += 1;
+            continue;
+        }
+        if (token === "--min") {
+            const value = parseDays(tail[index + 1], 30, 1440);
+            if (value === null) return { command: "help", error: CALENDAR_USAGE };
+            min = value;
+            index += 1;
+            continue;
+        }
+        return { command: "help", error: CALENDAR_USAGE };
+    }
+    return { command: "calendar", action: "free", days, min };
+}
+
+function parseProposeArgs(tail) {
+    let title = null;
+    let start = null;
+    let end = null;
+    let allDay = false;
+    let location = null;
+    let notes = null;
+
+    const valueAt = (index) => {
+        const value = tail[index];
+        if (typeof value !== "string" || value.trim().length === 0) return null;
+        if (value.startsWith("--")) return null;
+        return value.trim();
+    };
+    const fail = () => ({ command: "help", error: CALENDAR_USAGE });
+
+    for (let index = 0; index < tail.length; index += 1) {
+        const token = tail[index];
+        if (token === "--all-day") {
+            allDay = true;
+            continue;
+        }
+        if (token === "--title") {
+            title = valueAt(index + 1);
+            if (title === null) return fail();
+            index += 1;
+            continue;
+        }
+        if (token === "--start") {
+            start = valueAt(index + 1);
+            if (start === null || Number.isNaN(Date.parse(start))) return fail();
+            index += 1;
+            continue;
+        }
+        if (token === "--end") {
+            end = valueAt(index + 1);
+            if (end === null || Number.isNaN(Date.parse(end))) return fail();
+            index += 1;
+            continue;
+        }
+        if (token === "--location") {
+            location = valueAt(index + 1);
+            if (location === null) return fail();
+            index += 1;
+            continue;
+        }
+        if (token === "--notes") {
+            notes = valueAt(index + 1);
+            if (notes === null) return fail();
+            index += 1;
+            continue;
+        }
+        return fail();
+    }
+
+    if (title === null || start === null) return fail();
+    return {
+        command: "calendar",
+        action: "propose",
+        title,
+        start,
+        end,
+        allDay,
+        location,
+        notes,
+    };
 }
 
 // --- pure formatting -------------------------------------------------------
@@ -406,6 +561,202 @@ export function formatCommandList(commands) {
     return lines.join("\n");
 }
 
+// --- calendar formatting (phone-calendar, T1) ------------------------------
+
+const CALENDAR_DAY_MS = 86_400_000;
+const WEEKDAY_LABELS = ["dom", "lun", "mar", "mié", "jue", "vie", "sáb"];
+const MONTH_LABELS = [
+    "ene", "feb", "mar", "abr", "may", "jun",
+    "jul", "ago", "sep", "oct", "nov", "dic",
+];
+const PROPOSAL_STATUS_LABELS = {
+    pending: "pendiente",
+    approved: "aprobada",
+    rejected: "rechazada",
+    expired: "expirada",
+};
+const NO_CALENDAR = "Sin datos del calendario todavía. El teléfono no reportó sus calendarios.";
+
+function offsetOf(payload) {
+    const value = payload && typeof payload === "object" ? payload.tzOffsetMinutes : null;
+    return Number.isInteger(value) ? value : 0;
+}
+
+/** Wall-clock Date in the phone's offset, read with the UTC getters. */
+function shiftedDate(iso, offsetMinutes) {
+    const ms = Date.parse(String(iso ?? ""));
+    if (!Number.isFinite(ms)) return null;
+    return new Date(ms + offsetMinutes * 60_000);
+}
+
+function pad2(value) {
+    return String(value).padStart(2, "0");
+}
+
+function calendarDayKey(iso, offsetMinutes) {
+    const date = shiftedDate(iso, offsetMinutes);
+    if (!date) return "?";
+    return `${date.getUTCFullYear()}-${pad2(date.getUTCMonth() + 1)}-${pad2(date.getUTCDate())}`;
+}
+
+function calendarDayLabel(iso, offsetMinutes) {
+    const date = shiftedDate(iso, offsetMinutes);
+    if (!date) return "?";
+    return `${WEEKDAY_LABELS[date.getUTCDay()]} ${date.getUTCDate()} ${MONTH_LABELS[date.getUTCMonth()]}`;
+}
+
+function calendarTime(iso, offsetMinutes) {
+    const date = shiftedDate(iso, offsetMinutes);
+    if (!date) return "?";
+    return `${pad2(date.getUTCHours())}:${pad2(date.getUTCMinutes())}`;
+}
+
+function calendarDateTime(iso, offsetMinutes) {
+    return `${calendarDayLabel(iso, offsetMinutes)} ${calendarTime(iso, offsetMinutes)}`;
+}
+
+function calendarWhen(event, offsetMinutes) {
+    if (event.allDay) return `todo el día (${calendarDayLabel(event.start, offsetMinutes)})`;
+    return `${calendarTime(event.start, offsetMinutes)}-${calendarTime(event.end, offsetMinutes)}`;
+}
+
+function calendarNameFor(payload, calendarId) {
+    const calendars = Array.isArray(payload?.calendars) ? payload.calendars : [];
+    const found = calendars.find((entry) => entry && entry.id === calendarId);
+    return found && typeof found.name === "string" ? found.name : "";
+}
+
+/**
+ * User-facing agenda: events grouped by local day, conflicts flagged both per
+ * event and in a short summary. Neutral Latin American Spanish.
+ */
+export function formatCalendarAgenda(payload) {
+    if (!payload || !payload.capturedAt) return NO_CALENDAR;
+    const offset = offsetOf(payload);
+    const events = Array.isArray(payload.events) ? [...payload.events] : [];
+    const conflicts = Array.isArray(payload.conflicts) ? payload.conflicts : [];
+    const conflictIds = new Set();
+    for (const pair of conflicts) {
+        if (pair?.a?.id) conflictIds.add(pair.a.id);
+        if (pair?.b?.id) conflictIds.add(pair.b.id);
+    }
+
+    events.sort((a, b) => Date.parse(a?.start) - Date.parse(b?.start));
+    const lines = [
+        `Agenda: ${events.length} ${events.length === 1 ? "evento" : "eventos"} ` +
+        `(capturada ${calendarDateTime(payload.capturedAt, offset)})`,
+    ];
+    if (events.length === 0) {
+        lines.push("No hay eventos en el rango.");
+        return lines.join("\n");
+    }
+
+    const groups = new Map();
+    for (const event of events) {
+        const key = calendarDayKey(event.start, offset);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(event);
+    }
+    for (const group of groups.values()) {
+        lines.push(calendarDayLabel(group[0].start, offset));
+        for (const event of group) {
+            const when = event.allDay ? "todo el día" : calendarWhen(event, offset);
+            let line = `  ${when.padEnd(16)}  ${event.title}`;
+            const calendarName = calendarNameFor(payload, event.calendarId);
+            if (calendarName) line += `  [${calendarName}]`;
+            if (event.location) line += ` — ${event.location}`;
+            if (conflictIds.has(event.id)) line += "  (conflicto)";
+            lines.push(line);
+        }
+    }
+
+    if (conflicts.length > 0) {
+        lines.push(`Conflictos: ${conflicts.length}`);
+        for (const pair of conflicts) {
+            const a = pair?.a;
+            const b = pair?.b;
+            if (!a || !b) continue;
+            lines.push(
+                `  "${a.title}" ${calendarWhen(a, offset)} choca con ` +
+                `"${b.title}" ${calendarWhen(b, offset)}`,
+            );
+        }
+    }
+    return lines.join("\n");
+}
+
+/** Free slots grouped by day, in the snapshot's offset. */
+export function formatCalendarFree(payload) {
+    if (!payload || payload.hasSnapshot !== true) return NO_CALENDAR;
+    const offset = offsetOf(payload);
+    const slots = Array.isArray(payload.slots) ? payload.slots : [];
+    const min = Number.isFinite(payload.minMinutes) ? payload.minMinutes : 30;
+    const lines = [`Espacios libres (mínimo ${min} min):`];
+    if (slots.length === 0) {
+        lines.push("No hay espacios libres en el rango.");
+        return lines.join("\n");
+    }
+    const groups = new Map();
+    for (const slot of slots) {
+        const key = calendarDayKey(slot.start, offset);
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(slot);
+    }
+    for (const group of groups.values()) {
+        lines.push(calendarDayLabel(group[0].start, offset));
+        for (const slot of group) {
+            lines.push(
+                `  ${calendarTime(slot.start, offset)}-${calendarTime(slot.end, offset)} ` +
+                `(${formatDuration(slot.minutes)})`,
+            );
+        }
+    }
+    return lines.join("\n");
+}
+
+/** Confirmation of a created proposal; writes still wait for the phone. */
+export function formatProposalCreated(payload) {
+    const proposal = payload && typeof payload === "object" ? payload.proposal : null;
+    if (!proposal || typeof proposal !== "object") {
+        return "IDUPI devolvió una respuesta inesperada.";
+    }
+    const offset = offsetOf(payload);
+    const lines = [
+        `Propuesta creada: ${proposal.id}`,
+        `  ${proposal.title}  ${calendarWhen(proposal, offset)}`,
+    ];
+    if (proposal.location) lines.push(`  Lugar: ${proposal.location}`);
+    lines.push("Estado: pendiente. Se escribe solo cuando la apruebas en el teléfono.");
+    const conflicts = Array.isArray(proposal.conflicts) ? proposal.conflicts : [];
+    if (conflicts.length === 0) {
+        lines.push("Sin conflictos.");
+    } else {
+        lines.push(`Conflictos: ${conflicts.length}`);
+        for (const entry of conflicts) {
+            lines.push(`  "${entry.title}" ${calendarWhen(entry, offset)}`);
+        }
+    }
+    return lines.join("\n");
+}
+
+/** Proposal queue, newest first. */
+export function formatCalendarProposals(payload) {
+    const proposals = payload && Array.isArray(payload.proposals) ? payload.proposals : [];
+    if (proposals.length === 0) return "No hay propuestas.";
+    const offset = offsetOf(payload);
+    const lines = [`Propuestas (${proposals.length}):`];
+    for (const proposal of proposals) {
+        if (!proposal || typeof proposal !== "object") continue;
+        const status = PROPOSAL_STATUS_LABELS[proposal.status] || proposal.status || "?";
+        const conflicts = Array.isArray(proposal.conflicts) ? proposal.conflicts.length : 0;
+        let line = `  ${proposal.id}  ${status.padEnd(9)}  "${proposal.title}"  ` +
+            calendarWhen(proposal, offset);
+        if (conflicts > 0) line += `  (${conflicts} conflicto${conflicts === 1 ? "" : "s"})`;
+        lines.push(line);
+    }
+    return lines.join("\n");
+}
+
 // --- process output --------------------------------------------------------
 
 function serverUnreachable() {
@@ -554,8 +905,78 @@ function requireFinished(command) {
     return command;
 }
 
-function actionFor(parsed) {
-    switch (parsed.command) {
+/** Local midnight today plus `days` days: the default agenda range. */
+function calendarRange(days) {
+    const nowDate = new Date();
+    const from = new Date(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate());
+    const to = new Date(from.getTime() + days * CALENDAR_DAY_MS);
+    return { from: from.toISOString(), to: to.toISOString() };
+}
+
+/** Calendar API call with the same error mapping as the rest of the CLI. */
+async function calendarRequest(method, path, body) {
+    let res;
+    try {
+        res = await apiRequest(method, path, body);
+    } catch {
+        fail(serverUnreachable());
+    }
+    if (res.status === 401) fail(TOKEN_REJECTED);
+    if (res.status >= 400) {
+        const detail = res.json && typeof res.json.error === "string" ? `: ${res.json.error}` : "";
+        fail(`IDUPI respondió HTTP ${res.status}${detail}.`);
+    }
+    return res;
+}
+
+async function runCalendar(parsed) {
+    if (parsed.action === "agenda") {
+        const { from, to } = calendarRange(parsed.days);
+        const path = "/api/v1/phone/calendar" +
+            `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+        const res = await calendarRequest("GET", path);
+        if (parsed.json) {
+            writeOut(JSON.stringify(res.json, null, 2) + "\n");
+            return;
+        }
+        writeOut(formatCalendarAgenda(res.json) + "\n");
+        return;
+    }
+
+    if (parsed.action === "free") {
+        const { from, to } = calendarRange(parsed.days);
+        const path = "/api/v1/phone/calendar/free" +
+            `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&min=${parsed.min}`;
+        const res = await calendarRequest("GET", path);
+        writeOut(formatCalendarFree(res.json) + "\n");
+        return;
+    }
+
+    if (parsed.action === "propose") {
+        const body = {
+            title: parsed.title,
+            start: parsed.start,
+            allDay: parsed.allDay,
+            source: "idupi-phone",
+        };
+        if (parsed.end) body.end = parsed.end;
+        if (parsed.location) body.location = parsed.location;
+        if (parsed.notes) body.notes = parsed.notes;
+        const res = await calendarRequest("POST", "/api/v1/phone/calendar/proposals", body);
+        writeOut(formatProposalCreated(res.json) + "\n");
+        return;
+    }
+
+    if (parsed.action === "proposals") {
+        const res = await calendarRequest("GET", "/api/v1/phone/calendar/proposals?status=pending");
+        writeOut(formatCalendarProposals(res.json) + "\n");
+        return;
+    }
+
+    fail("Comando de calendario no reconocido.");
+}
+
+function actionFor(parsed) {    switch (parsed.command) {
         case "tap":
         case "long_press":
             return { type: parsed.command, args: parsed.target };
@@ -619,6 +1040,11 @@ async function main() {
         if (res.status === 401) fail(TOKEN_REJECTED);
         if (res.status !== 200) fail(`IDUPI respondió HTTP ${res.status}.`);
         writeOut(formatCommandList(res.json?.commands) + "\n");
+        return;
+    }
+
+    if (parsed.command === "calendar") {
+        await runCalendar(parsed);
         return;
     }
 

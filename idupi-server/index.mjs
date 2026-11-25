@@ -79,6 +79,11 @@ import { createInboxRoutes } from "./lib/inbox-routes.mjs";
 // memory-only so a restart never replays a stale tap.
 import { createPhoneStore } from "./lib/phone-store.mjs";
 import { createPhoneRoutes } from "./lib/phone-routes.mjs";
+// Phone calendar (phone-calendar, T1): the phone's calendar snapshot, conflict
+// and free-slot math, and the PC proposal queue the owner approves on the
+// phone. Times are UTC; day boundaries use the phone's reported offset.
+import { createPhoneCalendarStore } from "./lib/phone-calendar-store.mjs";
+import { createPhoneCalendarRoutes } from "./lib/phone-calendar-routes.mjs";
 // Browser view of those same PTYs (live-shared-terminals T2): loopback-only
 // static files, served before auth because they hold no secrets.
 import { createTerminalWebRoutes } from "./lib/terminal-web-routes.mjs";
@@ -1301,6 +1306,14 @@ const osProcesses = createOsProcesses({
 });
 const handleOsProcessesRoute = createOsProcessesRoutes(osProcesses);
 
+// Phone calendar (phone-calendar, T1): the latest snapshot the phone reported
+// plus the PC proposal queue. Analysis reads it to warn about overlapping
+// events; no route here ever writes to a calendar, only the phone does that
+// after the owner approves.
+const phoneCalendarStore = createPhoneCalendarStore({
+    dataDir: fileURLToPath(new URL("./data", import.meta.url)),
+});
+
 // Phone inbox: ids and analysis results live in idupi-server/data (gitignored).
 // The runner resolves each installed CLI to its real executable/JS entry point
 // because npm's shims are .cmd/.ps1 files and must never go through a shell.
@@ -1317,6 +1330,7 @@ const handleInboxRoute = createInboxRoutes({
     store: inboxStore,
     digestStore: inboxDigestStore,
     runner: inboxRunner,
+    calendarStore: phoneCalendarStore,
     openCodeModels: () => openCodeCli.listAllModels(),
 });
 
@@ -1326,6 +1340,7 @@ const phoneStore = createPhoneStore({
     dataDir: fileURLToPath(new URL("./data", import.meta.url)),
 });
 const handlePhoneRoute = createPhoneRoutes({ store: phoneStore });
+const handlePhoneCalendarRoute = createPhoneCalendarRoutes({ store: phoneCalendarStore });
 
 /**
  * Resolves WHAT to spawn for an inbox agent without a shell. Mirrors the
@@ -3271,6 +3286,10 @@ const handleRequest = async (req, res) => {
     if (await handleOsProcessesRoute(req, res, pathname)) return;
     // Phone inbox items, agent config and model catalog (lib/inbox-routes.mjs).
     if (await handleInboxRoute(req, res, pathname)) return;
+    // Phone calendar: snapshot, agenda, conflicts, free slots and proposals
+    // (lib/phone-calendar-routes.mjs). Mounted before the phone agent so the
+    // /calendar subtree is never mistaken for a phone command path.
+    if (await handlePhoneCalendarRoute(req, res, pathname)) return;
     // Phone agent status and command queue (lib/phone-routes.mjs).
     if (await handlePhoneRoute(req, res, pathname)) return;
 

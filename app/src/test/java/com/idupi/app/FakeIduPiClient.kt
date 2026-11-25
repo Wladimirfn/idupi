@@ -12,6 +12,9 @@ import com.idupi.app.domain.model.KillProcessOutcome
 import com.idupi.app.domain.model.OsProcessSample
 import com.idupi.app.domain.model.Project
 import com.idupi.app.domain.model.PtyInfo
+import com.idupi.app.domain.model.PhoneCalendarSnapshot
+import com.idupi.app.domain.model.PhoneCalendarProposal
+import com.idupi.app.domain.model.PhoneCalendarProposalsResponse
 import com.idupi.app.domain.model.QuickCommand
 import com.idupi.app.domain.model.ServerStatus
 import com.idupi.app.domain.model.SessionCounts
@@ -648,6 +651,55 @@ class FakeIduPiClient : IduPiClient {
         postedPhoneStatuses += status
     }
 
+    // --- Phone calendar reporting (phone-calendar T2/T3) ---
+
+    /** Every posted calendar snapshot, in order. */
+    val postedPhoneCalendars = mutableListOf<PhoneCalendarSnapshot>()
+
+    /** When non-null, [postPhoneCalendar] throws it instead of recording. */
+    var failPhoneCalendarPostWith: Exception? = null
+
+    override suspend fun postPhoneCalendar(snapshot: PhoneCalendarSnapshot) {
+        maybeFail()
+        failPhoneCalendarPostWith?.let { throw it }
+        postedPhoneCalendars += snapshot
+    }
+
+    /** Proposals the fake returns; consumed FIFO when [proposalsQueue] is not empty. */
+    var proposalsToReturn: PhoneCalendarProposalsResponse = PhoneCalendarProposalsResponse()
+    val proposalsQueue: ArrayDeque<PhoneCalendarProposalsResponse> = ArrayDeque()
+    var failProposalsWith: Exception? = null
+    var lastProposalsStatus: String? = null
+    var proposalsCalls: Int = 0
+
+    override suspend fun getPhoneCalendarProposals(
+        status: String,
+        limit: Int,
+    ): PhoneCalendarProposalsResponse {
+        proposalsCalls++
+        lastProposalsStatus = status
+        failProposalsWith?.let { throw it }
+        maybeFail()
+        return if (proposalsQueue.isNotEmpty()) proposalsQueue.removeFirst() else proposalsToReturn
+    }
+
+    /** Every proposal decision post, in order. */
+    val proposalDecisions = mutableListOf<ProposalDecisionCall>()
+
+    /** When non-null, the decision call throws it instead of recording. */
+    var failProposalDecisionWith: Exception? = null
+
+    override suspend fun decidePhoneCalendarProposal(
+        id: String,
+        decision: String,
+        eventId: String?,
+    ): PhoneCalendarProposal {
+        failProposalDecisionWith?.let { throw it }
+        maybeFail()
+        proposalDecisions += ProposalDecisionCall(id, decision, eventId)
+        return PhoneCalendarProposal(id = id, status = decision, eventId = eventId)
+    }
+
     // --- Phone control (phone-agent T3) ---
 
     /**
@@ -780,6 +832,13 @@ data class PostedPhoneCommandResult(
     val ok: Boolean,
     val result: JsonElement?,
     val error: String?,
+)
+
+/** One recorded proposal decision (phone-calendar T3). */
+data class ProposalDecisionCall(
+    val proposalId: String,
+    val decision: String,
+    val eventId: String?,
 )
 
 /** Test-only [IduPiClientSource] that always exposes the given [fake]. */

@@ -9,14 +9,17 @@ import assert from "node:assert/strict";
 import {
     AGENTS,
     EFFORTS,
+    MAX_EVENT_TITLE_CHARS,
     OPENCODE_DENY_ALL_CONFIG,
     buildAgentArgv,
     buildInboxPrompt,
     createInboxAgentRunner,
+    normalizeExtractedEvent,
     parseAgentResult,
 } from "../lib/inbox-agent.mjs";
 
 const MODEL = "opencode-go/deepseek-v4.1-flash";
+const TEST_NOW = new Date("2026-11-24T12:00:00.000Z");
 const ITEM = {
     app: "whatsapp",
     sender: "Ana",
@@ -31,6 +34,9 @@ const GOOD_RESULT = {
     summary: "Ana pregunta si llegaste.",
     suggestedReply: "Sí, ya estoy.",
 };
+
+// Every parsed result carries the optional event; without one it is null.
+const PARSED_RESULT = { ...GOOD_RESULT, event: null };
 
 // --- argv builders ---------------------------------------------------------
 
@@ -192,6 +198,103 @@ test("prompt strips delimiter spoofing and caps the related context at five item
     assert.equal(prompt.includes("Sender-6"), false);
 });
 
+test("prompt pins the owner clock and the optional event contract", () => {
+    const prompt = buildInboxPrompt(ITEM, [], { now: TEST_NOW, tzOffsetMinutes: -180 });
+
+    assert.match(
+        prompt,
+        /Owner's current date and time: 2026-11-24T09:00:00-03:00 \(UTC-03:00\)\./,
+    );
+    assert.match(prompt, /Resolve relative dates/);
+    assert.match(prompt, /"event":\{"title"/);
+    assert.match(prompt, /only when the message proposes or confirms/);
+    assert.match(prompt, /ISO-8601 with the owner's offset/);
+    assert.match(prompt, /never authorizes writing to a calendar/);
+});
+
+// --- extracted calendar events ---------------------------------------------
+
+test("parser accepts a valid event and defaults the end to one hour", () => {
+    const parsed = parseAgentResult("pi", JSON.stringify({
+        ...GOOD_RESULT,
+        event: {
+            title: "  Reunión   con Ana ",
+            start: "2026-11-25T10:00:00-03:00",
+            location: "Oficina",
+        },
+    }));
+
+    assert.deepEqual(parsed.event, {
+        title: "Reunión con Ana",
+        start: "2026-11-25T13:00:00.000Z",
+        end: "2026-11-25T14:00:00.000Z",
+        allDay: false,
+        location: "Oficina",
+    });
+});
+
+test("parser spans one day for all-day events and caps the title", () => {
+    const parsed = parseAgentResult("codex", JSON.stringify({
+        ...GOOD_RESULT,
+        event: {
+            title: "x".repeat(300),
+            start: "2026-11-25T00:00:00.000Z",
+            end: "2026-11-25T01:00:00.000Z",
+            allDay: true,
+        },
+    }));
+
+    assert.equal(parsed.event.title.length, MAX_EVENT_TITLE_CHARS);
+    assert.equal(parsed.event.allDay, true);
+    assert.equal(parsed.event.end, "2026-11-26T00:00:00.000Z");
+});
+
+test("a malformed event becomes null without failing the analysis", () => {
+    for (const event of [
+        null,
+        "mañana",
+        { title: "Sin fecha", start: "mañana" },
+        { title: "   ", start: "2026-11-25T10:00:00.000Z" },
+        { start: "2026-11-25T10:00:00.000Z" },
+    ]) {
+        const parsed = parseAgentResult("pi", JSON.stringify({ ...GOOD_RESULT, event }));
+        assert.equal(parsed.event, null, JSON.stringify(event));
+        assert.equal(parsed.summary, GOOD_RESULT.summary);
+        assert.equal(parsed.importance, GOOD_RESULT.importance);
+    }
+
+    // An end before start is ignored in favor of the one-hour default.
+    const parsed = parseAgentResult("pi", JSON.stringify({
+        ...GOOD_RESULT,
+        event: {
+            title: "Cita",
+            start: "2026-11-25T10:00:00.000Z",
+            end: "2026-11-25T09:00:00.000Z",
+        },
+    }));
+    assert.equal(parsed.event.end, "2026-11-25T11:00:00.000Z");
+});
+
+test("normalizeExtractedEvent is pure and rejects non-objects", () => {
+    assert.equal(normalizeExtractedEvent(null), null);
+    assert.equal(normalizeExtractedEvent([]), null);
+    assert.equal(normalizeExtractedEvent({ title: "x", start: 123 }), null);
+    assert.deepEqual(
+        normalizeExtractedEvent({
+            title: "Feriado",
+            start: "2026-12-25T00:00:00.000Z",
+            allDay: true,
+        }),
+        {
+            title: "Feriado",
+            start: "2026-12-25T00:00:00.000Z",
+            end: "2026-12-26T00:00:00.000Z",
+            allDay: true,
+            location: "",
+        },
+    );
+});
+
 // --- parsers ---------------------------------------------------------------
 
 test("parser reads opencode NDJSON frames and normalizes importance", () => {
@@ -201,7 +304,7 @@ test("parser reads opencode NDJSON frames and normalizes importance", () => {
         JSON.stringify({ type: "step_finish", part: { type: "step-finish" } }),
     ].join("\n");
 
-    assert.deepEqual(parseAgentResult("opencode", stdout), GOOD_RESULT);
+    assert.deepEqual(parseAgentResult("opencode", stdout), PARSED_RESULT);
 });
 
 test("parser reads the claude result field and tolerates fences around the JSON", () => {
@@ -210,13 +313,13 @@ test("parser reads the claude result field and tolerates fences around the JSON"
         result: "Listo:\n```json\n" + JSON.stringify(GOOD_RESULT) + "\n```\n",
     });
 
-    assert.deepEqual(parseAgentResult("claude", stdout), GOOD_RESULT);
+    assert.deepEqual(parseAgentResult("claude", stdout), PARSED_RESULT);
 });
 
 test("parser reads plain pi and codex output with prose around the JSON", () => {
     const stdout = `Sure, here it is.\n${JSON.stringify(GOOD_RESULT)}\nDone.`;
-    assert.deepEqual(parseAgentResult("pi", stdout), GOOD_RESULT);
-    assert.deepEqual(parseAgentResult("codex", stdout), GOOD_RESULT);
+    assert.deepEqual(parseAgentResult("pi", stdout), PARSED_RESULT);
+    assert.deepEqual(parseAgentResult("codex", stdout), PARSED_RESULT);
 });
 
 test("parser rejects garbage, missing JSON and invalid importance", () => {
@@ -283,15 +386,17 @@ test("runner uses a fresh temp cwd, deny-all opencode permissions and removes th
         rm: deps.rm,
         timeoutMs: 1234,
         env: { PATH: "x" },
+        now: () => TEST_NOW,
+        tzOffsetMinutes: -180,
     });
 
     const result = await runner.run({ agent: "opencode", model: MODEL, effort: "low" }, ITEM, []);
 
-    assert.deepEqual(result, GOOD_RESULT);
+    assert.deepEqual(result, PARSED_RESULT);
     assert.equal(deps.calls.length, 1);
     const [{ file, args, options }] = deps.calls;
     assert.equal(file, "opencode");
-    assert.equal(args.at(-1), buildInboxPrompt(ITEM, []));
+    assert.equal(args.at(-1), buildInboxPrompt(ITEM, [], { now: TEST_NOW, tzOffsetMinutes: -180 }));
     assert.equal(options.cwd, "C:\\temp\\idupi-inbox-fake");
     assert.equal(options.timeout, 1234);
     assert.equal(options.encoding, "utf8");

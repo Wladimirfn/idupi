@@ -33,6 +33,12 @@ object AppSpacing {
 
     // Item gap (between items in a list)
     val itemGap: Dp = 12.dp
+
+    /**
+     * Bounded height for an inline expandable list (Ajustes > Apps a seguir):
+     * a LazyColumn inside the settings scroll must get a finite height.
+     */
+    val expandedListMaxHeight: Dp = 420.dp
 }
 
 object AppShapes {

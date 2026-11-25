@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
+import com.idupi.app.data.calendar.CalendarViewMode
 import com.idupi.app.domain.model.InboxApp
 import com.idupi.app.domain.model.InboxImportance
 import com.idupi.app.domain.model.InboxSettings
@@ -137,6 +138,31 @@ class DataStoreSettingsRepository(
         dataStore.edit { prefs -> prefs[PHONE_CONTROL_ENABLED_KEY] = enabled }
     }
 
+    // Missing key means ON: sharing the agenda is opt-out, like the phone
+    // status report. Without READ_CALENDAR the reporter still sends nothing.
+    override val calendarShareEnabled: Flow<Boolean> =
+        dataStore.data.map { prefs -> prefs[CALENDAR_SHARE_ENABLED_KEY] ?: true }
+
+    override suspend fun setCalendarShareEnabled(enabled: Boolean) {
+        dataStore.edit { prefs -> prefs[CALENDAR_SHARE_ENABLED_KEY] = enabled }
+    }
+
+    override val calendarLastUsedId: Flow<String> =
+        dataStore.data.map { prefs -> prefs[CALENDAR_LAST_USED_ID_KEY].orEmpty() }
+
+    override suspend fun setCalendarLastUsedId(calendarId: String) {
+        dataStore.edit { prefs -> prefs[CALENDAR_LAST_USED_ID_KEY] = calendarId }
+    }
+
+    // Missing key means month: the Agenda opens as a calendar by default, and
+    // the last choice is stored so switching tabs survives a restart.
+    override val calendarViewMode: Flow<String> =
+        dataStore.data.map { prefs -> prefs[CALENDAR_VIEW_MODE_KEY] ?: DEFAULT_VIEW_MODE }
+
+    override suspend fun setCalendarViewMode(mode: String) {
+        dataStore.edit { prefs -> prefs[CALENDAR_VIEW_MODE_KEY] = mode }
+    }
+
     private inline fun <reified T : Enum<T>> enumValue(raw: String?, fallback: T): T =
         raw?.let { stored -> enumValues<T>().firstOrNull { it.name == stored } } ?: fallback
 
@@ -182,5 +208,19 @@ class DataStoreSettingsRepository(
         /** phone-agent T3: execute PC commands through accessibility; default OFF. */
         val PHONE_CONTROL_ENABLED_KEY: Preferences.Key<Boolean> =
             booleanPreferencesKey("phone_control_enabled")
+
+        /** phone-calendar T2: share the agenda with the PC; default ON. */
+        val CALENDAR_SHARE_ENABLED_KEY: Preferences.Key<Boolean> =
+            booleanPreferencesKey("calendar_share_enabled")
+
+        /** phone-calendar T3: last calendar chosen in the add-event sheet. */
+        val CALENDAR_LAST_USED_ID_KEY: Preferences.Key<String> =
+            stringPreferencesKey("calendar_last_used_id")
+
+        /** phone-calendar T5: last Agenda view mode (list, week or month). */
+        val CALENDAR_VIEW_MODE_KEY: Preferences.Key<String> =
+            stringPreferencesKey("calendar_view_mode")
+
+        private val DEFAULT_VIEW_MODE = CalendarViewMode.DEFAULT.storageValue
     }
 }

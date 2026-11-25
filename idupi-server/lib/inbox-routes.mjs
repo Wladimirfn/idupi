@@ -26,6 +26,7 @@ import {
     parseDigestResult,
     selectDigestItems,
 } from "./inbox-digest.mjs";
+import { conflictsWith } from "./phone-calendar-store.mjs";
 
 const PREFIX = "/api/v1/inbox";
 // One notification is a few hundred bytes; 64 KiB covers long mail bodies and
@@ -183,6 +184,7 @@ export function createInboxRoutes({
     store,
     runner,
     digestStore = null,
+    calendarStore = null,
     now = () => new Date(),
     openCodeModels = () => [],
     maxJsonBytes = DEFAULT_MAX_JSON_BYTES,
@@ -194,6 +196,29 @@ export function createInboxRoutes({
 
     /** Conversation keys with a digest queued or running; avoids a second run. */
     const digestJobs = new Set();
+
+    /**
+     * Existing events the extracted event overlaps, computed from the latest
+     * phone snapshot. No snapshot (or no event) means no warnings, never an
+     * error: a missing agenda cannot fail the analysis.
+     */
+    function calendarEventConflicts(event) {
+        if (!event || !calendarStore) return [];
+        let snapshot = null;
+        try {
+            snapshot = calendarStore.getSnapshot();
+        } catch {
+            return [];
+        }
+        if (!snapshot) return [];
+        try {
+            return conflictsWith(event, snapshot.events)
+                .map(({ title, start, end }) => ({ title, start, end }))
+                .slice(0, 20);
+        } catch {
+            return [];
+        }
+    }
 
     function enqueueAnalysis(id) {
         queueTail = queueTail
@@ -213,12 +238,15 @@ export function createInboxRoutes({
             const config = store.getConfig();
             try {
                 const result = await runner.run(config, item, related);
+                const event = result?.event ?? null;
                 store.update(id, {
                     status: "ready",
                     importance: result?.importance ?? null,
                     category: result?.category ?? "",
                     summary: result?.summary ?? "",
                     suggestedReply: result?.suggestedReply ?? "",
+                    event,
+                    eventConflicts: calendarEventConflicts(event),
                     error: null,
                     updatedAt: stamp(),
                 });

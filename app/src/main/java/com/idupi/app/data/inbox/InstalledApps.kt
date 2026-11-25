@@ -33,8 +33,14 @@ data class InstalledAppInventory(
     val isEmpty: Boolean get() = presets.isEmpty() && others.isEmpty()
 
     /** Followed apps the owner can actually see (and switch) on this phone. */
-    fun followingCount(followedApps: Set<String>): Int =
-        all.count { it.appId in followedApps }
+    fun followingCount(followedApps: Set<String>): Int = followed(followedApps).size
+
+    /**
+     * Collapsed "Apps a seguir" subset (phone-calendar T5): only the followed
+     * apps present on this phone, kept in the inventory's preset-first order.
+     */
+    fun followed(followedApps: Set<String>): List<InstalledApp> =
+        all.filter { it.appId in followedApps }
 }
 
 /**

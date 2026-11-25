@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { createInboxStore } from "../lib/inbox-store.mjs";
 import { createInboxDigestStore } from "../lib/inbox-digest.mjs";
 import { createInboxRoutes } from "../lib/inbox-routes.mjs";
+import { createPhoneCalendarStore } from "../lib/phone-calendar-store.mjs";
 
 const silentLog = { log() {}, info() {}, warn() {}, error() {} };
 
@@ -57,7 +58,7 @@ async function waitFor(check, timeoutMs = 3000) {
     }
 }
 
-async function startHarness(t, { runner = null, openCodeModels = () => [] } = {}) {
+async function startHarness(t, { runner = null, openCodeModels = () => [], calendarStore = null } = {}) {
     const dir = await mkdtemp(join(tmpdir(), "idupi-inbox-routes-"));
     t.after(() => rm(dir, { recursive: true, force: true }));
     const store = createInboxStore({ dataDir: dir, log: silentLog });
@@ -74,6 +75,7 @@ async function startHarness(t, { runner = null, openCodeModels = () => [] } = {}
         store,
         digestStore,
         runner: fakeRunner,
+        calendarStore,
         now: () => new Date("2026-11-24T12:00:00.000Z"),
         openCodeModels,
     });
@@ -414,4 +416,87 @@ test("wrong methods answer 405 with an Allow header", async (t) => {
     res = await fetch(base + "/api/v1/inbox", { method: "DELETE" });
     assert.equal(res.status, 405);
     assert.equal(res.headers.get("allow"), "GET, HEAD");
+});
+
+// --- extracted calendar event (phone-calendar, T1) -------------------------
+
+const EVENT_RESULT = {
+    title: "Reunión con Ana",
+    start: "2026-11-25T13:00:00.000Z",
+    end: "2026-11-25T14:00:00.000Z",
+    allDay: false,
+    location: "Oficina",
+};
+
+async function makeCalendarStore(t, events = []) {
+    const dir = await mkdtemp(join(tmpdir(), "idupi-inbox-calendar-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const calendarStore = createPhoneCalendarStore({ dataDir: dir, log: silentLog });
+    if (events.length > 0) {
+        calendarStore.recordSnapshot({
+            capturedAt: "2026-11-24T12:00:00.000Z",
+            rangeStart: "2026-11-24T00:00:00.000Z",
+            rangeEnd: "2026-12-08T00:00:00.000Z",
+            tzOffsetMinutes: -180,
+            calendars: [],
+            events,
+        });
+    }
+    return calendarStore;
+}
+
+test("analysis stores the extracted event and warns about snapshot conflicts", async (t) => {
+    const calendarStore = await makeCalendarStore(t, [{
+        id: "ev-1",
+        calendarId: "cal-1",
+        title: "Almuerzo",
+        start: "2026-11-25T13:30:00.000Z",
+        end: "2026-11-25T14:30:00.000Z",
+        allDay: false,
+        location: "",
+    }]);
+    const runner = { run: async () => ({ ...RESULT, event: { ...EVENT_RESULT } }) };
+    const { base } = await startHarness(t, { runner, calendarStore });
+
+    const { body } = await postMessage(base);
+    const item = await waitReady(base, body.item.id);
+
+    assert.deepEqual(item.event, EVENT_RESULT);
+    assert.deepEqual(item.eventConflicts, [{
+        title: "Almuerzo",
+        start: "2026-11-25T13:30:00.000Z",
+        end: "2026-11-25T14:30:00.000Z",
+    }]);
+});
+
+test("an event without a snapshot is kept and has no conflict warnings", async (t) => {
+    const runner = {
+        run: async () => ({
+            ...RESULT,
+            event: {
+                title: "Feriado",
+                start: "2026-12-25T00:00:00.000Z",
+                end: "2026-12-26T00:00:00.000Z",
+                allDay: true,
+                location: "",
+            },
+        }),
+    };
+    const { base } = await startHarness(t, { runner });
+
+    const { body } = await postMessage(base);
+    const item = await waitReady(base, body.item.id);
+
+    assert.equal(item.event.title, "Feriado");
+    assert.equal(item.event.allDay, true);
+    assert.equal(item.event.end, "2026-12-26T00:00:00.000Z");
+    assert.deepEqual(item.eventConflicts, []);
+});
+
+test("a message without a date stores a null event", async (t) => {
+    const { base } = await startHarness(t);
+    const { body } = await postMessage(base);
+    const item = await waitReady(base, body.item.id);
+    assert.equal(item.event, null);
+    assert.deepEqual(item.eventConflicts, []);
 });

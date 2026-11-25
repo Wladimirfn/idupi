@@ -945,6 +945,37 @@ class RealIduPiClient : IduPiClient {
         }
     }
 
+    // --- Phone calendar reporting (phone-calendar T2) ---
+
+    override suspend fun postPhoneCalendar(snapshot: PhoneCalendarSnapshot) {
+        send(HttpMethod.Post, "/api/v1/phone/calendar") {
+            contentType(ContentType.Application.Json)
+            setBody(snapshot)
+        }
+    }
+
+    override suspend fun getPhoneCalendarProposals(
+        status: String,
+        limit: Int,
+    ): PhoneCalendarProposalsResponse =
+        send(HttpMethod.Get, "/api/v1/phone/calendar/proposals") {
+            parameter("status", status)
+            parameter("limit", limit)
+        }.body()
+
+    override suspend fun decidePhoneCalendarProposal(
+        id: String,
+        decision: String,
+        eventId: String?,
+    ): PhoneCalendarProposal =
+        send(
+            HttpMethod.Post,
+            "/api/v1/phone/calendar/proposals/$id/decision",
+        ) {
+            contentType(ContentType.Application.Json)
+            setBody(ProposalDecisionPayload(decision = decision, eventId = eventId))
+        }.body<ProposalDecisionEnvelope>().proposal
+
     // --- Phone control (phone-agent T3) ---
 
     /**
@@ -986,6 +1017,14 @@ class RealIduPiClient : IduPiClient {
 
 @Serializable
 private data class ApplySddProfilePayload(val profileId: String)
+
+/** `POST /api/v1/phone/calendar/proposals/{id}/decision` body. */
+@Serializable
+private data class ProposalDecisionPayload(val decision: String, val eventId: String? = null)
+
+/** The decision route wraps the updated proposal. */
+@Serializable
+private data class ProposalDecisionEnvelope(val proposal: PhoneCalendarProposal)
 
 // --- Phone inbox wire payloads (phone-inbox T2) ---
 

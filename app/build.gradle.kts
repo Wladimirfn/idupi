@@ -32,8 +32,8 @@ android {
         // "which APK am I running" is answerable from the system settings.
         // Same-versionCode installs get silently skipped by some phone
         // installers -- that is how a stale build masqueraded as the new one.
-        versionCode = 45
-        versionName = "1.44-inbox-digest"
+        versionCode = 48
+        versionName = "1.47-agenda-views"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

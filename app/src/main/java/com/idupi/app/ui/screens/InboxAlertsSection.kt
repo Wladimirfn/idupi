@@ -2,6 +2,11 @@ package com.idupi.app.ui.screens
 
 import android.content.Intent
 import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -11,9 +16,12 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Notifications
@@ -158,7 +166,8 @@ fun InboxAlertsSection(viewModel: InboxSettingsViewModel) {
             settings = settings,
             state = installedApps,
             onToggleApp = { appId, followed -> viewModel.setAppFollowed(appId, followed) },
-            onReload = { viewModel.loadInstalledApps(force = true) }
+            onReload = { viewModel.loadInstalledApps(force = true) },
+            onToggleExpanded = viewModel::toggleAppsExpanded
         )
 
         SilencedChatsCard(
@@ -385,15 +394,18 @@ private fun FollowedAppsCard(
     settings: InboxSettings,
     state: InstalledAppsState,
     onToggleApp: (String, Boolean) -> Unit,
-    onReload: () -> Unit
+    onReload: () -> Unit,
+    onToggleExpanded: () -> Unit
 ) {
     var query by rememberSaveable { mutableStateOf("") }
-    val followingCount = remember(state.inventory, settings.followedApps) {
-        state.inventory.followingCount(settings.followedApps)
+    val followedApps = remember(state.inventory, settings.followedApps) {
+        state.inventory.followed(settings.followedApps)
     }
-    val others = remember(state.inventory.others, query) {
-        InstalledApps.matching(state.inventory.others, query)
+    val filtered = remember(state.inventory, query) {
+        InstalledApps.matching(state.inventory.all, query)
     }
+    val filteredPresets = remember(filtered) { filtered.filter { it.preset != null } }
+    val filteredOthers = remember(filtered) { filtered.filter { it.preset == null } }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -408,7 +420,7 @@ private fun FollowedAppsCard(
         ) {
             Text("Apps a seguir", style = AppTypography.bodyLarge, color = TextPrimary)
             Text(
-                text = "Siguiendo $followingCount apps",
+                text = "Siguiendo ${followedApps.size} apps",
                 style = AppTypography.labelSmall,
                 color = StatusWorking
             )
@@ -433,37 +445,96 @@ private fun FollowedAppsCard(
             }
 
             if (!state.isLoading && !state.inventory.isEmpty) {
-                state.inventory.presets.forEach { app ->
-                    AppFollowRow(app = app, followed = settings.followedApps, onToggle = onToggleApp)
-                }
-
-                Spacer(modifier = Modifier.size(AppSpacing.xs))
-                Text("Otras apps", style = AppTypography.bodySmall, color = TextSecondary)
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    label = { Text("Buscar apps", style = AppTypography.bodySmall) },
-                    singleLine = true,
-                    colors = inboxFieldColors(),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                if (others.isEmpty()) {
+                // Collapsed default: only the followed apps, so the settings
+                // screen does not grow with every app installed on the phone.
+                if (followedApps.isEmpty()) {
                     Text(
-                        text = if (state.inventory.others.isEmpty()) {
-                            "No hay otras apps instaladas"
-                        } else {
-                            "No hay apps que coincidan"
-                        },
+                        text = "No sigues ninguna app todavía",
                         style = AppTypography.bodySmall,
                         color = TextSecondary
                     )
                 } else {
-                    others.forEach { app ->
+                    followedApps.forEach { app ->
                         AppFollowRow(
                             app = app,
                             followed = settings.followedApps,
                             onToggle = onToggleApp
                         )
+                    }
+                }
+
+                TextButton(onClick = onToggleExpanded) {
+                    Text(
+                        text = if (state.expanded) {
+                            "Ocultar lista"
+                        } else {
+                            "Ver todas las apps (${state.inventory.all.size})"
+                        },
+                        style = AppTypography.labelSmall,
+                        color = PrimaryIndigo
+                    )
+                }
+
+                AnimatedVisibility(
+                    visible = state.expanded,
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut()
+                ) {
+                    Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)) {
+                        OutlinedTextField(
+                            value = query,
+                            onValueChange = { query = it },
+                            label = { Text("Buscar apps", style = AppTypography.bodySmall) },
+                            singleLine = true,
+                            colors = inboxFieldColors(),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        // Bounded height: the settings screen scrolls
+                        // vertically, so this list must own a finite height
+                        // instead of an endless nested scroll.
+                        LazyColumn(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(max = AppSpacing.expandedListMaxHeight)
+                        ) {
+                            if (filtered.isEmpty()) {
+                                item(key = "apps-empty") {
+                                    Text(
+                                        text = if (query.isBlank()) {
+                                            "No hay apps instaladas"
+                                        } else {
+                                            "No hay apps que coincidan"
+                                        },
+                                        style = AppTypography.bodySmall,
+                                        color = TextSecondary
+                                    )
+                                }
+                            } else {
+                                items(filteredPresets, key = { it.packageName }) { app ->
+                                    AppFollowRow(
+                                        app = app,
+                                        followed = settings.followedApps,
+                                        onToggle = onToggleApp
+                                    )
+                                }
+                                if (filteredOthers.isNotEmpty()) {
+                                    item(key = "apps-others-label") {
+                                        Text(
+                                            text = "Otras apps",
+                                            style = AppTypography.bodySmall,
+                                            color = TextSecondary
+                                        )
+                                    }
+                                    items(filteredOthers, key = { it.packageName }) { app ->
+                                        AppFollowRow(
+                                            app = app,
+                                            followed = settings.followedApps,
+                                            onToggle = onToggleApp
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
