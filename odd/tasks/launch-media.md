@@ -37,10 +37,10 @@ needs. The owner publishes it on YouTube, LinkedIn, X and Instagram.
 - [x] T3 Capture real UI footage (screen recordings of each feature) with the
       same redaction rules.
 - [x] T4 Narration (voice-1) + music (music-1) + audio gate.
-- [ ] T5 Composition and keyframes (design-2), independent audit.
-- [ ] T6 Delivery render + motion gate; send the MP4 to the owner's phone for
+- [x] T5 Composition and keyframes (design-2), independent audit.
+- [x] T6 Delivery render + motion gate; send the MP4 to the owner's phone for
       review.
-- [ ] T7 After owner approval: platform cuts (vertical teaser for Instagram/X)
+- [x] T7 After owner approval: platform cuts (vertical teaser for Instagram/X)
       if requested.
 
 ## Acceptance criteria
@@ -101,7 +101,12 @@ TDD: not applicable (media and docs only).
   prompt (rejected afterwards), connection form. Incidents (all deleted, unused):
   user Brave tab on monitor 1, real Alertas messages, phone gallery opened on the
   hidden display; one stray tap changed app background color, reverted.
+- 2026-11-25 owner approved v1 as is (unaudited, owner-reviewed): render/IDUPI-lanzamiento-v1.mp4.
+  GitHub release v1.49 published as Latest (IDUPI-ap.apk, versionCode 50, same
+  signing cert as v1.37, SHA-256 27f69791...; QR latest/download link verified).
+  Vertical 9:16 teaser render/IDUPI-vertical-v1.mp4 (55.7 s: e01+e04+e12) sent to
+  phone; social copy in publicacion-redes.md. GPU engines (voicebox, lofi) stopped.
 
 ## Next step
 
-Owner reviews Download/IDUPI-video-borrador-v1.mp4. Then: e07 capture from owner test email, design-2 integrates new real captures (agente-real, push-real, entregas-nueva, remoto-vivo, agenda-choques, agenda-propuesta, conexion) and recomposes e08/e09, re-audit, final render.
+Owner uploads v1 to YouTube/LinkedIn/X/Instagram (texts in publicacion-redes.md). Video v2 will come with the next round of app changes and improvements: integrate the new real captures, the e07 test-email capture, recompose e08/e09, pass the independent audit. PR #26 (README screens + UTF-8 fix) still open.
