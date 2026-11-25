@@ -8,6 +8,7 @@ import com.idupi.app.data.IduPiClientProvider
 import com.idupi.app.data.inbox.InboxConversationGroup
 import com.idupi.app.data.inbox.InboxConversationGroups
 import com.idupi.app.data.inbox.InboxNotifier
+import com.idupi.app.data.inbox.InboxReadyReply
 import com.idupi.app.data.inbox.ReplyActionRegistry
 import com.idupi.app.data.inbox.inboxConversationKey
 import com.idupi.app.data.settings.SettingsProvider
@@ -76,6 +77,12 @@ class AlertsViewModel(
         runCatching { InboxNotifier(IduPiApp.instance).showAgentAnswer(item) }
             .onFailure { Log.w(TAG, "could not post the agent answer notification") }
     },
+    private val notifyReadyReply: (InboxItem) -> Unit = { item ->
+        // alerts-flow A4: a high-importance message arrived with its draft
+        // ready. Same rule as above: a refused post must not stop polling.
+        runCatching { InboxNotifier(IduPiApp.instance).showReadyReply(item) }
+            .onFailure { Log.w(TAG, "could not post the ready reply notification") }
+    },
 ) : ViewModel() {
 
     private val client get() = clientSource.client
@@ -118,6 +125,13 @@ class AlertsViewModel(
      * was already done on the first load is history, not news.
      */
     private val interactionStatuses = mutableMapOf<String, String>()
+
+    /**
+     * Item ids already announced as "Respuesta lista para revisar"
+     * (alerts-flow A4). A bounded in-memory set is enough: one ping per item
+     * for the life of this ViewModel.
+     */
+    private val announcedReadyReplies = mutableSetOf<String>()
 
     private var pollingJob: Job? = null
 
@@ -706,10 +720,30 @@ class AlertsViewModel(
         }
     }
 
+    /**
+     * One-shot "Respuesta lista para revisar" ping per item (alerts-flow A4).
+     * The first poll that sees an item qualifying pings it and remembers the
+     * id, so a repeated poll never pings twice -- not even if the card leaves
+     * the list and comes back after a failed state change. The set is capped
+     * at [MAX_ANNOUNCED_READY_REPLIES] by dropping the oldest ids.
+     */
+    private fun announceReadyReplies(items: List<InboxItem>) {
+        for (item in items) {
+            if (item.id in announcedReadyReplies) continue
+            if (!InboxReadyReply.qualifies(item, hasReplyAction(conversationKeyFor(item)))) continue
+            announcedReadyReplies += item.id
+            if (announcedReadyReplies.size > MAX_ANNOUNCED_READY_REPLIES) {
+                announcedReadyReplies.remove(announcedReadyReplies.first())
+            }
+            notifyReadyReply(item)
+        }
+    }
+
     /** Closed items leave Alertas; they are never part of the working list. */
     private fun publish(items: List<InboxItem>) {
         announceFinishedInteractions(_items.value, items)
         _items.value = items.filter { it.state == InboxItemState.OPEN }
+        announceReadyReplies(_items.value)
         _unreadCount.value = _items.value.count {
             it.state == InboxItemState.OPEN &&
                 it.importance == InboxImportance.HIGH &&
@@ -728,6 +762,12 @@ class AlertsViewModel(
 
         /** From this many open messages a shown card requests its digest. */
         const val AUTO_DIGEST_MIN_MESSAGES = 3
+
+        /**
+         * How many announced ready replies the one-shot set remembers before
+         * dropping the oldest id (alerts-flow A4).
+         */
+        private const val MAX_ANNOUNCED_READY_REPLIES = 200
 
         private const val POLL_INTERVAL_MS = 10_000L
 

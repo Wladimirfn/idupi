@@ -67,6 +67,21 @@ class InboxNotifier(private val context: Context) {
         )
     }
 
+    /**
+     * alerts-flow A4: a high-importance message already has a draft waiting.
+     * The body is the card's summary, never the draft itself, and the tap
+     * opens Alertas where the owner reviews and sends.
+     */
+    fun showReadyReply(item: InboxItem) {
+        post(
+            notificationId = notificationId(READY_REPLY_TAG, item.id),
+            channelId = SupervisorNotificationManager.CHANNEL_ID,
+            title = InboxReadyReply.TITLE,
+            text = InboxReadyReply.notificationText(item),
+            appLabel = InboxApp.displayLabel(item.appLabel, item.app)
+        )
+    }
+
     private fun summaryOf(item: InboxItem): String =
         item.summary.ifBlank { item.text }.ifBlank { "Sin contenido para mostrar" }
 
@@ -147,6 +162,7 @@ class InboxNotifier(private val context: Context) {
         private const val REMINDER_TAG = "inbox_reminder"
         private const val READY_TAG = "inbox_ready"
         private const val ANSWER_TAG = "inbox_answer"
+        private const val READY_REPLY_TAG = "inbox_ready_reply"
 
         /** Fixed id: the summary updates in place instead of stacking. */
         private const val SUMMARY_NOTIFICATION_ID = 24_001

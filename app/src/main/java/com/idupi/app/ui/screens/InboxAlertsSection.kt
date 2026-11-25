@@ -200,6 +200,7 @@ fun InboxAlertsSection(viewModel: InboxSettingsViewModel) {
             onAgentSelect = viewModel::setAgent,
             onModelChange = viewModel::setModel,
             onEffortSelect = viewModel::setEffort,
+            onProactiveChange = viewModel::setProactive,
             onSave = viewModel::saveConfig
         )
     }
@@ -844,6 +845,7 @@ private fun AgentConfigCard(
     onAgentSelect: (String) -> Unit,
     onModelChange: (String) -> Unit,
     onEffortSelect: (String) -> Unit,
+    onProactiveChange: (Boolean) -> Unit,
     onSave: () -> Unit
 ) {
     Card(
@@ -915,6 +917,39 @@ private fun AgentConfigCard(
                 optionLabel = { effortLabel(it) },
                 onSelect = onEffortSelect
             )
+
+            // alerts-flow A4: lets the PC start the work by itself. Saved with
+            // the same button because it changes what runs on the owner's PC.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Alertas proactivas",
+                        style = AppTypography.bodyLarge,
+                        color = TextPrimary
+                    )
+                    Text(
+                        text = "Si llega algo importante, IDUPI deja lista la respuesta o la " +
+                            "investigación del problema. Nunca envía nada por ti.",
+                        style = AppTypography.bodySmall,
+                        color = TextSecondary
+                    )
+                }
+                Switch(
+                    checked = config.proactive,
+                    onCheckedChange = onProactiveChange,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = PrimaryIndigo,
+                        uncheckedThumbColor = TextSecondary,
+                        uncheckedTrackColor = SlateBg,
+                        uncheckedBorderColor = SlateBorder
+                    )
+                )
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),

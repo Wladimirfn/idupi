@@ -545,6 +545,7 @@ class FakeIduPiClient : IduPiClient {
     val retriedInboxIds = mutableListOf<String>()
     var lastRequestedInboxLimit: Int? = null
     var lastInboxConfigUpdate: Triple<String, String, String>? = null
+    var lastInboxConfigProactive: Boolean? = null
     var lastRequestedInboxModelsAgent: String? = null
 
     override suspend fun postInboxMessage(message: InboxMessageRequest): InboxItem {
@@ -618,10 +619,21 @@ class FakeIduPiClient : IduPiClient {
         return inboxConfigToReturn
     }
 
-    override suspend fun updateInboxConfig(agent: String, model: String, effort: String): InboxConfig {
+    override suspend fun updateInboxConfig(
+        agent: String,
+        model: String,
+        effort: String,
+        proactive: Boolean?
+    ): InboxConfig {
         maybeFail()
         lastInboxConfigUpdate = Triple(agent, model, effort)
-        inboxConfigToReturn = inboxConfigToReturn.copy(agent = agent, model = model, effort = effort)
+        lastInboxConfigProactive = proactive
+        inboxConfigToReturn = inboxConfigToReturn.copy(
+            agent = agent,
+            model = model,
+            effort = effort,
+            proactive = proactive ?: inboxConfigToReturn.proactive
+        )
         return inboxConfigToReturn
     }
 

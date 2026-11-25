@@ -134,7 +134,16 @@ interface IduPiClient {
     suspend fun setInboxItemState(id: String, state: String): InboxItem
     suspend fun retryInboxItem(id: String): InboxItem
     suspend fun getInboxConfig(): InboxConfig
-    suspend fun updateInboxConfig(agent: String, model: String, effort: String): InboxConfig
+    /**
+     * [proactive] (alerts-flow A4) is optional: null keeps whatever the PC has,
+     * so a caller that only changes the agent never turns the feature off.
+     */
+    suspend fun updateInboxConfig(
+        agent: String,
+        model: String,
+        effort: String,
+        proactive: Boolean? = null
+    ): InboxConfig
     /** Empty list for agents whose catalog the server does not cache yet. */
     suspend fun getInboxModels(agent: String): List<String>
 

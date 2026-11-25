@@ -256,6 +256,48 @@ class InboxModelsTest {
         assertNull(interaction.startedAt)
         assertNull(interaction.finishedAt)
         assertNull(interaction.error)
+        assertEquals(false, interaction.auto)
+    }
+
+    // --- Proactive alerts (alerts-flow A4) ---------------------------------
+
+    @Test
+    fun `technical and projectHint default and decode from the server`() {
+        val withoutFields = json.decodeFromString<InboxItem>(
+            """{"id":"old","app":"gmail","text":"x","notificationKey":"k"}"""
+        )
+        assertEquals(false, withoutFields.technical)
+        assertEquals("", withoutFields.projectHint)
+
+        val technical = json.decodeFromString<InboxItem>(
+            """
+            {"id":"t1","app":"gmail","text":"Deploy failed","notificationKey":"k2",
+             "technical":true,"projectHint":"idupi-server"}
+            """.trimIndent()
+        )
+        assertEquals(true, technical.technical)
+        assertEquals("idupi-server", technical.projectHint)
+    }
+
+    @Test
+    fun `an automatic interaction decodes its auto flag`() {
+        val auto = json.decodeFromString<InboxInteraction>(
+            """{"status":"done","instruction":"revisa esto","answer":"ok","auto":true}"""
+        )
+        assertEquals(true, auto.auto)
+    }
+
+    @Test
+    fun `the config defaults proactive to true and decodes an explicit false`() {
+        val fromOldServer = json.decodeFromString<InboxConfig>(
+            """{"agent":"opencode","model":"m","effort":"max"}"""
+        )
+        assertEquals(true, fromOldServer.proactive)
+
+        val off = json.decodeFromString<InboxConfig>(
+            """{"agent":"opencode","model":"m","effort":"max","proactive":false}"""
+        )
+        assertEquals(false, off.proactive)
     }
 }
 

@@ -2,6 +2,7 @@ package com.idupi.app.ui.screens
 
 import com.idupi.app.domain.model.InboxApp
 import com.idupi.app.domain.model.InboxImportance
+import com.idupi.app.domain.model.InboxInteraction
 import com.idupi.app.domain.model.InboxItem
 import com.idupi.app.domain.model.InboxItemStatus
 import java.time.Duration
@@ -103,6 +104,18 @@ fun promotionsCountLabel(count: Int, appCount: Int): String {
     val promotions = if (count == 1) "1 promoción" else "$count promociones"
     val apps = if (appCount == 1) "1 app" else "$appCount apps"
     return "$promotions de $apps"
+}
+
+/**
+ * Header of the agent answer block (alerts-flow A3 + A4): "IDUPI revisó esto
+ * por ti" when the PC started the investigation by itself, "Respuesta del
+ * agente" when the owner asked for it; plus " · <project>" when the agent
+ * worked in one.
+ */
+fun interactionHeader(interaction: InboxInteraction): String {
+    val base = if (interaction.auto) "IDUPI revisó esto por ti" else "Respuesta del agente"
+    val project = interaction.projectName?.takeIf { it.isNotBlank() } ?: return base
+    return "$base · $project"
 }
 
 private fun parseInstantMillis(raw: String?): Long? {

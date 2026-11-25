@@ -912,10 +912,22 @@ class RealIduPiClient : IduPiClient {
     override suspend fun getInboxConfig(): InboxConfig =
         send(HttpMethod.Get, "/api/v1/inbox/config").body()
 
-    override suspend fun updateInboxConfig(agent: String, model: String, effort: String): InboxConfig =
+    override suspend fun updateInboxConfig(
+        agent: String,
+        model: String,
+        effort: String,
+        proactive: Boolean?
+    ): InboxConfig =
         send(HttpMethod.Put, "/api/v1/inbox/config") {
             contentType(ContentType.Application.Json)
-            setBody(InboxConfigPayload(agent = agent, model = model, effort = effort))
+            // Built by hand so a null proactive is omitted instead of encoded
+            // as an explicit null the server rejects (alerts-flow A4).
+            setBody(buildJsonObject {
+                put("agent", agent)
+                put("model", model)
+                put("effort", effort)
+                if (proactive != null) put("proactive", proactive)
+            })
         }.body()
 
     override suspend fun getInboxModels(agent: String): List<String> =
@@ -1132,10 +1144,6 @@ private data class InboxModelsEnvelope(val models: List<String> = emptyList())
 /** `POST /inbox/{id}/state` body. */
 @Serializable
 private data class InboxStatePayload(val state: String)
-
-/** `PUT /inbox/config` body; the server keeps `agents`/`efforts` server-side. */
-@Serializable
-private data class InboxConfigPayload(val agent: String, val model: String, val effort: String)
 
 /** `POST|GET /inbox/digest` wraps the conversation digest. */
 @Serializable

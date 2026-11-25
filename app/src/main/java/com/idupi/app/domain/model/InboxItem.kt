@@ -117,7 +117,14 @@ data class InboxInteraction(
     val answer: String = "",
     val startedAt: String? = null,
     val finishedAt: String? = null,
-    val error: String? = null
+    val error: String? = null,
+    /**
+     * alerts-flow A4: IDUPI started this investigation by itself because a
+     * high technical alert matched a project. The card says so and the owner
+     * reviews the result like any other answer. Missing on jobs from an older
+     * server, which decode as false.
+     */
+    val auto: Boolean = false
 )
 
 /**
@@ -166,6 +173,19 @@ data class InboxItem(
      */
     val promotion: Boolean = false,
     /**
+     * alerts-flow A4: the agent read a build/deploy/CI failure, an app or
+     * server error, or a security/infrastructure notice. Only technical
+     * alerts can start an investigation by themselves. Missing on items from
+     * an older server, which decode as false.
+     */
+    val technical: Boolean = false,
+    /**
+     * alerts-flow A4: the repo, service or project name the alert mentions,
+     * one line and at most 80 characters; empty when none is named. The PC
+     * matches it against the linked projects.
+     */
+    val projectHint: String = "",
+    /**
      * alerts-flow A3: the latest owner instruction and the agent's answer.
      * Null on items that were never handed to the agent (and on items from an
      * older server, which decode as null).
@@ -213,12 +233,17 @@ data class InboxMessageRequest(
 /**
  * `GET|PUT /api/v1/inbox/config`: the agent/model/effort the PC uses for
  * analysis. `agents` and `efforts` are only populated by the server.
+ *
+ * [proactive] (alerts-flow A4) lets the PC start work by itself for important
+ * alerts; it defaults to true so a server that does not send it (or an older
+ * app that never sends the field) keeps the feature on.
  */
 @Serializable
 data class InboxConfig(
     val agent: String = "",
     val model: String = "",
     val effort: String = "",
+    val proactive: Boolean = true,
     val agents: List<String> = emptyList(),
     val efforts: List<String> = emptyList()
 )

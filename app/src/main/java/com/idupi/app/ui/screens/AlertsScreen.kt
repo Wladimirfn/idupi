@@ -599,13 +599,6 @@ private fun AgentInteractionSection(
     }
 }
 
-/** "Respuesta del agente", plus " · <project>" when the agent worked in one. */
-private fun interactionHeader(interaction: InboxInteraction): String {
-    val project = interaction.projectName?.takeIf { it.isNotBlank() }
-        ?: return "Respuesta del agente"
-    return "Respuesta del agente · $project"
-}
-
 @Composable
 private fun EditReplyDialog(
     text: String,

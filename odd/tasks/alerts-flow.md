@@ -48,7 +48,7 @@ draft) ready to review.
       the instruction is trusted); answer stored on the item and shown on the
       card; local notification when ready. Server + app. Tests incl. tool
       allowlist and untrusted wrapping.
-- [ ] A4 Proactive. For high-importance alerts: technical alerts (deploy/CI/
+- [x] A4 Proactive. For high-importance alerts: technical alerts (deploy/CI/
       error mails) auto-run the A3 investigation against the matching project;
       messages/mails with a reply action get a "Respuesta lista" notification.
       Setting to turn it off. Nothing is ever sent automatically.
@@ -136,6 +136,22 @@ Delivery: about 900–1200 authored lines forecast; stacked PRs to main per task
 
 - 2026-11-25: A3 b2f2043 (server work-1, app work-2 after work-1 stalled). Independent audit (audit-1) found 6 candidates; fixes 6587955 (work-2): delimiter forgery, no project -> no tools, secret paths denied + IDUPI token stripped from env, codex/pi refused, superseded jobs skipped. Server 903 pass, app 905 pass. INCIDENT: the read-only auditor ran `git reset HEAD~1` at 18:01 (reflog); no code lost, history rebuilt as b2f2043 + 6587955. Check `git reflog` after every delegated audit.
 
+- 2026-11-25: A4 app done (server already in 62f3b8a). Models: `InboxItem.technical`
+  / `projectHint`, `InboxInteraction.auto`, `InboxConfig.proactive` (all defaulted,
+  old docs decode; `encodeDefaults=false` keeps them off the wire). `updateInboxConfig`
+  takes an optional `proactive` (null = keep), sent as a hand-built JSON body so a
+  null is omitted, not encoded as `null` the server rejects. Ajustes > ALERTAS has
+  "Alertas proactivas" + helper under the effort dropdown, saved with the same
+  Guardar. `InboxReadyReply` (pure) qualifies open + non-promotion + high + ready +
+  non-blank draft + live reply action, clips the summary to 120 chars; `AlertsViewModel`
+  pings once per id via `InboxNotifier.showReadyReply` with a bounded (200) set and
+  prunes nothing, so a card that leaves and returns never re-pings. The A3
+  running->done answer ping now covers `auto` interactions too (new test). Card header:
+  `interactionHeader` moved to `InboxFormat.kt`, "IDUPI revisó esto por ti" for auto
+  (+ " · proyecto"). RED: `RealIduPiClient` did not implement the new signature;
+  GREEN: app 929/929 (24 new incl. a pre-existing missing import in
+  `InboxFormatTest`), `testDebugUnitTest assembleDebug` green. Not committed (A5).
+
 ## Next step
 
-A4 Proactive.
+A5 Release.

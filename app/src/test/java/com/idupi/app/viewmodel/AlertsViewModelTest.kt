@@ -73,7 +73,15 @@ class AlertsViewModelTest {
         sendReply: (String, String) -> Boolean = { _, _ -> true },
         settings: SettingsRepository = InMemorySettingsRepository(),
         notifyAgentAnswer: (InboxItem) -> Unit = {},
-    ) = AlertsViewModel(FakeClientSource(fake), hasReplyAction, sendReply, settings, notifyAgentAnswer)
+        notifyReadyReply: (InboxItem) -> Unit = {},
+    ) = AlertsViewModel(
+        FakeClientSource(fake),
+        hasReplyAction,
+        sendReply,
+        settings,
+        notifyAgentAnswer,
+        notifyReadyReply
+    )
 
     @Test
     fun `init loads the inbox and requests the page size`() = runTest {
@@ -731,6 +739,26 @@ class AlertsViewModelTest {
     }
 
     @Test
+    fun `a running to done automatic interaction also posts the answer ping`() = runTest {
+        val notified = mutableListOf<InboxItem>()
+        fake.inboxItemsToReturn = listOf(
+            sampleItem().copy(interaction = runningInteraction().copy(auto = true))
+        )
+        val viewModel = viewModel(notifyAgentAnswer = { notified += it })
+        advanceUntilIdle()
+        assertTrue(notified.isEmpty())
+
+        fake.inboxItemsToReturn = listOf(
+            sampleItem().copy(interaction = doneInteraction().copy(auto = true))
+        )
+        viewModel.refresh()
+        advanceUntilIdle()
+
+        assertEquals(1, notified.size)
+        assertEquals(true, notified.single().interaction?.auto)
+    }
+
+    @Test
     fun `a failed interaction request keeps the item and shows an inline error`() = runTest {
         fake.inboxItemsToReturn = listOf(sampleItem())
         fake.failInteractionWith = RuntimeException("server off")
@@ -787,5 +815,85 @@ class AlertsViewModelTest {
         advanceUntilIdle()
 
         assertEquals(listOf("idupi"), viewModel.projects.value.map { it.id })
+    }
+
+    // --- Respuesta lista (alerts-flow A4) ----------------------------------
+
+    @Test
+    fun `a high ready item with a draft notifies once and never again`() = runTest {
+        val notified = mutableListOf<InboxItem>()
+        fake.inboxItemsToReturn = listOf(sampleItem(id = "i1"))
+        val viewModel = viewModel(notifyReadyReply = { notified += it })
+        advanceUntilIdle()
+
+        assertEquals(listOf("i1"), notified.map { it.id })
+
+        // The next poll sees the same ready item: no second ping.
+        viewModel.refresh()
+        advanceUntilIdle()
+        assertEquals(1, notified.size)
+    }
+
+    @Test
+    fun `the ready notification waits for the first ready poll`() = runTest {
+        val notified = mutableListOf<InboxItem>()
+        fake.inboxItemsToReturn = listOf(sampleItem(id = "i1", status = InboxItemStatus.ANALYZING))
+        val viewModel = viewModel(notifyReadyReply = { notified += it })
+        advanceUntilIdle()
+        assertTrue(notified.isEmpty())
+
+        fake.inboxItemsToReturn = listOf(sampleItem(id = "i1", status = InboxItemStatus.READY))
+        viewModel.refresh()
+        advanceUntilIdle()
+
+        assertEquals(1, notified.size)
+    }
+
+    @Test
+    fun `medium and low items never notify a ready reply`() = runTest {
+        val notified = mutableListOf<InboxItem>()
+        fake.inboxItemsToReturn = listOf(
+            sampleItem(id = "medium", importance = "medium"),
+            sampleItem(id = "low", importance = "low")
+        )
+        val viewModel = viewModel(notifyReadyReply = { notified += it })
+        advanceUntilIdle()
+
+        assertTrue(notified.isEmpty())
+    }
+
+    @Test
+    fun `promotions never notify a ready reply`() = runTest {
+        val notified = mutableListOf<InboxItem>()
+        fake.inboxItemsToReturn = listOf(
+            sampleItem(id = "promo", promotion = true, importance = "high")
+        )
+        val viewModel = viewModel(notifyReadyReply = { notified += it })
+        advanceUntilIdle()
+
+        assertTrue(notified.isEmpty())
+    }
+
+    @Test
+    fun `an item without a live reply action never notifies`() = runTest {
+        val notified = mutableListOf<InboxItem>()
+        fake.inboxItemsToReturn = listOf(sampleItem(id = "i1"))
+        val viewModel = viewModel(
+            hasReplyAction = { false },
+            notifyReadyReply = { notified += it }
+        )
+        advanceUntilIdle()
+
+        assertTrue(notified.isEmpty())
+    }
+
+    @Test
+    fun `an item without a draft never notifies`() = runTest {
+        val notified = mutableListOf<InboxItem>()
+        fake.inboxItemsToReturn = listOf(sampleItem(id = "i1", suggestedReply = "   "))
+        val viewModel = viewModel(notifyReadyReply = { notified += it })
+        advanceUntilIdle()
+
+        assertTrue(notified.isEmpty())
     }
 }
