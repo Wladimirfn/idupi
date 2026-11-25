@@ -290,6 +290,7 @@ export function buildHealthDigestPrompt({
         "- recommendations: up to 5 concrete and kind suggestions in the owner's interest (move more, keep a regular bedtime, take a break from the screen); never medical, never a diagnosis, never medication.",
         "- agendaNotes: up to 4 notes that connect today's or tomorrow's agenda with the data (little sleep before a full morning, no exercise with a quiet day); empty array when there is no agenda or no data to connect.",
         "- language: write summary, highlights, recommendations and agendaNotes in neutral Latin American Spanish, second person \"tú\"; never voseo or regional slang (Argentine, Spanish-from-Spain \"vosotros\", etc.).",
+        "- durations: write any duration of 60 minutes or more as hours and minutes (509 minutes -> \"8 h 29 min\"); keep shorter ones in minutes.",
         "",
         `Health data, last ${DIGEST_DAYS} days, oldest first:`,
         "<untrusted_health_data>",
