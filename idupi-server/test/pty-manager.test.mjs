@@ -172,6 +172,24 @@ test("create defaults cwd to the home directory and shell per platform", async (
     }
 });
 
+test("default Windows shell switches the console to UTF-8 so accents render", async () => {
+    if (process.platform !== "win32") return;
+    const { manager, hosts } = makeHarness();
+    await manager.create({ cols: 80, rows: 24 });
+    const args = hosts.at(-1).args;
+    const command = args.slice(args.indexOf("--") + 1);
+    assert.deepEqual(command.slice(0, 4), ["powershell.exe", "-NoLogo", "-NoExit", "-Command"]);
+    assert.match(command[4], /\[Console\]::OutputEncoding\s*=.*UTF8/);
+    assert.match(command[4], /\[Console\]::InputEncoding\s*=/);
+});
+
+test("an explicit shell is spawned exactly as given", async () => {
+    const { manager, hosts } = makeHarness();
+    await manager.create({ cols: 80, rows: 24, shell: ["pwsh.exe", "-NoLogo"] });
+    const args = hosts.at(-1).args;
+    assert.deepEqual(args.slice(args.indexOf("--") + 1), ["pwsh.exe", "-NoLogo"]);
+});
+
 test("create resolves a relative cwd and stores the absolute path", async (t) => {
     // The fixture lives under the working directory, not the OS temp dir: on CI
     // the checkout (D:) and %TEMP% (C:) are on different drives, where no
