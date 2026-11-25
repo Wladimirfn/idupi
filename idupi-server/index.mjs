@@ -67,6 +67,12 @@ import { createSystemMetricsRoutes } from "./lib/system-metrics-routes.mjs";
 // per 2 s, and taskkill behind the same token as every other route.
 import { createOsProcesses, isProtectedPid } from "./lib/os-processes.mjs";
 import { createOsProcessesRoutes } from "./lib/os-processes-routes.mjs";
+// Phone inbox (phone-inbox, T1): notification store, serialized one-shot agent
+// analysis and the phone-facing routes. The agent runs with tools denied and a
+// throwaway cwd; see lib/inbox-agent.mjs for the per-CLI argv contract.
+import { createInboxAgentRunner } from "./lib/inbox-agent.mjs";
+import { createInboxStore } from "./lib/inbox-store.mjs";
+import { createInboxRoutes } from "./lib/inbox-routes.mjs";
 // Browser view of those same PTYs (live-shared-terminals T2): loopback-only
 // static files, served before auth because they hold no secrets.
 import { createTerminalWebRoutes } from "./lib/terminal-web-routes.mjs";
@@ -1288,6 +1294,62 @@ const osProcesses = createOsProcesses({
     log: (...args) => console.log(...args),
 });
 const handleOsProcessesRoute = createOsProcessesRoutes(osProcesses);
+
+// Phone inbox: ids and analysis results live in idupi-server/data (gitignored).
+// The runner resolves each installed CLI to its real executable/JS entry point
+// because npm's shims are .cmd/.ps1 files and must never go through a shell.
+const inboxStore = createInboxStore({
+    dataDir: fileURLToPath(new URL("./data", import.meta.url)),
+});
+const inboxRunner = createInboxAgentRunner({
+    resolveCommand: resolveInboxAgentCommand,
+});
+const handleInboxRoute = createInboxRoutes({
+    store: inboxStore,
+    runner: inboxRunner,
+    openCodeModels: () => openCodeCli.listAllModels(),
+});
+
+/**
+ * Resolves WHAT to spawn for an inbox agent without a shell. Mirrors the
+ * existing engine spawning rules: opencode has a real .exe behind its shim;
+ * claude is either the native .exe or a JS entry point run through node; codex
+ * and pi are Node entry points. A missing install falls back to the bare name
+ * so the run fails with a short "executable not found" instead of a crash.
+ */
+function resolveInboxAgentCommand(agent) {
+    if (agent === "opencode") {
+        return { command: resolveOpenCodeExePath(), prefixArgs: [] };
+    }
+    if (agent === "claude") {
+        const target = resolveClaudeSpawnTarget();
+        if (target && target.exe) return { command: target.exe, prefixArgs: [] };
+        if (target && target.js) return { command: process.execPath, prefixArgs: [target.js] };
+        throw new Error("Claude CLI not found");
+    }
+    if (agent === "codex") {
+        const script = join(
+            homedir(), "AppData", "Roaming", "npm", "node_modules",
+            "@openai", "codex", "bin", "codex.js",
+        );
+        if (existsSync(script)) return { command: process.execPath, prefixArgs: [script] };
+        return { command: "codex", prefixArgs: [] };
+    }
+    if (agent === "pi") {
+        const bundle = join(
+            homedir(), "AppData", "Roaming", "npm", "node_modules",
+            "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js",
+        );
+        const legacy = join(
+            homedir(), "AppData", "Roaming", "npm", "node_modules",
+            "@earendil-works", "pi-coding-agent", "dist", "cli.js",
+        );
+        const script = existsSync(bundle) ? bundle : legacy;
+        if (existsSync(script)) return { command: process.execPath, prefixArgs: [script] };
+        return { command: "pi", prefixArgs: [] };
+    }
+    throw new Error(`unknown agent: ${agent}`);
+}
 
 // Browser view of the shared terminals: page files live in web/terminal, and
 // the xterm assets are the SAME vendored 5.5.0 copy the Android app loads, so
@@ -3190,6 +3252,8 @@ const handleRequest = async (req, res) => {
     if (await handleSystemMetricsRoute(req, res, pathname)) return;
     // PC process list and end-process live in lib/os-processes-routes.mjs.
     if (await handleOsProcessesRoute(req, res, pathname)) return;
+    // Phone inbox items, agent config and model catalog (lib/inbox-routes.mjs).
+    if (await handleInboxRoute(req, res, pathname)) return;
 
     // 0. Stream de eventos del chat (SSE). Long-lived: no responde y sigue abierto.
     if (pathname === "/api/v1/chat/stream" && req.method === "GET") {

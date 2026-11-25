@@ -7,6 +7,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import com.idupi.app.data.connection.ConnectionStorage
+import com.idupi.app.data.inbox.InboxNotifier
 import com.idupi.app.data.notification.DeliveryNotifications
 import com.idupi.app.data.notification.NotificationPermissionState
 import com.idupi.app.data.notification.currentNotificationPermissionPlan
@@ -27,10 +28,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         
         // Auto-cargar perfil de conexión guardado si existe
-        val savedProfile = com.idupi.app.data.connection.ConnectionStorage(this).getProfile()
-        if (savedProfile != null && savedProfile.host.isNotBlank()) {
-            com.idupi.app.data.IduPiClientProvider.configureRealClient(savedProfile)
-        }
+        com.idupi.app.data.IduPiClientProvider.configureFromStorage(this)
         // The delivery poller needs the client configured first.
         (application as IduPiApp).startDeliveryWatcher()
 
@@ -74,13 +72,20 @@ class MainActivity : ComponentActivity() {
      * A delivery notification ("APK lista") carries
      * [DeliveryNotifications.EXTRA_OPEN_DELIVERIES]; honoring it here (cold
      * start and warm taps alike) is what lands the owner on the list instead
-     * of the terminals.
+     * of the terminals. Inbox notifications use the same one-shot mechanism
+     * with [InboxNotifier.EXTRA_OPEN_ALERTS] for Alertas.
      */
     private fun openRequestedScreen(intent: Intent?) {
         val openDeliveries =
             intent?.getBooleanExtra(DeliveryNotifications.EXTRA_OPEN_DELIVERIES, false) == true
         if (openDeliveries) {
             AppNavigationIntents.request(Screen.DELIVERIES)
+            return
+        }
+        val openAlerts =
+            intent?.getBooleanExtra(InboxNotifier.EXTRA_OPEN_ALERTS, false) == true
+        if (openAlerts) {
+            AppNavigationIntents.request(Screen.ALERTS)
         }
     }
 }

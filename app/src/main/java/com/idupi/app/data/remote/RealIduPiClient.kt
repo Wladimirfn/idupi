@@ -855,6 +855,43 @@ class RealIduPiClient : IduPiClient {
         }
     }
 
+    // --- Phone inbox (phone-inbox T2) ---
+
+    override suspend fun postInboxMessage(message: InboxMessageRequest): InboxItem =
+        send(HttpMethod.Post, "/api/v1/inbox/messages") {
+            contentType(ContentType.Application.Json)
+            setBody(message)
+        }.body<InboxItemEnvelope>().item
+
+    override suspend fun getInboxItems(limit: Int): List<InboxItem> =
+        send(HttpMethod.Get, "/api/v1/inbox") {
+            parameter("limit", limit)
+        }.body<InboxItemsEnvelope>().items
+
+    override suspend fun setInboxItemState(id: String, state: String): InboxItem =
+        send(HttpMethod.Post, "/api/v1/inbox/$id/state") {
+            contentType(ContentType.Application.Json)
+            setBody(InboxStatePayload(state))
+        }.body<InboxItemEnvelope>().item
+
+    override suspend fun retryInboxItem(id: String): InboxItem =
+        send(HttpMethod.Post, "/api/v1/inbox/$id/retry")
+            .body<InboxItemEnvelope>().item
+
+    override suspend fun getInboxConfig(): InboxConfig =
+        send(HttpMethod.Get, "/api/v1/inbox/config").body()
+
+    override suspend fun updateInboxConfig(agent: String, model: String, effort: String): InboxConfig =
+        send(HttpMethod.Put, "/api/v1/inbox/config") {
+            contentType(ContentType.Application.Json)
+            setBody(InboxConfigPayload(agent = agent, model = model, effort = effort))
+        }.body()
+
+    override suspend fun getInboxModels(agent: String): List<String> =
+        send(HttpMethod.Get, "/api/v1/inbox/models") {
+            parameter("agent", agent)
+        }.body<InboxModelsEnvelope>().models
+
     companion object {
         private const val TAG = "RealIduPiClient"
     }
@@ -862,6 +899,29 @@ class RealIduPiClient : IduPiClient {
 
 @Serializable
 private data class ApplySddProfilePayload(val profileId: String)
+
+// --- Phone inbox wire payloads (phone-inbox T2) ---
+
+/** `POST /inbox/messages`, `/inbox/{id}/state` and `/inbox/{id}/retry` wrap the item. */
+@Serializable
+private data class InboxItemEnvelope(val item: InboxItem)
+
+/** `GET /inbox?limit=N`. */
+@Serializable
+private data class InboxItemsEnvelope(val items: List<InboxItem> = emptyList())
+
+/** `GET /inbox/models?agent=...`. */
+@Serializable
+private data class InboxModelsEnvelope(val models: List<String> = emptyList())
+
+/** `POST /inbox/{id}/state` body. */
+@Serializable
+private data class InboxStatePayload(val state: String)
+
+/** `PUT /inbox/config` body; the server keeps `agents`/`efforts` server-side. */
+@Serializable
+private data class InboxConfigPayload(val agent: String, val model: String, val effort: String)
+
 
 /**
  * The host/port/token every request is built from, as one immutable value.

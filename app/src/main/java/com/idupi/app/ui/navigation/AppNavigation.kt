@@ -57,6 +57,7 @@ fun AppNavigation() {
 
     val connectionViewModel: ConnectionViewModel = viewModel()
     val alertsViewModel: AlertsViewModel = viewModel()
+    val inboxSettingsViewModel: InboxSettingsViewModel = viewModel()
     val projectsViewModel: ProjectsViewModel = viewModel()
     val terminalsViewModel: TerminalsViewModel = viewModel()
     val consoleViewModel: ConsoleViewModel = viewModel()
@@ -64,6 +65,10 @@ fun AppNavigation() {
     val remoteViewModel: RemoteScreenViewModel = viewModel()
     val deliveriesViewModel: DeliveriesViewModel = viewModel()
     val dashboardViewModel: DashboardViewModel = viewModel()
+
+    // Drawer badge = open high-importance inbox items (phone-inbox T5). The
+    // ViewModel publishes this while Alertas polls, so the badge is live.
+    val unreadHighAlerts by alertsViewModel.unreadCount.collectAsState()
 
     // Interactive terminal target chosen from the Terminals screen. The
     // Terminals screen creates the PTY first and passes its id; null would
@@ -217,7 +222,7 @@ fun AppNavigation() {
                                         icon = {
                                             Box {
                                                 Icon(imageVector = icon, contentDescription = screen.title, tint = itemTextClr)
-                                                if (screen == Screen.ALERTS && alertsViewModel.unreadCount > 0) {
+                                                if (screen == Screen.ALERTS && unreadHighAlerts > 0) {
                                                     Box(
                                                         modifier = Modifier
                                                             .size(8.dp)
@@ -295,6 +300,7 @@ fun AppNavigation() {
                             )
                             Screen.SETTINGS -> SettingsScreen(
                                 mainViewModel = mainViewModel,
+                                inboxViewModel = inboxSettingsViewModel,
                                 onMenuClick = { scope.launch { drawerState.open() } },
                                 onNavigateToConnection = { navigateTo(Screen.CONNECTION) },
                                 onNavigateToWelcome = { navigateTo(Screen.WELCOME) },

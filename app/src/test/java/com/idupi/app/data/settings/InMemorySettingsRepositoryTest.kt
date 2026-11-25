@@ -1,5 +1,6 @@
 package com.idupi.app.data.settings
 
+import com.idupi.app.domain.model.InboxSettings
 import com.idupi.app.domain.model.ThemeColors
 import com.idupi.app.domain.model.ThemeMode
 import com.idupi.app.domain.model.ThemePreset
@@ -56,5 +57,43 @@ class InMemorySettingsRepositoryTest {
         repo.setCustomColors(custom)
 
         assertEquals(custom, repo.themeSettings.first().custom)
+    }
+
+    @Test
+    fun `fresh repository captures every app and leaves auto-reply off`() = runTest {
+        val settings = InMemorySettingsRepository().inboxSettings.first()
+
+        assertEquals(InboxSettings(), settings)
+        assertEquals(4, settings.enabledApps.size)
+        assertEquals(false, settings.autoReplyEnabled)
+    }
+
+    @Test
+    fun `inbox setters update only their own field`() = runTest {
+        val repo = InMemorySettingsRepository()
+
+        repo.setInboxEnabledApps(setOf("gmail"))
+        repo.setInboxReminderIntervalMinutes(5)
+        repo.setInboxRemindMinImportance("medium")
+        repo.setInboxAutoReplyEnabled(true)
+        repo.setInboxAutoReplyDelayMinutes(10)
+        repo.setInboxAutoReplyTemplate("Plantilla")
+
+        val settings = repo.inboxSettings.first()
+        assertEquals(setOf("gmail"), settings.enabledApps)
+        assertEquals(5, settings.reminderIntervalMinutes)
+        assertEquals("medium", settings.remindMinImportance)
+        assertEquals(true, settings.autoReplyEnabled)
+        assertEquals(10, settings.autoReplyDelayMinutes)
+        assertEquals("Plantilla", settings.autoReplyTemplate)
+    }
+
+    @Test
+    fun `an unknown reminder importance reads back as high`() = runTest {
+        val repo = InMemorySettingsRepository()
+
+        repo.setInboxRemindMinImportance("urgent")
+
+        assertEquals("high", repo.inboxSettings.first().remindMinImportance)
     }
 }

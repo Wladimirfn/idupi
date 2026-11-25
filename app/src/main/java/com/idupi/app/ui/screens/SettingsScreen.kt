@@ -46,6 +46,7 @@ import com.idupi.app.ui.theme.StatusError
 import com.idupi.app.ui.theme.TextPrimary
 import com.idupi.app.ui.theme.TextSecondary
 import com.idupi.app.ui.theme.ThemePalettes
+import com.idupi.app.viewmodel.InboxSettingsViewModel
 import com.idupi.app.viewmodel.MainViewModel
 import java.util.Locale
 
@@ -53,6 +54,7 @@ import java.util.Locale
 @Composable
 fun SettingsScreen(
     mainViewModel: MainViewModel,
+    inboxViewModel: InboxSettingsViewModel,
     onMenuClick: () -> Unit,
     onNavigateToConnection: () -> Unit,
     onNavigateToWelcome: () -> Unit,
@@ -103,6 +105,8 @@ fun SettingsScreen(
                 onCustomColorsChange = { mainViewModel.setCustomThemeColors(it) }
             )
 
+            InboxAlertsSection(inboxViewModel)
+
             AboutSection()
 
             CommandsSection(onNavigateToCommands = onNavigateToCommands)
@@ -129,7 +133,7 @@ fun SettingsScreen(
 
 /** Section title + its card, kept tight instead of inheriting the full section gap. */
 @Composable
-private fun SettingsSection(
+internal fun SettingsSection(
     title: String,
     content: @Composable ColumnScope.() -> Unit
 ) {
