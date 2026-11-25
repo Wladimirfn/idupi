@@ -297,3 +297,8 @@ then the owner wants the whole chain merged to main.
   data (week comparison, recommendations, agenda notes, "No es consejo
   médico"). Pending on the device: install 1.48, Health Connect permissions,
   wellbeing/HC samples reaching the PC, Salud screen.
+- Live bug (owner): Salud showed the digest but "Aún no hay datos de salud":
+  `HealthWorkout.type` was required and the Huawei workout has no type, so
+  the whole summary failed to decode. Fixed (optional workout/topApp fields,
+  decode test with the live shape); int fields verified integer in the live
+  summary. 50 / 1.49-salud, 868 tests.
