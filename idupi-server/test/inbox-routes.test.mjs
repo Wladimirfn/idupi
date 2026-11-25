@@ -144,7 +144,28 @@ test("POST returns 202 and the serialized analysis later lands as ready", async 
     assert.equal(item.category, "Trabajo");
     assert.equal(item.summary, RESULT.summary);
     assert.equal(item.suggestedReply, RESULT.suggestedReply);
+    assert.equal(item.promotion, false);
     assert.equal(item.error, null);
+});
+
+test("a promotion analysis stores the flag so the app can collapse it", async (t) => {
+    const promotionResult = {
+        importance: "low",
+        category: "Promociones",
+        summary: "Oferta de la tienda hasta el domingo.",
+        suggestedReply: "",
+        promotion: true,
+    };
+    const runner = { run: async () => ({ ...promotionResult }) };
+    const { base } = await startHarness(t, { runner });
+
+    const { body } = await postMessage(base);
+    const item = await waitReady(base, body.item.id);
+
+    assert.equal(item.status, "ready");
+    assert.equal(item.promotion, true);
+    assert.equal(item.importance, "low");
+    assert.equal(item.suggestedReply, "");
 });
 
 test("a failing analysis marks the item failed with a short single-line error", async (t) => {

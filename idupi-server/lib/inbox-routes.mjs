@@ -19,11 +19,17 @@ import {
     isValidAppId,
 } from "./inbox-store.mjs";
 import {
+    PROMOTIONS_APP,
+    PROMOTIONS_CONVERSATION,
+    PROMOTIONS_SCOPE,
     buildDigestPrompt,
+    buildPromotionsDigestPrompt,
     digestInputHash,
     digestKey,
     emptyDigest,
     parseDigestResult,
+    parsePromotionsDigestResult,
+    promotionsDigestKey,
     selectDigestItems,
 } from "./inbox-digest.mjs";
 import { conflictsWith } from "./phone-calendar-store.mjs";
@@ -155,6 +161,7 @@ function publicDigest(record) {
     return {
         app: record.app,
         conversation: record.conversation,
+        scope: record.scope ?? null,
         itemCount: record.itemCount,
         summary: record.summary,
         pendingForOwner: record.pendingForOwner,
@@ -245,6 +252,7 @@ export function createInboxRoutes({
                     category: result?.category ?? "",
                     summary: result?.summary ?? "",
                     suggestedReply: result?.suggestedReply ?? "",
+                    promotion: result?.promotion === true,
                     event,
                     eventConflicts: calendarEventConflicts(event),
                     error: null,
@@ -383,18 +391,32 @@ export function createInboxRoutes({
         }
     }
 
-    async function runDigest(app, conversation, inputHash, items) {
-        const key = digestKey(app, conversation);
+    /**
+     * Runs one digest job and stores its result. Shared by the per-conversation
+     * digest and the promotions digest (alerts-flow A2); [parse] receives the
+     * agent id and stdout so the promotions parser can force an empty reply.
+     */
+    async function runDigestJob({
+        app,
+        conversation,
+        scope = null,
+        key,
+        buildPrompt,
+        items,
+        parse,
+        inputHash,
+    }) {
         try {
             const config = store.getConfig();
-            const prompt = buildDigestPrompt({ app, conversation, items });
             try {
                 if (typeof runner?.runPrompt !== "function") {
                     throw new Error("agent runner cannot run digests");
                 }
+                const prompt = buildPrompt();
                 const stdout = await runner.runPrompt(config, prompt);
-                const parsed = parseDigestResult(config.agent, stdout);
+                const parsed = parse(config.agent, stdout);
                 digestStore.set(app, conversation, {
+                    scope,
                     itemCount: items.length,
                     summary: parsed.summary,
                     pendingForOwner: parsed.pendingForOwner,
@@ -406,6 +428,7 @@ export function createInboxRoutes({
                 });
             } catch (err) {
                 digestStore.set(app, conversation, {
+                    scope,
                     itemCount: items.length,
                     summary: "",
                     pendingForOwner: [],
@@ -423,34 +446,49 @@ export function createInboxRoutes({
         }
     }
 
-    function enqueueDigest(app, conversation, inputHash, items) {
+    function enqueueDigestJob(run) {
         queueTail = queueTail
-            .then(
-                () => runDigest(app, conversation, inputHash, items),
-                () => runDigest(app, conversation, inputHash, items),
-            )
+            .then(run, run)
             .catch(() => {});
     }
 
-    async function postDigest(req, res) {
-        if (!digestStore) {
-            sendError(res, 503, "digest is not configured", "DIGEST_UNAVAILABLE");
-            return;
-        }
-        const body = await readDigestBody(req, res);
-        if (!body) return;
+    function enqueueDigest(app, conversation, inputHash, items) {
+        enqueueDigestJob(() => runDigestJob({
+            app,
+            conversation,
+            key: digestKey(app, conversation),
+            buildPrompt: () => buildDigestPrompt({ app, conversation, items }),
+            items,
+            parse: parseDigestResult,
+            inputHash,
+        }));
+    }
 
-        let app;
-        let conversation;
-        try {
-            app = requiredApp(body);
-            conversation = requiredConversation(body);
-        } catch (err) {
-            sendError(res, 400, err.message, err.code || "INVALID_MESSAGE");
-            return;
-        }
+    /**
+     * One digest over all open promotions, regardless of app (alerts-flow A2).
+     * It shares the serial queue, the caps and the hash cache with the
+     * conversation digest; only the prompt and the forced empty reply differ.
+     */
+    function enqueuePromotionsDigest(inputHash, items) {
+        enqueueDigestJob(() => runDigestJob({
+            app: PROMOTIONS_APP,
+            conversation: PROMOTIONS_CONVERSATION,
+            scope: PROMOTIONS_SCOPE,
+            key: promotionsDigestKey(),
+            buildPrompt: () => buildPromotionsDigestPrompt({ items }),
+            items,
+            parse: parsePromotionsDigestResult,
+            inputHash,
+        }));
+    }
 
-        const items = store.openByConversation(app, conversation);
+    /**
+     * Shared cache/queue contract of both digest scopes: no items means the
+     * cached record is dropped and the empty digest answers; the same input
+     * hash answers the cache (200 ready, 202 analyzing/queued); otherwise the
+     * request stores "analyzing" and enqueues one run.
+     */
+    function answerDigest(res, { app, conversation, scope = null, key, items, enqueue, empty }) {
         if (items.length === 0) {
             try {
                 digestStore.remove(app, conversation);
@@ -458,13 +496,12 @@ export function createInboxRoutes({
                 sendError(res, 500, shortError(err), "INTERNAL");
                 return;
             }
-            sendJson(res, 200, { digest: emptyDigest(app, conversation) });
+            sendJson(res, 200, { digest: empty });
             return;
         }
 
         const selected = selectDigestItems(items);
         const inputHash = digestInputHash(selected);
-        const key = digestKey(app, conversation);
 
         let cached = null;
         try {
@@ -476,13 +513,13 @@ export function createInboxRoutes({
             sendJson(res, 200, { digest: publicDigest(cached) });
             return;
         }
-        if (cached && cached.inputHash === inputHash && cached.status === "analyzing") {
-            sendJson(res, 202, { digest: publicDigest(cached) });
-            return;
-        }
-        // A job for this exact snapshot is already queued behind the analysis
-        // queue: report analyzing instead of stacking a second run.
-        if (cached && cached.inputHash === inputHash && digestJobs.has(key)) {
+        // Analyzing, or a job for this exact snapshot already queued behind
+        // the analysis queue: report that state instead of stacking a run.
+        if (
+            cached &&
+            cached.inputHash === inputHash &&
+            (cached.status === "analyzing" || digestJobs.has(key))
+        ) {
             sendJson(res, 202, { digest: publicDigest(cached) });
             return;
         }
@@ -490,6 +527,7 @@ export function createInboxRoutes({
         const analyzing = {
             app,
             conversation,
+            scope,
             itemCount: selected.length,
             summary: "",
             pendingForOwner: [],
@@ -506,13 +544,76 @@ export function createInboxRoutes({
             return;
         }
         digestJobs.add(key);
-        enqueueDigest(app, conversation, inputHash, selected);
+        enqueue(inputHash, selected);
         sendJson(res, 202, { digest: publicDigest(analyzing) });
+    }
+
+    async function postDigest(req, res) {
+        if (!digestStore) {
+            sendError(res, 503, "digest is not configured", "DIGEST_UNAVAILABLE");
+            return;
+        }
+        const body = await readDigestBody(req, res);
+        if (!body) return;
+
+        const scope = body.scope;
+        if (scope !== undefined && scope !== null) {
+            if (scope !== PROMOTIONS_SCOPE) {
+                sendError(res, 400, "scope must be promotions", "INVALID_SCOPE");
+                return;
+            }
+            postPromotionsDigest(res);
+            return;
+        }
+
+        let app;
+        let conversation;
+        try {
+            app = requiredApp(body);
+            conversation = requiredConversation(body);
+        } catch (err) {
+            sendError(res, 400, err.message, err.code || "INVALID_MESSAGE");
+            return;
+        }
+
+        answerDigest(res, {
+            app,
+            conversation,
+            key: digestKey(app, conversation),
+            items: store.openByConversation(app, conversation),
+            enqueue: (inputHash, items) => enqueueDigest(app, conversation, inputHash, items),
+            empty: emptyDigest(app, conversation),
+        });
+    }
+
+    /**
+     * Promotions digest request (alerts-flow A2): one summary over every open
+     * promotion in every app. Same cache contract as a conversation digest.
+     */
+    function postPromotionsDigest(res) {
+        answerDigest(res, {
+            app: PROMOTIONS_APP,
+            conversation: PROMOTIONS_CONVERSATION,
+            scope: PROMOTIONS_SCOPE,
+            key: promotionsDigestKey(),
+            items: store.openPromotions(),
+            enqueue: enqueuePromotionsDigest,
+            empty: emptyDigest(PROMOTIONS_APP, PROMOTIONS_CONVERSATION, 0, PROMOTIONS_SCOPE),
+        });
     }
 
     function getDigest(req, res) {
         if (!digestStore) {
             sendError(res, 503, "digest is not configured", "DIGEST_UNAVAILABLE");
+            return;
+        }
+        const rawScope = queryValue(req, "scope");
+        if (rawScope !== null) {
+            if (rawScope !== PROMOTIONS_SCOPE) {
+                sendError(res, 400, "scope must be promotions", "INVALID_SCOPE");
+                return;
+            }
+            getPromotionsDigest(res);
             return;
         }
         const rawApp = queryValue(req, "app") ?? "";
@@ -539,6 +640,28 @@ export function createInboxRoutes({
         }
         const openCount = store.openByConversation(rawApp, conversation).length;
         sendJson(res, 200, { digest: emptyDigest(rawApp, conversation, openCount) });
+    }
+
+    function getPromotionsDigest(res) {
+        let stored = null;
+        try {
+            stored = digestStore.get(PROMOTIONS_APP, PROMOTIONS_CONVERSATION);
+        } catch {
+            stored = null;
+        }
+        if (stored) {
+            sendJson(res, 200, { digest: publicDigest(stored) });
+            return;
+        }
+        const openCount = store.openPromotions().length;
+        sendJson(res, 200, {
+            digest: emptyDigest(
+                PROMOTIONS_APP,
+                PROMOTIONS_CONVERSATION,
+                openCount,
+                PROMOTIONS_SCOPE,
+            ),
+        });
     }
 
     async function postConversationState(req, res) {
@@ -572,6 +695,38 @@ export function createInboxRoutes({
         if (digestStore) {
             try {
                 digestStore.remove(app, conversation);
+            } catch {
+                // The state change already happened; a stale digest is pruned
+                // on the next request or restart.
+            }
+        }
+        sendJson(res, 200, { closed: closed.length, items: closed });
+    }
+
+    /**
+     * Closes every open promotion item in one write (alerts-flow A2) and drops
+     * the cached promotions digest: nothing is left to summarize.
+     */
+    async function postPromotionsState(req, res) {
+        const body = await readDigestBody(req, res);
+        if (!body) return;
+
+        const state = body.state;
+        if (state !== "handled" && state !== "dismissed") {
+            sendError(res, 400, "state must be handled or dismissed", "INVALID_STATE");
+            return;
+        }
+
+        let closed;
+        try {
+            closed = store.closePromotions(state, stamp());
+        } catch (err) {
+            sendError(res, 400, (err && err.message) || "invalid state", "INVALID_STATE");
+            return;
+        }
+        if (digestStore) {
+            try {
+                digestStore.remove(PROMOTIONS_APP, PROMOTIONS_CONVERSATION);
             } catch {
                 // The state change already happened; a stale digest is pruned
                 // on the next request or restart.
@@ -721,7 +876,11 @@ export function createInboxRoutes({
     // have an open conversation.
     if (digestStore) {
         try {
-            digestStore.pruneExcept(store.openConversationKeys());
+            const keep = store.openConversationKeys();
+            // The promotions record has no conversation of its own: keep it
+            // while any open promotion remains (alerts-flow A2).
+            if (store.openPromotions(1).length > 0) keep.add(promotionsDigestKey());
+            digestStore.pruneExcept(keep);
         } catch {
             // A corrupt digest file is already ignored by the store.
         }
@@ -797,6 +956,16 @@ export function createInboxRoutes({
                 return true;
             }
             await postConversationState(req, res);
+            return true;
+        }
+
+        // POST /inbox/promotions/state: close every open promotion (alerts-flow A2).
+        if (parts.length === 2 && parts[0] === "promotions" && parts[1] === "state") {
+            if (req.method !== "POST") {
+                methodNotAllowed(res, "POST");
+                return true;
+            }
+            await postPromotionsState(req, res);
             return true;
         }
 

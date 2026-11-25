@@ -3,6 +3,7 @@ package com.idupi.app.viewmodel
 import com.idupi.app.FakeClientSource
 import com.idupi.app.FakeIduPiClient
 import com.idupi.app.MainDispatcherRule
+import com.idupi.app.data.inbox.InboxConversationGroups
 import com.idupi.app.data.settings.InMemorySettingsRepository
 import com.idupi.app.data.settings.SettingsRepository
 import com.idupi.app.domain.model.InboxDigest
@@ -46,6 +47,7 @@ class AlertsViewModelTest {
         importance: String? = "high",
         suggestedReply: String = "Ahí lo veo",
         status: String = InboxItemStatus.READY,
+        promotion: Boolean = false,
     ) = InboxItem(
         id = id,
         app = app,
@@ -60,7 +62,8 @@ class AlertsViewModelTest {
         category = "Trabajo",
         summary = "resumen",
         suggestedReply = suggestedReply,
-        state = state
+        state = state,
+        promotion = promotion
     )
 
     private fun viewModel(
@@ -547,5 +550,104 @@ class AlertsViewModelTest {
         advanceUntilIdle()
 
         assertFalse(viewModel.isSilenced("whatsapp|Ana"))
+    }
+
+    // --- promotions (alerts-flow A2) ---------------------------------------
+
+    @Test
+    fun `promotions are not summarized automatically`() = runTest {
+        fake.inboxItemsToReturn = listOf(
+            sampleItem(id = "p1", promotion = true, importance = "low"),
+            sampleItem(id = "p2", promotion = true, importance = "low"),
+            sampleItem(id = "p3", promotion = true, importance = "low")
+        )
+
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        assertEquals(0, fake.promotionsDigestRequests)
+        val promotions = viewModel.visibleGroups.single()
+        assertEquals(InboxConversationGroups.PROMOTIONS_KEY, promotions.conversationKey)
+    }
+
+    @Test
+    fun `requestPromotionsDigest stores the summary under the promotions key`() = runTest {
+        fake.inboxItemsToReturn = listOf(
+            sampleItem(id = "p1", app = "gmail", promotion = true, importance = "low"),
+            sampleItem(id = "p2", app = "telegram", promotion = true, importance = "low")
+        )
+        fake.inboxPromotionsDigestToReturn = InboxDigest(
+            app = "scope",
+            conversation = "promotions",
+            scope = "promotions",
+            itemCount = 2,
+            summary = "• Tienda: 50% hasta el domingo.",
+            status = "ready"
+        )
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        viewModel.requestPromotionsDigest()
+        advanceUntilIdle()
+
+        assertEquals(1, fake.promotionsDigestRequests)
+        val digest = viewModel.digests.value[InboxConversationGroups.PROMOTIONS_KEY]
+        assertEquals("• Tienda: 50% hasta el domingo.", digest?.summary)
+        assertTrue(viewModel.requestingDigests.value.isEmpty())
+    }
+
+    @Test
+    fun `the important filter never shows promotions`() = runTest {
+        fake.inboxItemsToReturn = listOf(
+            sampleItem(
+                id = "promo",
+                conversation = "Ofertas",
+                promotion = true,
+                importance = "high"
+            ),
+            sampleItem(id = "real", importance = "high")
+        )
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        viewModel.setFilter(InboxFilter.IMPORTANT)
+
+        assertEquals(listOf("real"), viewModel.visibleItems.map { it.id })
+        assertEquals(listOf("whatsapp|Ana"), viewModel.visibleGroups.map { it.conversationKey })
+    }
+
+    @Test
+    fun `markPromotionsHandled closes every promotion in one bulk call`() = runTest {
+        fake.inboxItemsToReturn = listOf(
+            sampleItem(id = "p1", app = "gmail", promotion = true, importance = "low"),
+            sampleItem(id = "p2", app = "telegram", promotion = true, importance = "low"),
+            sampleItem(id = "normal", importance = "high")
+        )
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        val promotions = viewModel.visibleGroups.last()
+        viewModel.markPromotionsHandled(promotions)
+        advanceUntilIdle()
+
+        assertEquals(listOf(InboxItemState.HANDLED), fake.inboxPromotionsStates)
+        assertEquals(listOf("normal"), viewModel.items.value.map { it.id })
+        assertNull(viewModel.digests.value[InboxConversationGroups.PROMOTIONS_KEY])
+    }
+
+    @Test
+    fun `a failed bulk close puts the promotions back`() = runTest {
+        fake.inboxItemsToReturn = listOf(
+            sampleItem(id = "p1", promotion = true, importance = "low")
+        )
+        fake.failInboxPromotionsStateWith = RuntimeException("server off")
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        viewModel.markPromotionsHandled(viewModel.visibleGroups.single())
+        advanceUntilIdle()
+
+        assertEquals(listOf("p1"), viewModel.items.value.map { it.id })
+        assertNotNull(viewModel.errorMessage.value)
     }
 }

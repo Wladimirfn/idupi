@@ -12,6 +12,7 @@ import com.idupi.app.data.inbox.inboxConversationKey
 import com.idupi.app.data.settings.SettingsProvider
 import com.idupi.app.data.settings.SettingsRepository
 import com.idupi.app.domain.model.InboxDigest
+import com.idupi.app.domain.model.InboxDigestScope
 import com.idupi.app.domain.model.InboxDigestStatus
 import com.idupi.app.domain.model.InboxImportance
 import com.idupi.app.domain.model.InboxItem
@@ -229,6 +230,39 @@ class AlertsViewModel(
     }
 
     /**
+     * Requests the one promotions summary (alerts-flow A2). Unlike a chat, it
+     * never runs automatically: the owner asks for it with "Resumir".
+     */
+    fun requestPromotionsDigest() {
+        val key = InboxConversationGroups.PROMOTIONS_KEY
+        if (key in _requestingDigests.value) return
+        viewModelScope.launch { requestPromotionsDigestNow() }
+    }
+
+    /**
+     * Closes every open promotion in one call (alerts-flow A2). The card
+     * leaves immediately and comes back only if the call fails.
+     */
+    fun markPromotionsHandled(group: InboxConversationGroup) {
+        val ids = group.items.mapTo(mutableSetOf()) { it.id }
+        val previous = _items.value
+        publish(previous.filterNot { it.id in ids })
+        removeDigest(InboxConversationGroups.PROMOTIONS_KEY)
+        viewModelScope.launch {
+            try {
+                client.setInboxPromotionsState(InboxItemState.HANDLED)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to close promotions", e)
+                publish(previous)
+                _errorMessage.value =
+                    "No se pudo marcar las promociones como revisadas: ${e.localizedMessage}"
+            }
+        }
+    }
+
+    /**
      * Closes every open item of one chat in a single request (inbox-management
      * T4). The card leaves immediately and comes back only if the call fails.
      */
@@ -399,6 +433,14 @@ class AlertsViewModel(
         _digests.update { current -> current.filterKeys { it in keys } }
 
         for (group in groups) {
+            if (group.conversationKey == InboxConversationGroups.PROMOTIONS_KEY) {
+                // The promotions digest only runs when the owner asks for it
+                // (alerts-flow A2); a run already in flight is just fetched.
+                if (_digests.value[group.conversationKey]?.status == InboxDigestStatus.ANALYZING) {
+                    fetchPromotionsDigest()
+                }
+                continue
+            }
             val existing = _digests.value[group.conversationKey]
             when {
                 existing?.status == InboxDigestStatus.ANALYZING -> fetchDigest(group)
@@ -456,6 +498,46 @@ class AlertsViewModel(
         _digests.update { it - conversationKey }
     }
 
+    /** Fetches the promotions digest while the server still reports analyzing. */
+    private suspend fun fetchPromotionsDigest() {
+        try {
+            val digest = client.getInboxPromotionsDigest()
+            _digests.update { it + (InboxConversationGroups.PROMOTIONS_KEY to digest) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // The PC may be off; the next poll tries again.
+            Log.w(TAG, "Failed to fetch the promotions digest", e)
+        }
+    }
+
+    private suspend fun requestPromotionsDigestNow() {
+        val key = InboxConversationGroups.PROMOTIONS_KEY
+        if (key in _requestingDigests.value) return
+        _requestingDigests.update { it + key }
+        val count = InboxConversationGroups.promotionItems(_items.value).size
+        try {
+            val digest = client.requestInboxPromotionsDigest()
+            _digests.update { it + (key to digest) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to request the promotions digest", e)
+            _digests.update {
+                it + (key to InboxDigest(
+                    app = "scope",
+                    conversation = InboxDigestScope.PROMOTIONS,
+                    scope = InboxDigestScope.PROMOTIONS,
+                    itemCount = count,
+                    status = InboxDigestStatus.FAILED,
+                    error = "No se pudo resumir las promociones: ${e.localizedMessage}"
+                ))
+            }
+        } finally {
+            _requestingDigests.update { it - key }
+        }
+    }
+
     private fun changeState(item: InboxItem, state: String, failureMessage: String) {
         val index = removeOptimistically(item)
         viewModelScope.launch {
@@ -499,7 +581,9 @@ class AlertsViewModel(
     private fun publish(items: List<InboxItem>) {
         _items.value = items.filter { it.state == InboxItemState.OPEN }
         _unreadCount.value = _items.value.count {
-            it.state == InboxItemState.OPEN && it.importance == InboxImportance.HIGH
+            it.state == InboxItemState.OPEN &&
+                it.importance == InboxImportance.HIGH &&
+                !it.promotion
         }
         val keys = InboxConversationGroups.group(_items.value)
             .mapTo(mutableSetOf()) { it.conversationKey }
@@ -523,7 +607,13 @@ class AlertsViewModel(
         fun filterItems(items: List<InboxItem>, filter: InboxFilter): List<InboxItem> =
             items.filter { item ->
                 item.state == InboxItemState.OPEN &&
-                    (filter == InboxFilter.PENDING || item.importance == InboxImportance.HIGH)
+                    when (filter) {
+                        // Promotions are never important, even if an older
+                        // server marked one high (alerts-flow A2).
+                        InboxFilter.IMPORTANT ->
+                            item.importance == InboxImportance.HIGH && !item.promotion
+                        InboxFilter.PENDING -> true
+                    }
             }
     }
 }

@@ -94,6 +94,17 @@ fun isInboxItemAnalyzing(item: InboxItem): Boolean =
 fun isInboxItemFailed(item: InboxItem): Boolean =
     item.status == InboxItemStatus.FAILED
 
+/**
+ * Count line of the Promociones card (alerts-flow A2): "12 promociones de
+ * 4 apps". Spanish nouns agree in number and the app count names how many
+ * sources the offers came from.
+ */
+fun promotionsCountLabel(count: Int, appCount: Int): String {
+    val promotions = if (count == 1) "1 promoción" else "$count promociones"
+    val apps = if (appCount == 1) "1 app" else "$appCount apps"
+    return "$promotions de $apps"
+}
+
 private fun parseInstantMillis(raw: String?): Long? {
     if (raw.isNullOrBlank()) return null
     return runCatching { Instant.parse(raw).toEpochMilli() }.getOrNull()

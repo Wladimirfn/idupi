@@ -128,3 +128,15 @@ class InboxFormatTest {
         assertEquals("WhatsApp", silencedConversationLabel("whatsapp|"))
     }
 }
+
+/** Promotions card count line (alerts-flow A2). */
+class InboxPromotionsFormatTest {
+
+    @Test
+    fun `promotions count line names the promotions and the apps`() {
+        assertEquals("12 promociones de 4 apps", promotionsCountLabel(12, 4))
+        assertEquals("1 promoción de 1 app", promotionsCountLabel(1, 1))
+        assertEquals("2 promociones de 1 app", promotionsCountLabel(2, 1))
+        assertEquals("1 promoción de 3 apps", promotionsCountLabel(1, 3))
+    }
+}

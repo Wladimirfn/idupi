@@ -96,6 +96,23 @@ class InboxModelsTest {
     }
 
     @Test
+    fun `promotion defaults to false and decodes true when the server sends it`() {
+        val withoutField = json.decodeFromString<InboxItem>(
+            """
+            {"id": "old", "app": "gmail", "text": "x", "notificationKey": "k"}
+            """.trimIndent()
+        )
+        assertEquals(false, withoutField.promotion)
+
+        val promotion = json.decodeFromString<InboxItem>(
+            """
+            {"id": "promo", "app": "gmail", "text": "50% hoy", "notificationKey": "k2", "promotion": true}
+            """.trimIndent()
+        )
+        assertEquals(true, promotion.promotion)
+    }
+
+    @Test
     fun `decodes the items envelope as returned by the server`() {
         val payload = """
             {"items": [

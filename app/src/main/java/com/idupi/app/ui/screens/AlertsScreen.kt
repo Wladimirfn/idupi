@@ -106,8 +106,11 @@ import java.time.ZoneId
  * the PC digest, the questions pending for the owner and a suggested reply.
  * Each card menu can silence the chat inside IDUPI ("silence but read"): the
  * phone keeps capturing it, removes its notification from the shade and stops
- * reminding, while the conversation still shows up here. Polling is tied to
- * this screen's composition so leaving Alertas stops the 10 s requests.
+ * reminding, while the conversation still shows up here. Promotions never
+ * render as individual cards: one "Promociones" card at the end of Pendientes
+ * holds every open offer with a single on-demand digest (alerts-flow A2).
+ * Polling is tied to this screen's composition so leaving Alertas stops the
+ * 10 s requests.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -215,7 +218,17 @@ fun AlertsScreen(
                                     !silenced
                                 )
                             }
-                            if (group.count == 1) {
+                            if (group.conversationKey == InboxConversationGroups.PROMOTIONS_KEY) {
+                                PromotionsCard(
+                                    group = group,
+                                    digest = digests[InboxConversationGroups.PROMOTIONS_KEY],
+                                    isRequesting = InboxConversationGroups.PROMOTIONS_KEY in
+                                        requestingDigests,
+                                    nowMillis = nowMillis,
+                                    onRequestDigest = { viewModel.requestPromotionsDigest() },
+                                    onMarkAllHandled = { viewModel.markPromotionsHandled(group) }
+                                )
+                            } else if (group.count == 1) {
                                 val item = group.newestItem
                                 InboxItemCard(
                                     item = item,
@@ -905,6 +918,187 @@ private fun ConversationCard(
                             text = item.text,
                             style = AppTypography.bodySmall,
                             color = TextSecondary
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * One card for every open promotion (alerts-flow A2): count line, source app
+ * chips, one on-demand digest with its bullet summary, the expandable list and
+ * the bulk close. It has no reply buttons: promotions are read, never answered.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PromotionsCard(
+    group: InboxConversationGroup,
+    digest: InboxDigest?,
+    isRequesting: Boolean,
+    nowMillis: Long,
+    onRequestDigest: () -> Unit,
+    onMarkAllHandled: () -> Unit,
+) {
+    var expanded by rememberSaveable(InboxConversationGroups.PROMOTIONS_KEY) {
+        mutableStateOf(false)
+    }
+    val analyzing = isRequesting || digest?.status == InboxDigestStatus.ANALYZING
+    val failed = digest?.status == InboxDigestStatus.FAILED
+    val summary = digest?.summary?.trim().orEmpty()
+    val flags = digest?.pendingForOwner.orEmpty()
+    // One chip per source app, named the way the owner knows it.
+    val appLabels = group.items
+        .distinctBy { it.app }
+        .map { alertAppLabel(it.appLabel, it.app) }
+    val stale = digest == null || digest.itemCount < group.count
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SlateCard),
+        shape = AppShapes.card,
+        border = BorderStroke(1.dp, SlateBorder)
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(AppSpacing.cardPadding)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+        ) {
+            Column {
+                Text(
+                    text = "Promociones",
+                    style = AppTypography.bodyLarge.copy(fontWeight = FontWeight.Bold),
+                    color = TextPrimary
+                )
+                Text(
+                    text = promotionsCountLabel(group.count, appLabels.size),
+                    style = AppTypography.labelSmall,
+                    color = StatusWorking
+                )
+            }
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(AppSpacing.xs),
+                verticalArrangement = Arrangement.spacedBy(AppSpacing.xxs)
+            ) {
+                appLabels.forEach { label ->
+                    Box(
+                        modifier = Modifier
+                            .clip(AppShapes.pill)
+                            .background(SlateBg)
+                            .border(1.dp, SlateBorder, AppShapes.pill)
+                            .padding(horizontal = AppSpacing.sm, vertical = AppSpacing.xxs)
+                    ) {
+                        Text(
+                            text = label,
+                            style = AppTypography.labelSmall,
+                            color = TextSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+
+            when {
+                analyzing -> {
+                    Text("Resumiendo…", style = AppTypography.bodySmall, color = TextSecondary)
+                }
+                failed -> {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+                    ) {
+                        Text(
+                            text = digest?.error?.takeIf { it.isNotBlank() }
+                                ?: "No se pudo resumir las promociones",
+                            style = AppTypography.bodySmall,
+                            color = StatusError,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = onRequestDigest) {
+                            Text(
+                                "Reintentar",
+                                style = AppTypography.labelSmall,
+                                color = PrimaryIndigo
+                            )
+                        }
+                    }
+                }
+                summary.isNotBlank() -> {
+                    Text(summary, style = AppTypography.bodySmall, color = TextPrimary)
+                }
+            }
+
+            if (flags.isNotEmpty()) {
+                Text(
+                    text = "Revisa:",
+                    style = AppTypography.labelSmall,
+                    color = TextSecondary
+                )
+                flags.forEach { entry ->
+                    Text(
+                        text = "• $entry",
+                        style = AppTypography.bodySmall,
+                        color = TextPrimary
+                    )
+                }
+            }
+
+            if (!analyzing && !failed && (summary.isBlank() || stale)) {
+                TextButton(onClick = onRequestDigest) {
+                    Text("Resumir", style = AppTypography.labelSmall, color = PrimaryIndigo)
+                }
+            }
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm),
+                verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
+            ) {
+                CompactOutlinedButton(
+                    label = if (expanded) "Ocultar" else "Ver todas",
+                    onClick = { expanded = !expanded },
+                    contentColor = PrimaryIndigo
+                )
+                CompactOutlinedButton(
+                    label = "Marcar todo revisado",
+                    onClick = onMarkAllHandled,
+                    contentColor = StatusConnected
+                )
+            }
+
+            if (expanded) {
+                group.items.forEach { item ->
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(AppSpacing.xxs)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(
+                                text = alertAppLabel(item.appLabel, item.app),
+                                style = AppTypography.labelSmall,
+                                color = PrimaryIndigo,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = relativeTimeLabel(item, nowMillis),
+                                style = AppTypography.labelSmall,
+                                color = TextSecondary
+                            )
+                        }
+                        Text(
+                            text = item.summary.ifBlank { item.text },
+                            style = AppTypography.bodySmall,
+                            color = TextSecondary,
+                            maxLines = 3,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
                 }

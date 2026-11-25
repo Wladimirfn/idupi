@@ -523,3 +523,58 @@ test("openConversationKeys lists only conversations with an open item", async (t
     const keys = [...store.openConversationKeys()];
     assert.deepEqual(keys, ["whatsapp\u0000Equipo"]);
 });
+
+test("promotion defaults to false, persists and reloads", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: tickingClock() });
+
+    const { item } = store.add(message());
+    assert.equal(item.promotion, false);
+
+    const updated = store.update(item.id, { promotion: true, importance: "low" });
+    assert.equal(updated.promotion, true);
+    assert.throws(() => store.update(item.id, { promotion: "yes" }), /invalid promotion/);
+
+    const reloaded = createInboxStore({ dataDir: dir, log: silentLog });
+    assert.equal(reloaded.get(item.id).promotion, true);
+});
+
+test("items stored before the promotion flag decode as non-promotions", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: tickingClock() });
+    const { item } = store.add(message());
+
+    // Simulate a file written by an older server: no promotion key at all.
+    const file = join(dir, "inbox.json");
+    const parsed = JSON.parse(await readFile(file, "utf8"));
+    delete parsed.items[0].promotion;
+    await writeFile(file, JSON.stringify(parsed), "utf8");
+
+    const reloaded = createInboxStore({ dataDir: dir, log: silentLog });
+    assert.equal(reloaded.get(item.id).promotion, false);
+});
+
+test("openPromotions and closePromotions work across apps", async (t) => {
+    const dir = await makeDir(t);
+    const store = createInboxStore({ dataDir: dir, log: silentLog, now: tickingClock() });
+
+    const a = store.add(message({ text: "oferta", notificationKey: "a" })).item;
+    const b = store.add(message({
+        app: "gmail",
+        conversation: "Newsletter",
+        text: "newsletter",
+        notificationKey: "b",
+    })).item;
+    const normal = store.add(message({ text: "normal", notificationKey: "n" })).item;
+    store.update(a.id, { promotion: true, state: "open" });
+    store.update(b.id, { promotion: true, state: "open" });
+
+    assert.deepEqual(store.openPromotions().map((item) => item.id), [a.id, b.id]);
+
+    const closed = store.closePromotions("handled", "2026-11-24T13:00:00.000Z");
+    assert.deepEqual(closed.map((item) => item.id).sort(), [a.id, b.id].sort());
+    assert.ok(closed.every((item) => item.state === "handled"));
+    assert.equal(store.get(normal.id).state, "open");
+    assert.deepEqual(store.openPromotions(), []);
+    assert.throws(() => store.closePromotions("open"), /invalid state/);
+});

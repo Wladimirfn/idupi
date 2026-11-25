@@ -38,7 +38,7 @@ draft) ready to review.
       accepted the upload (offline -> stays visible). Reply action stays usable.
       One silent IDUPI summary notification ("N alertas: X importantes") replaces
       the pile and opens Alertas. App only. Tests.
-- [ ] A2 Promotions bucket. Agent contract gets a fixed category enum (adds
+- [x] A2 Promotions bucket. Agent contract gets a fixed category enum (adds
       `promocion`); promotions/newsletters skip per-item noise, group into one
       "Promociones" card with one digest (server digest scope by category) and
       "Marcar todo revisado". Server + app. Tests.
@@ -86,7 +86,22 @@ Delivery: about 900–1200 authored lines forecast; stacked PRs to main per task
   silent summary in `InboxNotifier` + process-wide `InboxCaptureSummary`
   (reset when Alertas opens). RED: new tests failed to compile on the missing
   APIs; GREEN: 879 app unit tests, 0 failures (11 new); `assembleDebug` green.
+- 2026-11-25: A2 done. Agent contract uses a boolean `promotion` (explicit A2
+  instruction) instead of a category enum; the parser forces promotion ->
+  importance low + empty suggestedReply, missing/invalid -> false. Store
+  persists the flag (old files decode false) and owns `openPromotions` /
+  `closePromotions`. Digest scope `scope\0promotions` reuses the conversation
+  caps, untrusted blocks and hash cache; prompt asks for offer bullets and flags
+  possible non-promotions, never a reply. `POST /api/v1/inbox/digest
+  {scope:"promotions"}` (and `GET ?scope=promotions`), `POST
+  /api/v1/inbox/promotions/state {state:"handled"}` closes all and drops the
+  digest. App: `InboxItem.promotion`, grouping pulls promotions into one last
+  group (`PROMOTIONS_KEY`), one "Promociones" card (count line, app chips,
+  Resumir, Ver todas, Marcar todo revisado, no reply buttons), reminder/
+  auto-reply policy skips promotions. RED: app compile failed on the missing
+  promotion APIs; GREEN: server 870/870 (13 new), app 891/891 (12 new),
+  `assembleDebug` green.
 
 ## Next step
 
-A2.
+A3.

@@ -144,8 +144,22 @@ interface IduPiClient {
     suspend fun requestInboxDigest(app: String, conversation: String): InboxDigest
     suspend fun getInboxDigest(app: String, conversation: String): InboxDigest
 
+    /**
+     * Promotions digest (alerts-flow A2): one summary over every open
+     * promotion in every app, cached by the server until the promotions
+     * change. It never suggests a reply.
+     */
+    suspend fun requestInboxPromotionsDigest(): InboxDigest
+    suspend fun getInboxPromotionsDigest(): InboxDigest
+
     /** Closes every open item of one chat as `handled` or `dismissed`. */
     suspend fun setInboxConversationState(app: String, conversation: String, state: String): Int
+
+    /**
+     * Closes every open promotion in one call (`handled`); returns how many
+     * items left the list.
+     */
+    suspend fun setInboxPromotionsState(state: String): Int
 
     // Phone status reporting (phone-agent T2). The server stores the snapshot
     // as the phone's latest state and its history; the body field names are the

@@ -274,6 +274,8 @@ export function createInboxStore({
                 category: singleLine(candidate.category, MAX_CATEGORY_CHARS),
                 summary: clip(candidate.summary, 600),
                 suggestedReply: clip(candidate.suggestedReply, 1200),
+                // Items written before alerts-flow A2 have no flag: false.
+                promotion: candidate.promotion === true,
                 event: sanitizeStoredEvent(candidate.event),
                 eventConflicts: sanitizeEventConflicts(candidate.eventConflicts),
                 error: candidate.error ? clip(candidate.error, MAX_ERROR_CHARS) : null,
@@ -375,6 +377,7 @@ export function createInboxStore({
             category: digestOnly ? DIGEST_ONLY_CATEGORY : "",
             summary: "",
             suggestedReply: "",
+            promotion: false,
             event: null,
             eventConflicts: [],
             error: null,
@@ -475,6 +478,35 @@ export function createInboxStore({
         return closed;
     }
 
+    /**
+     * Open promotion items of every app, oldest first (the newest [limit] are
+     * kept). Alerts-flow A2: one promotions digest summarizes them together,
+     * across apps and conversations.
+     */
+    function openPromotions(limit = 200) {
+        const safeLimit = Number.isInteger(limit) && limit > 0 ? limit : 200;
+        return items
+            .filter((item) => item.state === "open" && item.promotion === true)
+            .sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt))
+            .slice(-safeLimit)
+            .map((item) => clone(item));
+    }
+
+    /** Closes every open promotion item in one write (alerts-flow A2). */
+    function closePromotions(state, updatedAt) {
+        if (!CLOSED_STATES.includes(state)) throw new Error("invalid state");
+        const stamp = toIso(updatedAt, clock());
+        const closed = [];
+        for (const item of items) {
+            if (item.state !== "open" || item.promotion !== true) continue;
+            item.state = state;
+            item.updatedAt = stamp;
+            closed.push(clone(item));
+        }
+        if (closed.length > 0) persistItems();
+        return closed;
+    }
+
     /** Digest keys (`app\u0000conversation`) that still have an open item. */
     function openConversationKeys() {
         const keys = new Set();
@@ -510,6 +542,10 @@ export function createInboxStore({
         if ("category" in patch) item.category = singleLine(patch.category, MAX_CATEGORY_CHARS);
         if ("summary" in patch) item.summary = clip(patch.summary, 600);
         if ("suggestedReply" in patch) item.suggestedReply = clip(patch.suggestedReply, 1200);
+        if ("promotion" in patch) {
+            if (typeof patch.promotion !== "boolean") throw new Error("invalid promotion");
+            item.promotion = patch.promotion;
+        }
         if ("event" in patch) item.event = sanitizeStoredEvent(patch.event);
         if ("eventConflicts" in patch) {
             item.eventConflicts = sanitizeEventConflicts(patch.eventConflicts);
@@ -553,6 +589,8 @@ export function createInboxStore({
         related,
         openByConversation,
         closeConversation,
+        openPromotions,
+        closePromotions,
         openConversationKeys,
         update,
         getConfig,

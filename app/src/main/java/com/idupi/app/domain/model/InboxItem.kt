@@ -124,6 +124,13 @@ data class InboxItem(
     val event: InboxEvent? = null,
     /** Existing events that overlap [event]; the card shows them as a warning. */
     val eventConflicts: List<InboxEventConflict> = emptyList(),
+    /**
+     * alerts-flow A2: the agent classified this as marketing, an offer, a
+     * newsletter or a bulk notification. Promotions never render as an
+     * individual pending card and never trigger reminders. Missing on items
+     * from an older server, which decode as false.
+     */
+    val promotion: Boolean = false,
 )
 
 /**

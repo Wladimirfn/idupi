@@ -17,6 +17,7 @@ class InboxConversationGroupsTest {
         receivedAt: String = "2026-11-24T10:00:00Z",
         appLabel: String = "",
         sender: String = "Ana",
+        promotion: Boolean = false,
     ) = InboxItem(
         id = id,
         app = app,
@@ -25,7 +26,8 @@ class InboxConversationGroupsTest {
         conversation = conversation,
         text = "Hola",
         receivedAt = receivedAt,
-        notificationKey = "key-$id"
+        notificationKey = "key-$id",
+        promotion = promotion
     )
 
     @Test
@@ -111,5 +113,44 @@ class InboxConversationGroupsTest {
             java.time.Instant.parse("2026-11-24T10:00:00Z").toEpochMilli(),
             groups.single().newestAtMillis
         )
+    }
+
+    @Test
+    fun `open promotions from every app collapse into one group at the end`() {
+        val groups = InboxConversationGroups.group(
+            listOf(
+                item("promo-gmail", app = "gmail", conversation = "Ofertas", receivedAt = "2026-11-24T13:00:00Z", promotion = true),
+                item("normal", conversation = "Equipo", receivedAt = "2026-11-24T09:00:00Z"),
+                item("promo-telegram", app = "telegram", conversation = "Canal", receivedAt = "2026-11-24T12:00:00Z", promotion = true)
+            )
+        )
+
+        assertEquals(2, groups.size)
+        assertEquals("whatsapp|Equipo", groups.first().conversationKey)
+        val promotions = groups.last()
+        assertEquals(InboxConversationGroups.PROMOTIONS_KEY, promotions.conversationKey)
+        assertEquals(listOf("promo-gmail", "promo-telegram"), promotions.items.map { it.id })
+        assertEquals(2, promotions.count)
+    }
+
+    @Test
+    fun `a lone promotion item is not a single-item conversation card`() {
+        val groups = InboxConversationGroups.group(
+            listOf(item("promo", app = "instagram", conversation = "Anuncios", promotion = true))
+        )
+
+        assertEquals(1, groups.size)
+        assertEquals(InboxConversationGroups.PROMOTIONS_KEY, groups.single().conversationKey)
+    }
+
+    @Test
+    fun `promotionItems lists only promotions, newest first`() {
+        val items = listOf(
+            item("old", receivedAt = "2026-11-24T08:00:00Z", promotion = true),
+            item("normal", receivedAt = "2026-11-24T09:00:00Z"),
+            item("new", app = "gmail", conversation = "Ofertas", receivedAt = "2026-11-24T11:00:00Z", promotion = true)
+        )
+
+        assertEquals(listOf("new", "old"), InboxConversationGroups.promotionItems(items).map { it.id })
     }
 }

@@ -35,8 +35,9 @@ const GOOD_RESULT = {
     suggestedReply: "Sí, ya estoy.",
 };
 
-// Every parsed result carries the optional event; without one it is null.
-const PARSED_RESULT = { ...GOOD_RESULT, event: null };
+// Every parsed result carries the optional event and the promotion flag;
+// without them they are null and false (alerts-flow A2).
+const PARSED_RESULT = { ...GOOD_RESULT, promotion: false, event: null };
 
 // --- argv builders ---------------------------------------------------------
 
@@ -207,9 +208,46 @@ test("prompt pins the owner clock and the optional event contract", () => {
     );
     assert.match(prompt, /Resolve relative dates/);
     assert.match(prompt, /"event":\{"title"/);
+    assert.match(prompt, /"promotion":true\|false/);
     assert.match(prompt, /only when the message proposes or confirms/);
     assert.match(prompt, /ISO-8601 with the owner's offset/);
     assert.match(prompt, /never authorizes writing to a calendar/);
+});
+
+// --- promotions (alerts-flow A2) -------------------------------------------
+
+test("parser forces a promotion to low importance and no suggested reply", () => {
+    const parsed = parseAgentResult("pi", JSON.stringify({
+        ...GOOD_RESULT,
+        importance: "high",
+        suggestedReply: "Aprovecha el descuento",
+        promotion: true,
+    }));
+
+    assert.equal(parsed.promotion, true);
+    assert.equal(parsed.importance, "low");
+    assert.equal(parsed.suggestedReply, "");
+    assert.equal(parsed.summary, GOOD_RESULT.summary);
+});
+
+test("a missing or invalid promotion flag means false", () => {
+    for (const promotion of [undefined, null, "true", 1, {}, []]) {
+        const parsed = parseAgentResult("pi", JSON.stringify({
+            ...GOOD_RESULT,
+            ...(promotion === undefined ? {} : { promotion }),
+        }));
+        assert.equal(parsed.promotion, false, JSON.stringify(promotion));
+        assert.equal(parsed.importance, GOOD_RESULT.importance);
+        assert.equal(parsed.suggestedReply, GOOD_RESULT.suggestedReply);
+    }
+});
+
+test("the prompt explains which messages are promotions", () => {
+    const prompt = buildInboxPrompt(ITEM, [], { now: TEST_NOW, tzOffsetMinutes: -180 });
+
+    assert.match(prompt, /newsletter|marketing/i);
+    assert.match(prompt, /bank security alerts|verification codes/i);
+    assert.match(prompt, /promotions always use importance "low"/i);
 });
 
 // --- extracted calendar events ---------------------------------------------
