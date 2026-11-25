@@ -84,8 +84,9 @@ import { createPhoneRoutes } from "./lib/phone-routes.mjs";
 // phone. Times are UTC; day boundaries use the phone's reported offset.
 import { createPhoneCalendarStore } from "./lib/phone-calendar-store.mjs";
 import { createPhoneCalendarRoutes } from "./lib/phone-calendar-routes.mjs";
-// Phone health (phone-health, T1): ADB connection manager, hidden virtual
-// display reader, daily health store and the 3 h refresh scheduler. Saving and
+// Phone health (phone-health, T1/T3/T4): ADB connection manager, hidden virtual
+// display reader, daily health store, the 3 h refresh scheduler, the cached
+// daily digest and the disabled Huawei Health Kit connector shape. Saving and
 // reading health data is read-only on the phone: the reader never taps.
 import { createAdbConnection } from "./lib/adb-connection.mjs";
 import { createHiddenDisplayReader } from "./lib/hidden-display-reader.mjs";
@@ -95,6 +96,11 @@ import {
     createHealthRoutes,
     createHealthScheduler,
 } from "./lib/health-routes.mjs";
+import {
+    createHealthDigest,
+    createHealthDigestStore,
+} from "./lib/health-digest.mjs";
+import { futureHealthSources } from "./lib/huawei-health-kit.mjs";
 // Browser view of those same PTYs (live-shared-terminals T2): loopback-only
 // static files, served before auth because they hold no secrets.
 import { createTerminalWebRoutes } from "./lib/terminal-web-routes.mjs";
@@ -1353,11 +1359,14 @@ const phoneStore = createPhoneStore({
 const handlePhoneRoute = createPhoneRoutes({ store: phoneStore });
 const handlePhoneCalendarRoute = createPhoneCalendarRoutes({ store: phoneCalendarStore });
 
-// Phone health (phone-health, T1): the ADB link, the hidden-display reader and
-// the daily store. The scheduler only runs when a target is already saved, so a
-// machine that never paired with the phone stays quiet.
+// Phone health (phone-health, T1/T3/T4): the ADB link, the hidden-display
+// reader, the daily store and the digest. The scheduler only runs when a target
+// is already saved, so a machine that never paired with the phone stays quiet.
+// The digest reuses the inbox agent runner and config (same hardened no-tools
+// execution) and is regenerated at most every 3 h after new health inputs.
+const healthDataDir = fileURLToPath(new URL("./data", import.meta.url));
 const adbConnection = createAdbConnection({
-    dataDir: fileURLToPath(new URL("./data", import.meta.url)),
+    dataDir: healthDataDir,
     run: execFileAsync,
 });
 const hiddenDisplayReader = createHiddenDisplayReader({
@@ -1366,16 +1375,26 @@ const hiddenDisplayReader = createHiddenDisplayReader({
     tmpDir: tmpdir(),
 });
 const healthStore = createHealthStore({
-    dataDir: fileURLToPath(new URL("./data", import.meta.url)),
+    dataDir: healthDataDir,
 });
 const healthCollector = createHealthCollector({
     reader: hiddenDisplayReader,
     store: healthStore,
 });
+const healthDigest = createHealthDigest({
+    digestStore: createHealthDigestStore({ dataDir: healthDataDir }),
+    healthStore,
+    calendarStore: phoneCalendarStore,
+    runner: inboxRunner,
+    getConfig: () => inboxStore.getConfig(),
+});
 const healthRoutes = createHealthRoutes({
     store: healthStore,
     adb: adbConnection,
     collector: healthCollector,
+    digest: healthDigest,
+    futureSources: () => futureHealthSources({ dataDir: healthDataDir }),
+    onInputsChanged: () => healthDigest.maybeAutoGenerate(),
 });
 const handleHealthRoute = healthRoutes.handle;
 const healthScheduler = createHealthScheduler({

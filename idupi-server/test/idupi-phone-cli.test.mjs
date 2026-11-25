@@ -16,6 +16,7 @@ import {
     formatCommandResult,
     formatDuration,
     formatHealthAdb,
+    formatHealthDigest,
     formatHealthMetrics,
     formatHealthRefresh,
     formatHealthSources,
@@ -628,3 +629,84 @@ test("formatHealthRefresh and formatHealthAdb summarize the PC state", () => {
     assert.ok(adb.includes("192.168.1.50:37123 · lan · SM-S928B"));
 });
 
+
+// --- health digest CLI (phone-health, T3) ---------------------------------
+
+test("parseArgs handles health digest with and without --refresh", () => {
+    assert.deepEqual(parseArgs(["health", "digest"]), {
+        command: "health",
+        action: "digest",
+        refresh: false,
+        json: false,
+    });
+    assert.deepEqual(parseArgs(["health", "digest", "--refresh"]), {
+        command: "health",
+        action: "digest",
+        refresh: true,
+        json: false,
+    });
+    assert.deepEqual(parseArgs(["health", "digest", "--refresh", "--json"]), {
+        command: "health",
+        action: "digest",
+        refresh: true,
+        json: true,
+    });
+    const malformed = parseArgs(["health", "digest", "--nope"]);
+    assert.equal(malformed.command, "help");
+    assert.ok(malformed.error);
+});
+
+test("formatHealthDigest renders the card and the medical footer", () => {
+    const text = formatHealthDigest({
+        date: "2026-11-24",
+        status: "ready",
+        summary: "Hoy caminaste más que el resto de la semana.",
+        highlights: ["Pasos sobre el promedio"],
+        recommendations: ["Camina después de almuerzo"],
+        agendaNotes: ["Mañana tienes tres reuniones"],
+        available: true,
+    });
+    assert.match(text, /^Resumen de salud \(2026-11-24\): listo$/m);
+    assert.ok(text.includes("Hoy caminaste más que el resto de la semana."));
+    assert.ok(text.includes("Destacados:"));
+    assert.ok(text.includes("Recomendaciones:"));
+    assert.ok(text.includes("Agenda:"));
+    assert.match(text, /No es consejo médico\.$/);
+
+    const analyzing = formatHealthDigest({ status: "analyzing", date: "2026-11-24" });
+    assert.ok(analyzing.includes("analizando"));
+    assert.ok(analyzing.includes("todavía está escribiendo"));
+
+    const failed = formatHealthDigest({
+        status: "failed",
+        date: "2026-11-24",
+        error: "agent timed out",
+        available: true,
+    });
+    assert.ok(failed.includes("falló"));
+    assert.ok(failed.includes("Error: agent timed out"));
+
+    const noData = formatHealthDigest({
+        status: "ready",
+        date: "2026-11-24",
+        summary: "",
+        available: false,
+    });
+    assert.ok(noData.includes("Sin datos de salud todavía"));
+});
+
+test("formatHealthSources lists future sources", () => {
+    const text = formatHealthSources({
+        sources: [],
+        installedApps: [],
+        futureSources: [{
+            id: "huawei_health_kit",
+            label: "Huawei Health Kit",
+            enabled: false,
+            configured: true,
+            reason: "registered_but_disabled",
+        }],
+    });
+    assert.ok(text.includes("Fuentes futuras:"));
+    assert.ok(text.includes("huawei_health_kit (Huawei Health Kit): deshabilitada"));
+});

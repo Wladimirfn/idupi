@@ -47,6 +47,8 @@ Uso:
                                         Salud de los últimos N días (7 por defecto)
   idupi-phone health sources            Fuentes de salud y apps instaladas
   idupi-phone health refresh [--wait]   Lee Huawei Health en el teléfono (pantalla oculta)
+  idupi-phone health digest [--refresh] [--json]
+                                        Resumen diario del agente (salud, bienestar y agenda)
   idupi-phone health adb [status|pair <host:puerto> <código>|connect <host:puerto>]
                                         Estado y emparejamiento de ADB inalámbrico
   idupi-phone log                       Últimos comandos
@@ -373,6 +375,7 @@ function parseProposeArgs(tail) {
 const HEALTH_USAGE =
     "Uso: idupi-phone health [summary] [--days N] [--json] | " +
     "idupi-phone health sources | idupi-phone health refresh [--wait] | " +
+    "idupi-phone health digest [--refresh] [--json] | " +
     "idupi-phone health adb [status | pair <host:puerto> <código> | connect <host:puerto>]";
 
 function parseHealthDays(raw) {
@@ -397,6 +400,7 @@ function parseHealthArgs(rest) {
         return { command: "health", action: "sources", json: false };
     }
     if (sub === "refresh") return parseHealthRefreshArgs(tail);
+    if (sub === "digest") return parseHealthDigestArgs(tail);
     if (sub === "adb") return parseHealthAdbArgs(tail);
     return { command: "help", error: HEALTH_USAGE };
 }
@@ -437,6 +441,23 @@ function parseHealthRefreshArgs(tail) {
         return { command: "help", error: HEALTH_USAGE };
     }
     return { command: "health", action: "refresh", wait, json };
+}
+
+function parseHealthDigestArgs(tail) {
+    let refresh = false;
+    let json = false;
+    for (const token of tail) {
+        if (token === "--refresh") {
+            refresh = true;
+            continue;
+        }
+        if (token === "--json") {
+            json = true;
+            continue;
+        }
+        return { command: "help", error: HEALTH_USAGE };
+    }
+    return { command: "health", action: "digest", refresh, json };
 }
 
 function parseHealthAdbArgs(tail) {
@@ -1008,6 +1029,7 @@ export function formatHealthSummary(payload, nowMs = Date.now()) {
 export function formatHealthSources(payload) {
     const sources = payload && Array.isArray(payload.sources) ? payload.sources : [];
     const apps = payload && Array.isArray(payload.installedApps) ? payload.installedApps : [];
+    const future = payload && Array.isArray(payload.futureSources) ? payload.futureSources : [];
     const lines = ["Fuentes de salud:"];
     if (sources.length === 0) {
         lines.push("  Sin fuentes registradas.");
@@ -1019,6 +1041,15 @@ export function formatHealthSources(payload) {
             ? `última captura ${source.lastCaptureAt}`
             : "sin datos";
         lines.push(`  ${id}${label}: ${last}`);
+    }
+    if (future.length > 0) {
+        lines.push("Fuentes futuras:");
+        for (const source of future) {
+            const state = source.enabled === true
+                ? source.configured === true ? "habilitada" : "habilitada sin configurar"
+                : "deshabilitada";
+            lines.push(`  ${source.id} (${source.label || source.id}): ${state}`);
+        }
     }
     if (apps.length > 0) {
         lines.push("Apps de salud en el teléfono:");
@@ -1054,6 +1085,56 @@ export function formatHealthRefresh(job) {
         lines.push("  Sigue en curso; usa --wait para esperar el resultado.");
     }
     if (job.error) lines.push(`  Detalle: ${job.error}`);
+    return lines.join("\n");
+}
+
+const DIGEST_STATUS_LABELS = {
+    ready: "listo",
+    analyzing: "analizando",
+    failed: "falló",
+};
+
+/**
+ * Daily digest as the owner reads it: the summary, highlights, recommendations
+ * and agenda notes, with the "not medical advice" footer the card also shows.
+ */
+export function formatHealthDigest(digest) {
+    if (!digest || typeof digest !== "object") return "IDUPI devolvió una respuesta inesperada.";
+    const date = digest.date || "hoy";
+    const status = DIGEST_STATUS_LABELS[digest.status] || digest.status || "?";
+    const lines = [`Resumen de salud (${date}): ${status}`];
+    if (digest.status === "analyzing") {
+        lines.push("El agente todavía está escribiendo el resumen.");
+    }
+    if (digest.error) lines.push(`  Error: ${digest.error}`);
+    if (digest.summary) {
+        lines.push("");
+        lines.push(digest.summary);
+    }
+    const highlights = Array.isArray(digest.highlights) ? digest.highlights : [];
+    if (highlights.length > 0) {
+        lines.push("");
+        lines.push("Destacados:");
+        for (const entry of highlights) lines.push(`  - ${entry}`);
+    }
+    const recommendations = Array.isArray(digest.recommendations) ? digest.recommendations : [];
+    if (recommendations.length > 0) {
+        lines.push("");
+        lines.push("Recomendaciones:");
+        for (const entry of recommendations) lines.push(`  - ${entry}`);
+    }
+    const agendaNotes = Array.isArray(digest.agendaNotes) ? digest.agendaNotes : [];
+    if (agendaNotes.length > 0) {
+        lines.push("");
+        lines.push("Agenda:");
+        for (const entry of agendaNotes) lines.push(`  - ${entry}`);
+    }
+    if (digest.available === false) {
+        lines.push("");
+        lines.push("Sin datos de salud todavía: ejecuta idupi-phone health refresh.");
+    }
+    lines.push("");
+    lines.push("No es consejo médico.");
     return lines.join("\n");
 }
 
@@ -1334,6 +1415,21 @@ async function waitHealthJob(id) {
     }
 }
 
+/** Polls the digest until the agent finishes or the 120 s budget runs out. */
+async function waitHealthDigest() {
+    const deadline = Date.now() + 120_000;
+    for (;;) {
+        const res = await healthRequest("GET", "/api/v1/health/digest");
+        const digest = res.json;
+        if (!digest || typeof digest !== "object") {
+            fail("IDUPI devolvió una respuesta inesperada.");
+        }
+        if (digest.status !== "analyzing") return digest;
+        if (Date.now() >= deadline) return digest;
+        await sleep(1500);
+    }
+}
+
 async function runHealth(parsed) {
     if (parsed.action === "summary") {
         const res = await healthRequest("GET", `/api/v1/health/summary?days=${parsed.days}`);
@@ -1365,6 +1461,30 @@ async function runHealth(parsed) {
             return;
         }
         writeOut(formatHealthRefresh(job) + "\n");
+        return;
+    }
+
+    if (parsed.action === "digest") {
+        let digest;
+        if (parsed.refresh) {
+            const res = await healthRequest("POST", "/api/v1/health/digest", { refresh: true });
+            digest = res.json;
+            if (!digest || typeof digest !== "object") {
+                fail("IDUPI devolvió una respuesta inesperada.");
+            }
+            if (digest.status === "analyzing") digest = await waitHealthDigest();
+        } else {
+            const res = await healthRequest("GET", "/api/v1/health/digest");
+            digest = res.json;
+            if (!digest || typeof digest !== "object") {
+                fail("IDUPI devolvió una respuesta inesperada.");
+            }
+        }
+        if (parsed.json) {
+            writeOut(JSON.stringify(digest, null, 2) + "\n");
+            return;
+        }
+        writeOut(formatHealthDigest(digest) + "\n");
         return;
     }
 

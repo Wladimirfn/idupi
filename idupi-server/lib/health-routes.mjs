@@ -1,8 +1,9 @@
-// Health routes, refresh jobs and the 3-hour scheduler (phone-health, T1).
+// Health routes, refresh jobs and the 3-hour scheduler (phone-health, T1/T3).
 //
 // The phone pushes daily samples here; the PC reads merged summaries, asks for
 // a hidden-display refresh of an app that does not publish to Health Connect
-// (Huawei Health today, Honor Health tentative) and manages the ADB link.
+// (Huawei Health today, Honor Health tentative), manages the ADB link and
+// serves the cached daily digest (T3).
 //
 // Refresh jobs are in-memory and serialized per source set: a second request
 // while one is running answers the same job instead of starting another. The
@@ -214,17 +215,46 @@ export function createHealthCollector({ reader, store, now = () => new Date() } 
  *   store: ReturnType<import("./health-store.mjs").createHealthStore>,
  *   adb: ReturnType<import("./adb-connection.mjs").createAdbConnection>,
  *   collector: ReturnType<typeof createHealthCollector>,
+ *   digest?: ReturnType<import("./health-digest.mjs").createHealthDigest> | null,
+ *   futureSources?: (() => object[]) | null,
+ *   onInputsChanged?: (() => unknown) | null,
  *   now?: () => Date,
  *   log?: { warn?: Function, info?: Function },
  * }} options
  */
-export function createHealthRoutes({ store, adb, collector, now = () => new Date(), log } = {}) {
+export function createHealthRoutes({
+    store,
+    adb,
+    collector,
+    digest = null,
+    futureSources = null,
+    onInputsChanged = null,
+    now = () => new Date(),
+    log,
+} = {}) {
     if (!store) throw new TypeError("createHealthRoutes requires store");
     if (!adb) throw new TypeError("createHealthRoutes requires adb");
     if (!collector) throw new TypeError("createHealthRoutes requires collector");
 
     const jobs = new Map();
     const jobPromises = new Map();
+
+    /**
+     * New samples or a finished hidden-display read may change the digest
+     * inputs. The digest service throttles itself; here we only guarantee the
+     * hook can never break a health route.
+     */
+    function notifyInputsChanged() {
+        if (typeof onInputsChanged !== "function") return;
+        try {
+            const result = onInputsChanged();
+            if (result && typeof result.then === "function") {
+                result.catch(() => {});
+            }
+        } catch (err) {
+            log?.warn?.(`[health] digest hook failed: ${(err && err.code) || "error"}`);
+        }
+    }
 
     function pruneJobs() {
         const cutoff = now().getTime() - JOB_TTL_MS;
@@ -286,6 +316,7 @@ export function createHealthRoutes({ store, adb, collector, now = () => new Date
         job.status = failures === job.sources.length ? "failed" : "done";
         job.finishedAt = now().toISOString();
         job.error = job.status === "failed" ? "no health source could be read" : null;
+        if (job.status === "done") notifyInputsChanged();
         return publicJob(job);
     }
 
@@ -331,6 +362,7 @@ export function createHealthRoutes({ store, adb, collector, now = () => new Date
         try {
             const result = store.recordSamples(body);
             sendJson(res, 200, result);
+            notifyInputsChanged();
         } catch (err) {
             sendError(res, 400, (err && err.message) || "invalid samples", "INVALID_SAMPLE");
         }
@@ -383,6 +415,62 @@ export function createHealthRoutes({ store, adb, collector, now = () => new Date
             return;
         }
         sendJson(res, 200, { job: publicJob(job) });
+    }
+
+    // --- Daily digest (phone-health T3) ---
+
+    function getDigest(req, res) {
+        if (!digest) {
+            sendError(res, 503, "digest is not configured", "DIGEST_UNAVAILABLE");
+            return;
+        }
+        const raw = queryValue(req, "date");
+        try {
+            sendJson(res, 200, digest.current(raw === null || raw === "" ? undefined : raw));
+        } catch (err) {
+            sendError(res, 400, (err && err.message) || "invalid date", "INVALID_DATE");
+        }
+    }
+
+    async function postDigest(req, res) {
+        if (!digest) {
+            sendError(res, 503, "digest is not configured", "DIGEST_UNAVAILABLE");
+            return;
+        }
+        let body;
+        try {
+            body = await readJsonBody(req, MAX_BODY_BYTES);
+        } catch (err) {
+            bodyError(res, err);
+            return;
+        }
+        if (!isPlainObject(body)) {
+            sendError(res, 400, "body must be a JSON object", "BAD_REQUEST");
+            return;
+        }
+        if (body.refresh !== undefined && body.refresh !== null && typeof body.refresh !== "boolean") {
+            sendError(res, 400, "refresh must be a boolean", "BAD_REQUEST");
+            return;
+        }
+        if (
+            body.date !== undefined &&
+            body.date !== null &&
+            (typeof body.date !== "string" || !body.date)
+        ) {
+            sendError(res, 400, "date must be YYYY-MM-DD", "INVALID_DATE");
+            return;
+        }
+        try {
+            const outcome = digest.request({
+                date: body.date,
+                refresh: body.refresh === true,
+            });
+            sendJson(res, outcome.status, outcome.digest);
+        } catch (err) {
+            const code = (err && err.code) || "INVALID_DATE";
+            const status = code === "STORE_FAILED" ? 500 : 400;
+            sendError(res, status, (err && err.message) || "invalid digest request", code);
+        }
     }
 
     async function postPair(req, res) {
@@ -470,7 +558,31 @@ export function createHealthRoutes({ store, adb, collector, now = () => new Date
                 methodNotAllowed(res, "GET");
                 return true;
             }
-            sendJson(res, 200, store.sources());
+            let listed = [];
+            if (typeof futureSources === "function") {
+                try {
+                    listed = futureSources();
+                } catch {
+                    listed = [];
+                }
+            }
+            sendJson(res, 200, {
+                ...store.sources(),
+                futureSources: Array.isArray(listed) ? listed : [],
+            });
+            return true;
+        }
+
+        if (parts[0] === "digest" && parts.length === 1) {
+            if (req.method === "GET") {
+                getDigest(req, res);
+                return true;
+            }
+            if (req.method === "POST") {
+                await postDigest(req, res);
+                return true;
+            }
+            methodNotAllowed(res, "GET, POST");
             return true;
         }
 

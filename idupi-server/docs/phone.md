@@ -325,15 +325,22 @@ Source: [`lib/health-routes.mjs`](../lib/health-routes.mjs), store in
 |--------|------|---------|
 | POST | `/api/v1/health/samples` | Phone  server: `{tzOffsetMinutes, samples[], installedApps?}` (max 60 samples, 512 KiB); strict schema, `400` on an unknown metric |
 | GET | `/api/v1/health/summary?days=7` | Merged per-day view plus which source provided each metric; `days` 1..120 |
-| GET | `/api/v1/health/sources` | Known sources with their last capture, plus the phone-reported installed health apps |
+| GET | `/api/v1/health/sources` | Known sources with their last capture, plus the phone-reported installed health apps and the future `huawei_health_kit` source |
 | POST | `/api/v1/health/refresh` | `{sources?: ["huawei_health"]}`; `202 {job}` and an in-memory job id |
 | GET | `/api/v1/health/refresh/{id}` | Job state `queued`, `running`, `done` or `failed` with per-source results (no values) |
 | GET | `/api/v1/health/adb` | `{adb:{path,found}, scrcpy:{path,found,version}, connected, serial, via, targets}` |
 | POST | `/api/v1/health/adb/pair` | `{hostPort, code}`; `code` is exactly 6 digits |
 | POST | `/api/v1/health/adb/connect` | `{hostPort}`; saves the target when adb accepts it |
+| GET | `/api/v1/health/digest?date=YYYY-MM-DD` | Cached daily digest for that owner-local date (default today); never runs the agent |
+| POST | `/api/v1/health/digest` | `{date?, refresh?}`; `202` while the agent writes it, `200` cached or ready |
 
 A refresh job answers the same job id while one with the same sources is
 queued or running, so a manual refresh and the 3-hour timer never overlap.
+
+`GET /api/v1/health/sources` also carries `futureSources`: planned connectors
+that cannot capture yet. Today it lists `huawei_health_kit` with
+`{enabled, configured, reason}`; the registration steps and the disabled
+connector shape live in [`huawei-health-kit.md`](huawei-health-kit.md).
 
 ### Sample wire shape (app  PC, T2 contract)
 
@@ -399,6 +406,62 @@ queued or running, so a manual refresh and the 3-hour timer never overlap.
 
 A merged day reports `sources` next to `metrics`, mapping each metric key to the
 source that supplied the winning value.
+
+### Daily digest (T3)
+
+One short summary per owner-local day, written by the SAME configured inbox
+agent (`inbox-config.json`: agent, model, effort) through the same hardened
+no-tools runner and serial queue. Source:
+[`lib/health-digest.mjs`](../lib/health-digest.mjs). It reads:
+
+- the last 7 merged days from the health store;
+- the latest day with digital-wellbeing numbers (screen time, unlocks, night
+  use, top apps);
+- today's and tomorrow's events from the calendar snapshot. Event titles are
+  untrusted text: they travel inside `<untrusted_agenda>` blocks and
+  delimiter-shaped text is neutralized, exactly like inbox notifications.
+
+The prompt asks for one JSON object with `summary` (neutral Latin American
+Spanish, at most 5 sentences comparing today with the week), `highlights`,
+`recommendations` (concrete, kind, non-medical) and `agendaNotes`. Numbers come
+only from the data; an invented or missing value is a bug. The reply is stored
+as:
+
+```json
+{
+  "date": "2026-11-24",
+  "status": "ready",
+  "summary": "Hoy caminaste más que el resto de la semana...",
+  "highlights": ["Pasos por encima del promedio"],
+  "recommendations": ["Camina un poco después de almuerzo"],
+  "agendaNotes": ["Dormiste poco y mañana tienes tres reuniones"],
+  "error": null,
+  "updatedAt": "2026-11-24T15:00:00.000Z",
+  "available": true
+}
+```
+
+- `status` is `ready`, `analyzing` or `failed`. Only `ready` with a non-empty
+  summary is a finished digest; `failed` carries a short `error` and the app
+  offers Reintentar.
+- `available` is false when the window has no health or wellbeing data at all:
+  the agent is not run and the card tells the owner to refresh instead.
+- The cache lives in `data/health-digests.json`, one record per date, 30 days
+  retained. A digest is keyed by the owner-local date plus a SHA-256 of the
+  inputs: asking again while nothing changed answers the stored record without
+  spawning an agent, and any new sample, wellbeing value or agenda change
+  invalidates it. `refresh: true` forces a run.
+- After a successful hidden-display refresh or a phone samples upload, the
+  digest is regenerated automatically when the inputs changed, at most once
+  every 3 h. The digest is not medical advice and says so; it never diagnoses.
+- Only today can be generated (`400 INVALID_DATE` otherwise); `GET ?date=`
+  reads a cached past day.
+
+```bash
+idupi-phone health digest                  # cached digest (today by default)
+idupi-phone health digest --refresh        # ask the agent now, wait for it
+idupi-phone health digest --refresh --json
+```
 
 ### Hidden-display refresh
 
