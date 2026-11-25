@@ -23,8 +23,16 @@ En resumen:
   <img src="docs/assets/screenshots/entregas.jpg" width="160" alt="Entregas" />
   <img src="docs/assets/screenshots/procesos.jpg" width="160" alt="Procesos" />
   <img src="docs/assets/screenshots/dashboard.jpg" width="160" alt="Dashboard" />
+</p>
+<p align="center">
+  <img src="docs/assets/screenshots/alertas.jpg" width="160" alt="Alertas" />
+  <img src="docs/assets/screenshots/agenda.jpg" width="160" alt="Agenda" />
+  <img src="docs/assets/screenshots/salud.jpg" width="160" alt="Salud" />
+  <img src="docs/assets/screenshots/remoto.jpg" width="160" alt="Pantalla remota" />
   <img src="docs/assets/screenshots/ajustes.jpg" width="160" alt="Ajustes" />
 </p>
+
+<sub>Capturas reales de la versión 1.49. Los datos personales (rutas, nombre del equipo, IP y eventos de la agenda) están difuminados.</sub>
 
 ## Requisitos
 
