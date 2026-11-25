@@ -62,7 +62,7 @@ const SERVER_UNREACHABLE =
     `No se pudo conectar con IDUPI en ${HOST}:`;
 const SERVER_UNREACHABLE_HINT =
     ". ¿Está corriendo? (idupi-server/scripts/start-server.ps1)";
-const TOKEN_REJECTED = "Token rechazado: revisá .idupi-token.";
+const TOKEN_REJECTED = "Token rechazado: revisa .idupi-token.";
 const NO_RESPONSE =
     "El teléfono no respondió: ¿está activo el control desde la PC?";
 const EXPIRED = "El comando expiró sin ejecutarse: el teléfono no lo tomó a tiempo.";
@@ -143,7 +143,7 @@ function parseTargetCommand(type, rest) {
 export function parseArgs(argv = []) {
     const args = Array.isArray(argv) ? [...argv] : [];
     if (args.length === 0) {
-        return { command: "help", error: "Falta el comando. Probá: idupi-phone status" };
+        return { command: "help", error: "Falta el comando. Prueba: idupi-phone status" };
     }
 
     const [head, ...rest] = args;

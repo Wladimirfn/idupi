@@ -387,7 +387,7 @@ test("a rejected token exits 1 with the token-file hint", async (t) => {
 
     const { code } = await cli.exited;
     assert.equal(code, 1);
-    assert.ok(cli.stderr.includes("Token rechazado: revisá .idupi-token."), cli.stderr);
+    assert.ok(cli.stderr.includes("Token rechazado: revisa .idupi-token."), cli.stderr);
 });
 
 test("an unreachable server exits 1 with the start-server hint", async (t) => {

@@ -71,6 +71,6 @@ for ($i = 0; $i -lt 40 -and -not (Get-Listener); $i++) { Start-Sleep -Millisecon
 if (Get-Listener) {
     Write-Output "IDUPI iniciado (PID $($process.Id)) en el puerto $Port. Logs: $logDir"
 } else {
-    Write-Error "IDUPI no quedó escuchando en el puerto $Port. Revisá $logDir\server.err.log"
+    Write-Error "IDUPI no quedó escuchando en el puerto $Port. Revisa $logDir\server.err.log"
     exit 1
 }
