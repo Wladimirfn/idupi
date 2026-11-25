@@ -32,9 +32,9 @@ needs. The owner publishes it on YouTube, LinkedIn, X and Instagram.
       redact Alertas messages and any IP/token, save to
       `docs/assets/screenshots/`, update the README gallery (add Alertas,
       Agenda, Salud). Commit.
-- [ ] T2 Video preproduction: intent (presentation), lane, style brief,
+- [x] T2 Video preproduction: intent (presentation), lane, style brief,
       art direction, script (`guion.md`), `e00` styleboard. Owner approves.
-- [ ] T3 Capture real UI footage (screen recordings of each feature) with the
+- [x] T3 Capture real UI footage (screen recordings of each feature) with the
       same redaction rules.
 - [ ] T4 Narration (voice-1) + music (music-1) + audio gate.
 - [ ] T5 Composition and keyframes (design-2), independent audit.
@@ -76,7 +76,11 @@ TDD: not applicable (media and docs only).
   terminals hero). Proof gaps flagged: e04 idupi-push PC output, e06 idle stream,
   e07 app picker, e08 conflict banner, e09 AI summary card. Voicebox started
   (profiles: Alex, Dora, Qwen*, cloned Eric). Wireless ADB went offline afterwards.
+- 2026-11-25: owner approved e00 (style-brief flipped). T3 extra captures redacted into
+  assets/: push.jpg (real idupi-push ls), alertas-ajustes/recordatorios/analista.jpg
+  (followed-apps list skipped: it shows banking apps), salud-resumen.jpg. Note: the
+  virtual display now shows Samsung nav buttons at the bottom; crop to 2200 px.
 
 ## Next step
 
-Owner approval of e00 + art direction; then T3 extra captures (Alertas app picker, Salud summary card, real idupi-push output) when wireless ADB is back.
+Owner picks the narrator voice (samples on phone: Music/IDUPI voz-1-eric cloned, voz-2-alex preset), then T4.
