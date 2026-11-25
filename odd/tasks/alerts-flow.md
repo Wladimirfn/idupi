@@ -79,7 +79,7 @@ Delivery: about 900–1200 authored lines forecast; stacked PRs to main per task
 ## Progress
 
 - 2026-11-25: exploration done (explore-1 app map, explore-2 server map). Branch created.
-- 2026-11-25: A1 implemented (uncommitted per owner instruction).
+- 2026-11-25: A1 done (work-1) 419f36c. 879 app tests pass (11 new). Review fix: summary omits "· 0 importantes" (importance arrives later from the PC).
   `clearCapturedFromShade` setting (default on, DataStore key
   `inbox_clear_captured_from_shade`), shade rule in `InboxShadePolicy`
   (ACCEPTED + setting, or silenced), generic safe `cancelCapturedNotification`,
