@@ -45,7 +45,7 @@ Motorola or any Android) opens the IDUPI floating chat already dictating.
 - [x] T2 App: Ajustes row "Asistente digital" with role status
       (`RoleManager.isRoleHeld(ROLE_ASSISTANT)`) opening the system screen.
       Pure summary tests.
-- [ ] T3 App (only if needed): `VoiceInteractionService` +
+- [x] T3 App (not needed): `VoiceInteractionService` +
       `VoiceInteractionSessionService` + metadata so the role qualifies.
 - [x] T5 Security (found on device 2026-11-26): the ASSIST entry opened the
       listening panel over the LOCK SCREEN, and bubble turns auto-approve
@@ -56,7 +56,7 @@ Motorola or any Android) opens the IDUPI floating chat already dictating.
       bubble overlay is hidden while the keyguard is locked and comes back on
       unlock (ACTION_USER_PRESENT / screen events), and an open panel collapses
       and stops listening when the screen locks. Pure gate tests.
-- [ ] T4 Release: version bump, assembleRelease, install over adb, check
+- [x] T4 Release: version bump, assembleRelease, install over adb, check
       `cmd role add-role-holder android.app.role.ASSISTANT com.idupi.app`,
       owner side-key check, PR.
 
@@ -102,7 +102,13 @@ precedent), one PR stacked on #30.
   press (locked and unlocked) once IDUPI is the assistant; T3 only if the role
   does not list IDUPI.
 
+- 2026-11-26: T3 not needed: the owner picked IDUPI in Aplicación de asistente
+  digital with only the ASSIST activity (role holder `com.idupi.app`). T4: real
+  side-key long press logged `START act=ASSIST ... from com.android.systemui`,
+  the bubble dictated and sent turn pat-edbb51fdaf30 3 s later (done); the
+  follow-up listen ended in no-speech (error 7). PR opened stacked on #30.
+
 ## Next step
 
-Owner picks IDUPI as the digital assistant and tests the side key; then T3 if
-needed, T4 PR.
+None; pending PR review. The locked side-key path (unlock then dictate) is
+unit-tested and adb-checked; a real locked press is the remaining owner check.
