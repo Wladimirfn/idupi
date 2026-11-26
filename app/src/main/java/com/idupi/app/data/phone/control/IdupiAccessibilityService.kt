@@ -71,8 +71,10 @@ class IdupiAccessibilityService : AccessibilityService() {
 
         // The bubble needs the owner's setting AND phone control; the service
         // being bound IS the accessibility grant (phone-bubble T4).
+        // WindowManager.addView/removeView must run on the main thread, so this
+        // collector overrides the service's IO dispatcher.
         bubbleJob?.cancel()
-        bubbleJob = scope.launch {
+        bubbleJob = scope.launch(Dispatchers.Main.immediate) {
             combine(
                 SettingsProvider.repository.phoneBubbleEnabled,
                 SettingsProvider.repository.phoneControlEnabled,
