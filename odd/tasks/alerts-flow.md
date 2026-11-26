@@ -154,6 +154,12 @@ Delivery: about 900–1200 authored lines forecast; stacked PRs to main per task
 
 - 2026-11-25: A4 server 62f3b8a + app 38e11ef (work-2; first run crashed exit 8 after server GREEN). A5: 1.50-alertas (versionCode 51) built, same signing cert, auto-pushed to the phone (dlv-ff0a32e2c3bc). Server 918 pass, app 929 pass. Server restart pending (this Claude session lives in an IDUPI PTY).
 
+- 2026-11-25: live check. acb8539 points the agent PWD at its working dir. Server
+  restarted; 1.50 delivered off-LAN through the server (dlv-a183f1bb0835, phone on
+  Tailscale) and installed. Owner tried Promociones and Interactuar on the phone.
+  Project review verified from the PC: interact with project `idupi` answered in
+  38 s, citing `idupi-server/lib/inbox-routes.mjs` and the read-only tool profile.
+
 ## Next step
 
-Owner restarts the server, installs 1.50 and tries Interactuar/Promociones; then merge the PR and start block B.
+Merge PR #27, publish release v1.50, then start block B (phone agent with an approval queue).
