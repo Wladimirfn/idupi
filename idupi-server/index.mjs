@@ -13,6 +13,7 @@ import { join, basename, relative, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { REPO_ROOT, PROJECTS_JSON_FILE } from "./lib/server-paths.mjs";
+import { scrubInheritedSessionEnv } from "./lib/inherited-session-env.mjs";
 import { createAuthGuard, loadToken } from "../server-auth.mjs";
 import { TaskRegistry } from "./lib/task-registry.mjs";
 import { parseSubagentNotify, resolveNoticeCard, describeNoticeResult } from "./lib/subagent-notify.mjs";
@@ -349,6 +350,14 @@ import {
     handleProfileApplyWithPresets,
     handleModelsUpdate,
 } from "./lib/orchestrator/routes.mjs";
+
+// Before any child is spawned: a server launched from inside a Claude Code
+// session must not pass that session's markers to the CLIs it starts, or
+// they disable transcript saving and the owner's conversation is lost.
+const scrubbedSessionKeys = scrubInheritedSessionEnv(process.env);
+if (scrubbedSessionKeys.length > 0) {
+    console.log(`[IDUPI] Dropped inherited Claude Code session variables: ${scrubbedSessionKeys.join(", ")}`);
+}
 
 const PORT = process.env.PORT || 8788;
 const execFileAsync = promisify(execFile);
