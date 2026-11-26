@@ -118,7 +118,7 @@ every outbound or irreversible step goes through the approval queue (B1).
       agent answers with a question, the bubble opens, shows the answer and
       starts listening again (in-bubble dictation from T11), never auto-sends.
       Tests.
-- [ ] T18 App: phone-side acceptance of owner-request approvals. The phone
+- [x] T18 App: phone-side acceptance of owner-request approvals. The phone
       ledger accepts an approval with `decidedBy = owner-request:<turnId>` ONLY
       when that turn id was started from this phone's bubble and is still
       queued/running (the bubble controller registers it on POST and clears it
@@ -318,12 +318,34 @@ stacked on #28 with `size:exception`, same as #27/#28.
   (contentDescription "Ocultar teclado") hide the IME and set
   `FLAG_NOT_FOCUSABLE`; tapping the field clears that flag and re-shows the IME.
   Every `WindowManager` call stays on the main thread. Commit `4a44efe`.
+- 2026-11-26: T18 green. RED: the new delivered-command assertions failed with
+  `actual: undefined, expected: 'pat-0123456789ab'` (store `takeNext` and the
+  HTTP `/phone/commands/next` route), and the app failed to compile with
+  `Unresolved reference 'OwnerTurnRegistry'` (gate, controller and their
+  tests). A first implementation pass still failed 2 gate tests: re-recording
+  the grant on every call made an owner-request approval reusable; fixed with
+  `OwnerTurnRegistry.claimOwnerApproval` (one materialization per approval id).
+  GREEN: server 1020 pass, 0 fail (baseline 1019; one new store test plus the
+  route assertion); app `testDebugUnitTest` 1155 tests, 0 failures (+21: 11
+  gate, 3 registry, 5 controller, 2 parser); `assembleRelease` success.
+  Wire: an auto-approved command carries `args.ownerTurnId` and
+  `args.approvalCategory: "message"`; manual approvals and free commands omit
+  both. App: `CommandApproval` gains `ownerTurnId`, `category`, `expiresAt`
+  (defaults null, parser reads args then top level). `ApprovalGate` records a
+  one-use ledger grant only when the category is `message`, the reason is one
+  the server issues for a bubble turn (`type_submit`, `risky_text`,
+  `sensitive_app`), the expiry is still valid and the turn is active in
+  `OwnerTurnRegistry`; otherwise the command keeps failing with
+  `APPROVAL_NOT_GRANTED_ON_PHONE`. The controller registers on a successful
+  POST, unregisters on done/failed/cancelled, `close()` and a new request, and
+  registers again on `resume()`. Commits `5f776ca` (server) and `2b7c72d`
+  (app).
 
 ## Next step
 
-T11 in-bubble dictation and T17 voice follow-up. T18 is blocked on the
-command wire: the phone needs `decidedBy`/`ownerTurnId` on the delivered
-command (or an explicit app-only approval lookup) before the ledger can bind a
-grant to the bubble's own running turn. Before T12, deliver only
-`assembleRelease` APKs (a debug APK fails with a signature mismatch on the
-phone).
+T11 in-bubble dictation and T17 voice follow-up, then T12 (release: version
+bump, `assembleRelease`, push, live check, PR). T18 is done end to end: the
+server names the owner turn on the delivered command and the phone accepts its
+auto-approved messaging steps only while that turn is active on the device.
+Before T12, deliver only `assembleRelease` APKs (a debug APK fails with a
+signature mismatch on the phone).
