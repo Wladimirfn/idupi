@@ -13,7 +13,10 @@ enum class BubbleRequestOrigin { TYPED, DICTATED }
  *
  * The question heuristic is deliberately simple and pinned by tests: the
  * trimmed answer ends with "?" or contains the Spanish opening mark "¿".
- * It never sends anything; listening is only prepared.
+ * Listening is only prepared here. Since T21 the dictated reply is handled by
+ * the voice confirmation loop: a short yes or plain "no" is sent straight to
+ * the agent as the next request, and anything longer goes through the read-back
+ * before it can be sent.
  */
 object BubbleVoiceFollowUp {
 

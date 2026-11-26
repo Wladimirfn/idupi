@@ -14,6 +14,8 @@ import android.os.SystemClock
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.text.Editable
 import android.text.InputType
 import android.text.TextWatcher
@@ -87,8 +89,11 @@ import kotlinx.coroutines.launch
  * Voice (T5) plugs into this shell, and since T11 the panel owns the
  * microphone: `SpeechRecognizer` runs inside the overlay, partial hypotheses
  * stream into the field, level bars follow `onRmsChanged` and the system sheet
- * remains only as the fallback when the phone cannot dictate in-process. The
- * approval banner (T7) is rendered by the same shell; it never decides.
+ * remains only as the fallback when the phone cannot dictate in-process. Since
+ * T21 a dictated final transcript is read back on screen and out loud and may
+ * be sent after the owner's spoken confirmation ("como Android Auto con
+ * Gemini"); typed requests keep the plain send button path. The approval
+ * banner (T7) is rendered by the same shell; it never decides.
  */
 class PhoneBubbleOverlay(
     private val service: AccessibilityService,
@@ -167,8 +172,32 @@ class PhoneBubbleOverlay(
     private var voiceListeningRow: View? = null
     private var voiceLevels: VoiceLevelView? = null
 
+    /** Read-back line of the voice confirmation loop (T21). */
+    private var confirmPrompt: TextView? = null
+
+    /** Text currently on the read-back line; null hides it. */
+    private var confirmPromptText: String? = null
+
     /** In-bubble dictation state (T11); the reducer is the only writer. */
     private var voiceState: BubbleVoiceState = BubbleVoiceState.Idle
+
+    /** Voice confirmation loop state (T21); the reducer is the only writer. */
+    private var confirmState: BubbleConfirmState = BubbleConfirmState.Idle
+
+    /** The mic was opened by the T17 agent-question follow-up (T21 shortcut). */
+    private var followUpListen = false
+
+    /** Spoken read-back engine; created on first use, shut down in [destroy]. */
+    private var tts: TextToSpeech? = null
+
+    /** The engine finished initializing and has a usable Spanish voice. */
+    private var ttsReady = false
+
+    /** Initialization or voice selection failed; the loop skips the speech. */
+    private var ttsFailed = false
+
+    /** Prompt waiting for the engine to initialize. */
+    private var pendingSpeech: String? = null
 
     /** Live in-process recognizer; created on first use, destroyed on collapse. */
     private var speech: SpeechRecognizer? = null
@@ -241,6 +270,7 @@ class PhoneBubbleOverlay(
     fun destroy() {
         visible = false
         detach()
+        shutdownTts()
         scope.cancel()
     }
 
@@ -314,6 +344,10 @@ class PhoneBubbleOverlay(
         cancelIdleAnimation()
         dockAnimator?.cancel()
         dockAnimator = null
+        // T21: the read-back loop and its speech die with the window; the text
+        // stays where the owner left it.
+        cancelConfirmLoop()
+        stopTts()
         abandonVoice(render = false)
         controller.close()
         focusState = BubbleFocusState()
@@ -338,6 +372,7 @@ class PhoneBubbleOverlay(
         voiceHint = null
         voiceListeningRow = null
         voiceLevels = null
+        confirmPrompt = null
         try {
             windowManager.removeView(view)
         } catch (error: Exception) {
@@ -483,6 +518,7 @@ class PhoneBubbleOverlay(
         voiceHint = null
         voiceListeningRow = null
         voiceLevels = null
+        confirmPrompt = null
         startIdleAnimation(circle, sheen)
     }
 
@@ -559,6 +595,7 @@ class PhoneBubbleOverlay(
         card.addView(scroll)
 
         card.addView(buildStatusLine())
+        card.addView(buildConfirmPrompt())
         card.addView(buildRetryButton())
         card.addView(buildInputRow())
 
@@ -662,6 +699,27 @@ class PhoneBubbleOverlay(
             )
         }.also { statusLine = it }
 
+    /**
+     * The read-back line of the voice confirmation loop (T21): the same
+     * sentence TextToSpeech speaks, so the owner both hears and reads what the
+     * bubble is asking before she answers.
+     */
+    private fun buildConfirmPrompt(): View =
+        TextView(service).apply {
+            setTextColor(style.textPrimary)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            setTypeface(typeface, Typeface.BOLD)
+            setPadding(0, dp(6), 0, dp(2))
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            )
+        }.also {
+            confirmPrompt = it
+            renderConfirmPrompt()
+        }
+
     private fun buildRetryButton(): View =
         filledButton("Reintentar") { controller.retry() }.apply {
             visibility = View.GONE
@@ -734,6 +792,12 @@ class PhoneBubbleOverlay(
                 override fun afterTextChanged(s: Editable?) {
                     if (applyingTranscript) return
                     dictatedDraft = false
+                    // T21: typing while the read-back loop runs is the owner
+                    // taking over; the loop stops and her text is never
+                    // overwritten by a late transcript or an append.
+                    if (confirmState != BubbleConfirmState.Idle) {
+                        dispatchConfirm(BubbleConfirmEvent.UserTyped)
+                    }
                 }
             })
         }
@@ -826,8 +890,17 @@ class PhoneBubbleOverlay(
      * The mic toggle. The reducer decides everything: ask for RECORD_AUDIO,
      * start or finish the recognizer, retry after an error, or fall back to the
      * system sheet when the phone cannot dictate in-process.
+     *
+     * T21: while the read-back loop runs the microphone belongs to it, so a mic
+     * tap stops the loop and leaves the text in the field; a second tap starts
+     * a fresh dictation.
      */
     private fun onMicTapped() {
+        followUpListen = false
+        if (confirmState != BubbleConfirmState.Idle) {
+            cancelConfirmLoop()
+            return
+        }
         dispatchVoice(
             BubbleVoiceEvent.MicTapped(
                 permissionGranted = MicPermission.isGranted(service),
@@ -879,14 +952,15 @@ class PhoneBubbleOverlay(
         }
     }
 
-    private fun startSpeech() {
+    private fun startSpeech(): Boolean =
         try {
             ensureSpeechRecognizer().startListening(recognitionIntent())
+            true
         } catch (error: Exception) {
             Log.w(TAG, "could not start in-bubble dictation: ${error.javaClass.simpleName}")
             dispatchVoice(BubbleVoiceEvent.OtherError)
+            false
         }
-    }
 
     /**
      * One recognizer for the life of the listening attempts; T11 prefers the
@@ -950,6 +1024,8 @@ class PhoneBubbleOverlay(
             }
         }
         voiceState = BubbleVoiceState.Idle
+        // A transcript from a cancelled attempt is never a follow-up answer.
+        followUpListen = false
         if (render) renderVoice()
     }
 
@@ -973,17 +1049,24 @@ class PhoneBubbleOverlay(
         }
     }
 
-    /** A system-sheet transcript lands in the field for editing, never sent. */
+    /**
+     * A system-sheet transcript lands in the field for editing and keeps the
+     * T5 rule: the sheet path never enters the voice confirmation loop.
+     */
     private fun acceptTranscript(text: String) {
         voiceState = BubbleVoiceState.Idle
+        followUpListen = false
         putTranscript(text)
         renderVoice()
     }
 
     /**
      * The only writer of the field for dictation: partial hypotheses stream in
-     * and the final transcript stays for editing. Never sends, and never asks
-     * for field focus: starting to listen must not force the IME up (T16).
+     * and the final transcript stays for editing. T21 adds the next step after
+     * a final transcript (read-back and possible send), decided by
+     * [BubbleVoiceConfirmReducer]; partials keep the T11 rule and never send.
+     * This never asks for field focus: starting to listen must not force the
+     * IME up (T16).
      */
     private fun putTranscript(text: String) {
         val field = input ?: return
@@ -998,6 +1081,7 @@ class PhoneBubbleOverlay(
 
     private fun showVoiceFailure() {
         voiceState = BubbleVoiceState.Error(VoiceInputContract.FAILURE_MESSAGE)
+        followUpListen = false
         renderVoice()
     }
 
@@ -1034,15 +1118,48 @@ class PhoneBubbleOverlay(
         override fun onBufferReceived(buffer: ByteArray?) = Unit
         override fun onEndOfSpeech() = Unit
         override fun onError(error: Int) {
+            followUpListen = false
+            if (confirmState != BubbleConfirmState.Idle) {
+                // T21: inside the read-back loop any recognizer failure ends
+                // the conversation; the request stays in the field unsent.
+                voiceState = BubbleVoiceState.Idle
+                renderVoice()
+                dispatchConfirm(BubbleConfirmEvent.NoSpeech)
+                return
+            }
             dispatchVoice(recognitionErrorEvent(error))
         }
         override fun onResults(results: Bundle?) {
             val text = firstResult(results)
-            dispatchVoice(
-                if (text != null) BubbleVoiceEvent.Final(text) else BubbleVoiceEvent.NoSpeech,
-            )
+            if (confirmState != BubbleConfirmState.Idle) {
+                // The loop is listening: this transcript is the answer, not a
+                // new request, so it never reaches the field on its own.
+                voiceState = BubbleVoiceState.Idle
+                renderVoice()
+                dispatchConfirm(
+                    if (text != null) {
+                        BubbleConfirmEvent.Answer(text)
+                    } else {
+                        BubbleConfirmEvent.NoSpeech
+                    },
+                )
+                return
+            }
+            val followUp = followUpListen
+            followUpListen = false
+            if (text != null) {
+                // T11 places the transcript in the field for editing; T21 then
+                // reads it back and listens for the owner's decision.
+                dispatchVoice(BubbleVoiceEvent.Final(text))
+                dispatchConfirm(BubbleConfirmEvent.FinalTranscript(text, followUp))
+            } else {
+                dispatchVoice(BubbleVoiceEvent.NoSpeech)
+            }
         }
         override fun onPartialResults(partialResults: Bundle?) {
+            // While the loop listens a partial is the answer in progress; it
+            // must never overwrite the request the bubble is confirming.
+            if (confirmState != BubbleConfirmState.Idle) return
             val text = firstResult(partialResults) ?: return
             dispatchVoice(BubbleVoiceEvent.Partial(text))
         }
@@ -1065,6 +1182,206 @@ class PhoneBubbleOverlay(
             ?.firstOrNull { it.isNotBlank() }
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
+
+    // --- voice confirmation loop (T21) ------------------------------------
+
+    /**
+     * Runs the pure loop reducer and applies its actions on the main thread.
+     *
+     * The recognizer is shared with T11: while the loop is active it "owns"
+     * the microphone, and leaving the loop drops the recognizer so a late
+     * transcript can never overwrite what the owner typed, sent or appended.
+     */
+    private fun dispatchConfirm(event: BubbleConfirmEvent) {
+        val wasActive = confirmState != BubbleConfirmState.Idle
+        val decision = BubbleVoiceConfirmReducer.reduce(confirmState, event)
+        confirmState = decision.state
+        if (wasActive && confirmState == BubbleConfirmState.Idle) {
+            abandonVoice(render = true)
+        }
+        decision.actions.forEach(::applyConfirmAction)
+        renderConfirmPrompt()
+    }
+
+    private fun applyConfirmAction(action: BubbleConfirmAction) {
+        when (action) {
+            is BubbleConfirmAction.ShowPrompt -> {
+                confirmPromptText = action.text
+                renderConfirmPrompt()
+            }
+            is BubbleConfirmAction.Speak -> speakPrompt(action.text)
+            BubbleConfirmAction.StartRecognizer -> startConfirmListening()
+            is BubbleConfirmAction.AppendText -> appendTranscript(action.text)
+            BubbleConfirmAction.Send -> sendConfirmedDraft()
+            BubbleConfirmAction.HidePrompt -> {
+                confirmPromptText = null
+                renderConfirmPrompt()
+            }
+            BubbleConfirmAction.StopTts -> stopTts()
+        }
+    }
+
+    /** Stops the loop from outside an event (collapse, mic tap, teardown). */
+    private fun cancelConfirmLoop() {
+        if (confirmState == BubbleConfirmState.Idle) return
+        dispatchConfirm(BubbleConfirmEvent.Cancelled)
+    }
+
+    /**
+     * The loop's affirmative answer. It uses the send button's path, with one
+     * guard: while another turn is still running the controller would ignore
+     * the request, so the loop stops and leaves the text in the field instead
+     * of letting the send path clear it.
+     */
+    private fun sendConfirmedDraft() {
+        if (chatState.isBusy) {
+            confirmPromptText = null
+            renderConfirmPrompt()
+            return
+        }
+        sendDraft()
+    }
+
+    private fun renderConfirmPrompt() {
+        val line = confirmPrompt ?: return
+        val text = confirmPromptText
+        line.text = text.orEmpty()
+        line.visibility = if (text.isNullOrEmpty()) View.GONE else View.VISIBLE
+    }
+
+    /**
+     * Starts the recognizer for one loop answer. The T11 listening UI is reused
+     * (bars and "Escuchando…") so the owner sees the microphone is hers.
+     */
+    private fun startConfirmListening() {
+        voiceState = BubbleVoiceState.Listening()
+        renderVoice()
+        if (!startSpeech()) dispatchConfirm(BubbleConfirmEvent.NoSpeech)
+    }
+
+    /** Appends dictated words to the request with a single separating space. */
+    private fun appendTranscript(text: String) {
+        val field = input ?: return
+        val current = field.text?.toString().orEmpty().trim()
+        val combined = if (current.isEmpty()) text else "$current $text"
+        applyingTranscript = true
+        field.setText(combined)
+        field.setSelection(combined.length)
+        applyingTranscript = false
+        dictatedDraft = true
+        voiceHint?.visibility = View.GONE
+    }
+
+    /**
+     * Speaks a read-back prompt (T21). Audio focus is left to TextToSpeech's
+     * own defaults, so the bubble adds no permission and no focus policy of its
+     * own. Initialization is asynchronous: the first prompt is queued and
+     * spoken when the engine is ready, and any failure makes the loop skip the
+     * voice and start listening immediately (the prompt line stays visible).
+     */
+    private fun speakPrompt(text: String) {
+        if (ttsFailed) {
+            dispatchConfirm(BubbleConfirmEvent.TtsUnavailable)
+            return
+        }
+        val engine = tts
+        if (engine != null && ttsReady) {
+            speakNow(engine, text)
+            return
+        }
+        pendingSpeech = text
+        if (engine == null) {
+            tts = TextToSpeech(service) { status -> onTtsInitialized(status) }
+                .also(::installTtsListener)
+        }
+    }
+
+    private fun installTtsListener(engine: TextToSpeech) {
+        engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) = Unit
+
+            override fun onDone(utteranceId: String?) {
+                // Binder thread: the reducer and every view call run on main.
+                scope.launch { dispatchConfirm(BubbleConfirmEvent.TtsDone) }
+            }
+
+            override fun onError(utteranceId: String?) {
+                scope.launch { dispatchConfirm(BubbleConfirmEvent.TtsUnavailable) }
+            }
+
+            override fun onError(utteranceId: String?, errorCode: Int) {
+                scope.launch { dispatchConfirm(BubbleConfirmEvent.TtsUnavailable) }
+            }
+        })
+    }
+
+    private fun onTtsInitialized(status: Int) {
+        scope.launch {
+            if (status != TextToSpeech.SUCCESS) {
+                failTts()
+                return@launch
+            }
+            val engine = tts ?: return@launch
+            if (!selectSpanishVoice(engine)) {
+                failTts()
+                return@launch
+            }
+            // The engine is configured even when the loop was cancelled while
+            // it started, so the next read-back speaks without waiting again.
+            ttsReady = true
+            val queued = pendingSpeech
+            pendingSpeech = null
+            if (queued != null && confirmState is BubbleConfirmState.Speaking) {
+                speakNow(engine, queued)
+            }
+        }
+    }
+
+    /** `es-CL` first, then plain Spanish, as the task names. */
+    private fun selectSpanishVoice(engine: TextToSpeech): Boolean {
+        if (isLanguageUsable(engine.setLanguage(Locale.forLanguageTag("es-CL")))) return true
+        return isLanguageUsable(engine.setLanguage(Locale.forLanguageTag("es")))
+    }
+
+    private fun isLanguageUsable(result: Int): Boolean =
+        result != TextToSpeech.LANG_MISSING_DATA && result != TextToSpeech.LANG_NOT_SUPPORTED
+
+    private fun speakNow(engine: TextToSpeech, text: String) {
+        val result = engine.speak(text, TextToSpeech.QUEUE_FLUSH, null, TTS_UTTERANCE_ID)
+        if (result == TextToSpeech.ERROR) {
+            dispatchConfirm(BubbleConfirmEvent.TtsUnavailable)
+        }
+    }
+
+    private fun failTts() {
+        ttsFailed = true
+        ttsReady = false
+        pendingSpeech = null
+        dispatchConfirm(BubbleConfirmEvent.TtsUnavailable)
+    }
+
+    private fun stopTts() {
+        pendingSpeech = null
+        try {
+            tts?.stop()
+        } catch (error: Exception) {
+            Log.w(TAG, "could not stop the spoken prompt: ${error.javaClass.simpleName}")
+        }
+    }
+
+    private fun shutdownTts() {
+        pendingSpeech = null
+        ttsReady = false
+        val engine = tts
+        tts = null
+        if (engine == null) return
+        try {
+            engine.stop()
+            engine.shutdown()
+        } catch (error: Exception) {
+            Log.w(TAG, "could not shut TextToSpeech down: ${error.javaClass.simpleName}")
+        }
+    }
 
     // --- voice follow-up (T17) --------------------------------------------
 
@@ -1092,7 +1409,9 @@ class PhoneBubbleOverlay(
     /**
      * Shows the answer (the panel already renders it) and leaves the mic
      * listening. Expanding undocks first, and nothing here shows the keyboard:
-     * T16 keeps the IME owner's choice. Never sends.
+     * T16 keeps the IME owner's choice. T21: the reply she dictates is a short
+     * yes/no to the agent or the next request; the loop decides which, and a
+     * short answer is sent straight to the agent.
      */
     private fun openForVoiceFollowUp() {
         if (mode == BubbleMode.COLLAPSED) expand()
@@ -1101,6 +1420,7 @@ class PhoneBubbleOverlay(
         ) {
             return
         }
+        followUpListen = true
         dispatchVoice(
             BubbleVoiceEvent.MicTapped(
                 permissionGranted = MicPermission.isGranted(service),
@@ -1272,6 +1592,10 @@ class PhoneBubbleOverlay(
     }
 
     private fun collapse() {
+        // T21: the spoken read-back and its loop die with the panel; the text
+        // stays in the field, unsent.
+        cancelConfirmLoop()
+        stopTts()
         // T11: a collapsed bubble must not keep the microphone open.
         abandonVoice(render = false)
         hideKeyboard()
@@ -1308,6 +1632,10 @@ class PhoneBubbleOverlay(
     }
 
     private fun sendDraft() {
+        // T21: the send button works at any moment; sending while the read-back
+        // loop runs stops the loop first. This is also the path the loop's own
+        // affirmative answer uses, so typed and dictated sends stay identical.
+        cancelConfirmLoop()
         val text = input?.text?.toString().orEmpty()
         if (text.isBlank()) return
         val dictated = dictatedDraft
@@ -1563,6 +1891,7 @@ class PhoneBubbleOverlay(
         approvalBanner?.visibility =
             if (approvalUi.waitingForApproval) View.VISIBLE else View.GONE
         renderVoice()
+        renderConfirmPrompt()
     }
 
     // --- helpers ----------------------------------------------------------
@@ -1733,6 +2062,9 @@ class PhoneBubbleOverlay(
 
         /** Compact keyboard glyph on the hide-keyboard glass button. */
         private const val HIDE_KEYBOARD_GLYPH = "⌨"
+
+        /** Utterance id of the spoken read-back prompt (T21). */
+        private const val TTS_UTTERANCE_ID = "idupi-bubble-confirm"
 
         /** White "!" on the red approval dot. */
         private val COLOR_ON_ERROR = 0xFFFFFFFF.toInt()

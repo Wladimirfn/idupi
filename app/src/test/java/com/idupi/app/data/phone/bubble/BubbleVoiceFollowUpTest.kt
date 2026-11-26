@@ -12,8 +12,10 @@ import org.junit.Test
  * request she dictated, answered with a question by a finished turn, reopens
  * the microphone; a typed request, a statement or a failed turn never does.
  *
- * The bubble is only allowed to leave the answer visible and the mic ready: it
- * still never sends anything by itself.
+ * The bubble is only allowed to leave the answer visible and the mic ready.
+ * Since T21 the dictated reply is classified by the voice confirmation loop: a
+ * short yes/plain "no" is sent straight to the agent, anything longer is read
+ * back before sending.
  */
 class BubbleVoiceFollowUpTest {
 

@@ -12,8 +12,10 @@ import org.junit.Test
  * the whole event -> state -> action table, so the service only starts/stops the
  * recognizer and paints what the state exposes.
  *
- * Copy is neutral Latin American Spanish, and a transcript is never sent: it
- * only reaches the field for editing.
+ * Copy is neutral Latin American Spanish, and partial hypotheses are never
+ * sent: they only reach the field for editing. Since T21 a final transcript is
+ * read back by the overlay before anything can be sent; that rule lives in
+ * [BubbleVoiceConfirmTest].
  */
 class BubbleVoiceTest {
 

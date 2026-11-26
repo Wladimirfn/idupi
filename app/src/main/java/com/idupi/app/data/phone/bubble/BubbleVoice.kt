@@ -5,7 +5,9 @@ package com.idupi.app.data.phone.bubble
  *
  * The overlay owns a `SpeechRecognizer`; this model owns the rules so the
  * service only starts/stops the recognizer and paints what the state exposes.
- * A transcript is never sent automatically: it lands in the field for editing.
+ * Partial hypotheses only ever reach the field for editing. Since T21 a final
+ * transcript is read back by the overlay and may be sent after the owner's
+ * spoken confirmation; that decision lives in [BubbleVoiceConfirmReducer].
  */
 sealed interface BubbleVoiceState {
 
@@ -93,7 +95,14 @@ sealed interface BubbleVoiceAction {
      */
     data object LaunchSystemDictation : BubbleVoiceAction
 
-    /** Place [text] in the input field, cursor at the end. Never sends it. */
+    /**
+     * Place [text] in the input field, cursor at the end.
+     *
+     * Partial hypotheses never send. Since T21 the overlay follows a final
+     * transcript with the read-back loop ("¿Lo envío o quieres agregar
+     * algo?"), whose affirmative answer sends the field through the same path
+     * as the send button.
+     */
     data class PutText(val text: String) : BubbleVoiceAction
 }
 
