@@ -143,7 +143,7 @@ fun PhoneAgentSection(viewModel: PhoneAgentSettingsViewModel) {
         Unit
     }
 
-    SettingsSection("ASISTENTE DEL TELÉFONO") {
+    SettingsSection {
         StatusReportingCard(
             enabled = statusEnabled,
             usageAccessGranted = usageAccess,

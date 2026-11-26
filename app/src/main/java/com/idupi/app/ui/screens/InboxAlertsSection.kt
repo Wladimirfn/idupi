@@ -125,7 +125,7 @@ fun InboxAlertsSection(viewModel: InboxSettingsViewModel) {
         viewModel.loadInstalledApps()
     }
 
-    SettingsSection("ALERTAS") {
+    SettingsSection {
         NotificationAccessCard(
             enabled = listenerEnabled,
             onOpenSettings = {

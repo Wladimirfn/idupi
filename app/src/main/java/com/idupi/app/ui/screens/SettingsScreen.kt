@@ -1,6 +1,7 @@
 package com.idupi.app.ui.screens
 
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -9,24 +10,33 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.idupi.app.BuildConfig
 import com.idupi.app.IduPiApp
 import com.idupi.app.data.IduPiClientProvider
 import com.idupi.app.data.connection.ConnectionStorage
+import com.idupi.app.data.inbox.isInboxListenerEnabled
 import com.idupi.app.domain.model.MIN_READABLE_CONTRAST_RATIO
 import com.idupi.app.domain.model.ThemeColors
 import com.idupi.app.domain.model.ThemeMode
@@ -35,6 +45,18 @@ import com.idupi.app.domain.model.ThemeSettings
 import com.idupi.app.domain.model.contrastRatioArgb
 import com.idupi.app.domain.model.isLowContrast
 import com.idupi.app.domain.model.relativeLuminance
+import com.idupi.app.ui.screens.settings.ACTIONS_CATEGORY_SUMMARY
+import com.idupi.app.ui.screens.settings.HELP_CATEGORY_SUMMARY
+import com.idupi.app.ui.screens.settings.SettingsCategoryRow
+import com.idupi.app.ui.screens.settings.SettingsRoute
+import com.idupi.app.ui.screens.settings.SettingsSubScreen
+import com.idupi.app.ui.screens.settings.alertsSummary
+import com.idupi.app.ui.screens.settings.appearanceSummary
+import com.idupi.app.ui.screens.settings.back
+import com.idupi.app.ui.screens.settings.calendarSummary
+import com.idupi.app.ui.screens.settings.connectionSummary
+import com.idupi.app.ui.screens.settings.healthSummary
+import com.idupi.app.ui.screens.settings.phoneAssistantSummary
 import com.idupi.app.ui.theme.AppShapes
 import com.idupi.app.ui.theme.AppSpacing
 import com.idupi.app.ui.theme.AppTypography
@@ -53,7 +75,11 @@ import com.idupi.app.viewmodel.HealthSettingsViewModel
 import com.idupi.app.viewmodel.PhoneAgentSettingsViewModel
 import java.util.Locale
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * Ajustes (settings redesign T1): a short hub of categories that open their own
+ * sub-screens inside the same SETTINGS destination. The app-level drawer and
+ * BackHandler keep working; only an open sub-route consumes system back.
+ */
 @Composable
 fun SettingsScreen(
     mainViewModel: MainViewModel,
@@ -76,6 +102,111 @@ fun SettingsScreen(
         savedProfile = connectionStorage.getProfile()
     }
 
+    // The route name is what rememberSaveable persists; fromName() tolerates a
+    // stale or unknown value after a future route is renamed.
+    var routeName by rememberSaveable { mutableStateOf(SettingsRoute.Hub.name) }
+    val route = SettingsRoute.fromName(routeName)
+    val goBack: () -> Unit = {
+        back(route)?.let { routeName = it.name }
+    }
+    val openRoute: (SettingsRoute) -> Unit = { routeName = it.name }
+
+    // Only sub-routes intercept system back. On the hub this handler is
+    // disabled, so the app-level BackHandler keeps its current behaviour.
+    BackHandler(enabled = route != SettingsRoute.Hub) { goBack() }
+
+    when (route) {
+        SettingsRoute.Hub -> SettingsHub(
+            themeSettings = themeSettings,
+            savedProfileName = savedProfile?.name,
+            savedProfileHost = savedProfile?.let { "${it.host}:${it.port}" },
+            inboxViewModel = inboxViewModel,
+            phoneAgentViewModel = phoneAgentViewModel,
+            calendarViewModel = calendarViewModel,
+            healthViewModel = healthViewModel,
+            onMenuClick = onMenuClick,
+            onNavigateToConnection = onNavigateToConnection,
+            onNavigateToCommands = onNavigateToCommands,
+            onOpenRoute = openRoute,
+        )
+        SettingsRoute.Appearance -> SettingsSubScreen("Apariencia", onBack = goBack) {
+            AppearanceSection(
+                settings = themeSettings,
+                onModeSelect = { mainViewModel.setThemeMode(it) },
+                onPresetSelect = { mainViewModel.setThemePreset(it) },
+                onCustomColorsChange = { mainViewModel.setCustomThemeColors(it) }
+            )
+        }
+        SettingsRoute.Alerts,
+        SettingsRoute.FollowedApps,
+        SettingsRoute.SilencedChats,
+        SettingsRoute.AlertAnalyst,
+        SettingsRoute.CaptureStatus -> SettingsSubScreen(
+            // T4 gives "Apps a seguir" and the other long blocks their own
+            // screens; until then every alerts route shows the Alertas section.
+            title = "Alertas",
+            onBack = goBack,
+        ) {
+            InboxAlertsSection(inboxViewModel)
+        }
+        SettingsRoute.PhoneAssistant -> SettingsSubScreen(
+            title = "Asistente del teléfono",
+            onBack = goBack,
+        ) {
+            PhoneAgentSection(phoneAgentViewModel)
+        }
+        SettingsRoute.Calendar -> SettingsSubScreen("Calendario", onBack = goBack) {
+            CalendarSection(calendarViewModel)
+        }
+        SettingsRoute.Health -> SettingsSubScreen("Salud", onBack = goBack) {
+            HealthSection(healthViewModel)
+        }
+        SettingsRoute.Actions -> SettingsSubScreen("Acciones y seguridad", onBack = goBack) {
+            ActionsSection(
+                onDiagnostics = {
+                    Toast.makeText(context, "Conectado a: ${savedProfile?.host ?: "Ninguno"}", Toast.LENGTH_SHORT).show()
+                },
+                onClearCredentials = {
+                    connectionStorage.clear()
+                    // Persisted credentials are gone, but the in-memory client
+                    // and the delivery poller would keep using the old host and
+                    // token until the process restarted.
+                    IduPiClientProvider.clear()
+                    (context.applicationContext as? IduPiApp)?.stopDeliveryWatcher()
+                    onNavigateToWelcome()
+                }
+            )
+        }
+    }
+}
+
+/**
+ * Hub list: every category shows the state the owner would find inside it, so
+ * most adjustments need no extra tap to diagnose.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SettingsHub(
+    themeSettings: ThemeSettings,
+    savedProfileName: String?,
+    savedProfileHost: String?,
+    inboxViewModel: InboxSettingsViewModel,
+    phoneAgentViewModel: PhoneAgentSettingsViewModel,
+    calendarViewModel: CalendarSettingsViewModel,
+    healthViewModel: HealthSettingsViewModel,
+    onMenuClick: () -> Unit,
+    onNavigateToConnection: () -> Unit,
+    onNavigateToCommands: () -> Unit,
+    onOpenRoute: (SettingsRoute) -> Unit,
+) {
+    val inboxSettings by inboxViewModel.inboxSettings.collectAsState()
+    val phoneControlEnabled by phoneAgentViewModel.phoneControlEnabled.collectAsState()
+    val pendingApprovals by phoneAgentViewModel.approvals.collectAsState()
+    val calendarShareEnabled by calendarViewModel.shareEnabled.collectAsState()
+    val calendarPermission by calendarViewModel.permission.collectAsState()
+    val healthState by healthViewModel.state.collectAsState()
+    val notificationAccess = rememberNotificationAccess()
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -96,46 +227,64 @@ fun SettingsScreen(
                 .padding(paddingValues)
                 .verticalScroll(rememberScrollState())
                 .padding(AppSpacing.screenPadding),
-            verticalArrangement = Arrangement.spacedBy(AppSpacing.sectionGap)
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
         ) {
-            ConnectionSection(
-                profileName = savedProfile?.name ?: "Sin configurar",
-                profileHost = savedProfile?.let { "${it.host}:${it.port}" } ?: "—",
-                onNavigateToConnection = onNavigateToConnection
+            SettingsCategoryRow(
+                icon = Icons.Default.Dns,
+                title = "Conexión",
+                summary = connectionSummary(savedProfileName, savedProfileHost),
+                onClick = onNavigateToConnection,
             )
 
-            AppearanceSection(
-                settings = themeSettings,
-                onModeSelect = { mainViewModel.setThemeMode(it) },
-                onPresetSelect = { mainViewModel.setThemePreset(it) },
-                onCustomColorsChange = { mainViewModel.setCustomThemeColors(it) }
+            SettingsCategoryRow(
+                icon = Icons.Default.Palette,
+                title = "Apariencia",
+                summary = appearanceSummary(themeSettings),
+                onClick = { onOpenRoute(SettingsRoute.Appearance) },
             )
 
-            InboxAlertsSection(inboxViewModel)
+            SettingsCategoryRow(
+                icon = Icons.Default.Notifications,
+                title = "Alertas",
+                summary = alertsSummary(inboxSettings, notificationAccess),
+                onClick = { onOpenRoute(SettingsRoute.Alerts) },
+            )
 
-            PhoneAgentSection(phoneAgentViewModel)
+            SettingsCategoryRow(
+                icon = Icons.Default.PhoneAndroid,
+                title = "Asistente del teléfono",
+                summary = phoneAssistantSummary(phoneControlEnabled, pendingApprovals.pending.size),
+                onClick = { onOpenRoute(SettingsRoute.PhoneAssistant) },
+            )
 
-            CalendarSection(calendarViewModel)
+            SettingsCategoryRow(
+                icon = Icons.Default.CalendarMonth,
+                title = "Calendario",
+                summary = calendarSummary(calendarShareEnabled, calendarPermission),
+                onClick = { onOpenRoute(SettingsRoute.Calendar) },
+            )
 
-            HealthSection(healthViewModel)
+            SettingsCategoryRow(
+                icon = Icons.Default.Favorite,
+                title = "Salud",
+                summary = healthSummary(healthState),
+                onClick = { onOpenRoute(SettingsRoute.Health) },
+            )
+
+            SettingsCategoryRow(
+                icon = Icons.Default.Terminal,
+                title = "Ayuda y comandos",
+                summary = HELP_CATEGORY_SUMMARY,
+                onClick = onNavigateToCommands,
+            )
 
             AboutSection()
 
-            CommandsSection(onNavigateToCommands = onNavigateToCommands)
-
-            ActionsSection(
-                onDiagnostics = {
-                    Toast.makeText(context, "Conectado a: ${savedProfile?.host ?: "Ninguno"}", Toast.LENGTH_SHORT).show()
-                },
-                onClearCredentials = {
-                    connectionStorage.clear()
-                    // Persisted credentials are gone, but the in-memory client
-                    // and the delivery poller would keep using the old host and
-                    // token until the process restarted.
-                    IduPiClientProvider.clear()
-                    (context.applicationContext as? IduPiApp)?.stopDeliveryWatcher()
-                    onNavigateToWelcome()
-                }
+            SettingsCategoryRow(
+                icon = Icons.Default.Security,
+                title = "Acciones y seguridad",
+                summary = ACTIONS_CATEGORY_SUMMARY,
+                onClick = { onOpenRoute(SettingsRoute.Actions) },
             )
 
             Spacer(modifier = Modifier.height(AppSpacing.xxxl))
@@ -143,50 +292,43 @@ fun SettingsScreen(
     }
 }
 
-/** Section title + its card, kept tight instead of inheriting the full section gap. */
+/**
+ * Notification-listener access, re-read when the owner returns from the system
+ * settings, exactly like the Alertas section does.
+ */
+@Composable
+private fun rememberNotificationAccess(): Boolean {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var enabled by remember { mutableStateOf(isInboxListenerEnabled(context)) }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                enabled = isInboxListenerEnabled(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    return enabled
+}
+
+/**
+ * Section body. The title is optional: on a sub-screen the top bar already
+ * names the category, so the card block does not repeat it.
+ */
 @Composable
 internal fun SettingsSection(
-    title: String,
+    title: String? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)) {
-        Text(title, style = AppTypography.titleSmall, color = TextSecondary)
-        content()
-    }
-}
-
-@Composable
-private fun ConnectionSection(
-    profileName: String,
-    profileHost: String,
-    onNavigateToConnection: () -> Unit
-) {
-    SettingsSection("CONEXIÓN") {
-        Card(
-            modifier = Modifier.fillMaxWidth().clickable { onNavigateToConnection() },
-            colors = CardDefaults.cardColors(containerColor = SlateCard),
-            shape = AppShapes.card
-        ) {
-            Row(
-                modifier = Modifier.padding(AppSpacing.cardPadding).fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .background(SlateBorder, CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Default.Dns, contentDescription = null, tint = PrimaryIndigo)
-                }
-                Spacer(modifier = Modifier.width(AppSpacing.lg))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Perfil: $profileName", style = AppTypography.bodyLarge, color = TextPrimary)
-                    Text("Host: $profileHost", style = AppTypography.bodySmall, color = TextSecondary)
-                }
-                Icon(Icons.Default.ChevronRight, contentDescription = null, tint = TextSecondary)
-            }
+        if (title != null) {
+            Text(title, style = AppTypography.titleSmall, color = TextSecondary)
         }
+        content()
     }
 }
 
@@ -203,7 +345,7 @@ private fun AppearanceSection(
     onPresetSelect: (ThemePreset) -> Unit,
     onCustomColorsChange: (ThemeColors) -> Unit
 ) {
-    SettingsSection("APARIENCIA") {
+    SettingsSection {
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = SlateCard),
@@ -231,7 +373,7 @@ private fun AppearanceSection(
                 }
 
                 Text(
-                    text = appearanceSummary(settings),
+                    text = appearanceSectionSummary(settings),
                     style = AppTypography.labelSmall,
                     color = TextSecondary
                 )
@@ -461,46 +603,11 @@ private fun AboutSection() {
 }
 
 @Composable
-private fun CommandsSection(onNavigateToCommands: () -> Unit) {
-    SettingsSection("AYUDA") {
-        Card(
-            modifier = Modifier.fillMaxWidth().clickable { onNavigateToCommands() },
-            colors = CardDefaults.cardColors(containerColor = SlateCard),
-            shape = AppShapes.card
-        ) {
-            Row(
-                modifier = Modifier.padding(AppSpacing.cardPadding).fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(48.dp)
-                        .background(SlateBorder, CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(Icons.Default.Terminal, contentDescription = null, tint = PrimaryIndigo)
-                }
-                Spacer(modifier = Modifier.width(AppSpacing.lg))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("Ver comandos IDUPI", style = AppTypography.bodyLarge, color = TextPrimary)
-                    Text(
-                        "Referencia de comandos de la PC",
-                        style = AppTypography.bodySmall,
-                        color = TextSecondary
-                    )
-                }
-                Icon(Icons.Default.ChevronRight, contentDescription = null, tint = TextSecondary)
-            }
-        }
-    }
-}
-
-@Composable
 private fun ActionsSection(
     onDiagnostics: () -> Unit,
     onClearCredentials: () -> Unit
 ) {
-    SettingsSection("ACCIONES Y SEGURIDAD") {
+    SettingsSection {
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = SlateCard),
@@ -525,7 +632,7 @@ private fun ActionsSection(
     }
 }
 
-private fun appearanceSummary(settings: ThemeSettings): String = when (settings.mode) {
+private fun appearanceSectionSummary(settings: ThemeSettings): String = when (settings.mode) {
     ThemeMode.DARK -> "Oscuro · acento ${ThemePalettes.labelFor(settings.preset)}"
     ThemeMode.LIGHT -> "Claro · acento ${ThemePalettes.labelFor(settings.preset)}"
     ThemeMode.CUSTOM -> "Colores personalizados"
