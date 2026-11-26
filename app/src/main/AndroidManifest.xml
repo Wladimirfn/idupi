@@ -197,10 +197,14 @@
              system recognizer sheet and relays the transcript to the bubble.
              Launched from the accessibility overlay with
              FLAG_ACTIVITY_NEW_TASK, transparent and history-free. Never
-             exported; it owns no microphone permission of its own. -->
+             exported; it owns no microphone permission of its own.
+             Its own (empty) task affinity keeps it out of the app's task, so
+             launching it never brings MainActivity up behind the bubble
+             (phone-bubble T20). -->
         <activity
             android:name="com.idupi.app.data.phone.bubble.VoiceInputActivity"
             android:exported="false"
+            android:taskAffinity=""
             android:excludeFromRecents="true"
             android:noHistory="true"
             android:launchMode="singleTop"
@@ -209,10 +213,12 @@
         <!-- In-bubble dictation permission (phone-bubble T11). The overlay is
              an accessibility service and cannot request RECORD_AUDIO itself,
              so this transparent trampoline asks once and finishes. Never
-             exported and never in recents. -->
+             exported and never in recents; own task affinity for the same
+             reason as VoiceInputActivity (phone-bubble T20). -->
         <activity
             android:name="com.idupi.app.data.phone.bubble.MicPermissionActivity"
             android:exported="false"
+            android:taskAffinity=""
             android:excludeFromRecents="true"
             android:launchMode="singleTop"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />

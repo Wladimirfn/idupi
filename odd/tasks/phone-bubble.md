@@ -136,6 +136,23 @@ every outbound or irreversible step goes through the approval queue (B1).
       playbooks (send button / compose field / search ids, how to confirm a
       send) captured from the owner's real screen dumps, injected into the
       agent prompt for the app in use; (c) generic fallback. Research + tests.
+- [ ] T20 App: the voice activities open in their own task. Owner bug
+      2026-11-26: dictating from the bubble brought the IDUPI app up behind it,
+      intermittently. Cause: `VoiceInputActivity` and `MicPermissionActivity`
+      share the app's default task affinity, so starting them from the
+      accessibility service brings the existing app task (MainActivity) to the
+      front whenever it is still in recents. Fix: `android:taskAffinity=""` on
+      both. Manifest-only; checked by build + on-device.
+- [ ] T21 App: voice confirmation loop (owner 2026-11-26, "como Android Auto
+      con Gemini"). Supersedes "never auto-sends" for dictated text. After a
+      dictated final transcript the bubble asks, on screen and spoken with
+      `TextToSpeech` (es), "¿Lo envío o quieres agregar algo?" and listens:
+      affirmative -> send; "agrega/añade ..." with content -> append and ask
+      again; bare "agregar" -> listen for the addition, append, ask again;
+      cancel -> stop, text stays in the field; silence/error -> stop, text stays.
+      A dictated reply to an agent question (T17) that is only a yes/no answer
+      is sent directly without the read-back. Typed text is unchanged. Pure
+      reply classifier + loop reducer tested.
 - [ ] T12 Release: version bump, assembleRelease (same cert), push, live check,
       PR.
 
