@@ -136,14 +136,14 @@ every outbound or irreversible step goes through the approval queue (B1).
       playbooks (send button / compose field / search ids, how to confirm a
       send) captured from the owner's real screen dumps, injected into the
       agent prompt for the app in use; (c) generic fallback. Research + tests.
-- [ ] T20 App: the voice activities open in their own task. Owner bug
+- [x] T20 App: the voice activities open in their own task. Owner bug
       2026-11-26: dictating from the bubble brought the IDUPI app up behind it,
       intermittently. Cause: `VoiceInputActivity` and `MicPermissionActivity`
       share the app's default task affinity, so starting them from the
       accessibility service brings the existing app task (MainActivity) to the
       front whenever it is still in recents. Fix: `android:taskAffinity=""` on
       both. Manifest-only; checked by build + on-device.
-- [ ] T21 App: voice confirmation loop (owner 2026-11-26, "como Android Auto
+- [x] T21 App: voice confirmation loop (owner 2026-11-26, "como Android Auto
       con Gemini"). Supersedes "never auto-sends" for dictated text. After a
       dictated final transcript the bubble asks, on screen and spoken with
       `TextToSpeech` (es), "¿Lo envío o quieres agregar algo?" and listens:
@@ -399,3 +399,18 @@ the owner turn on the delivered command and the phone accepts its auto-approved
 messaging steps only while that turn is active on the device.
 Before T12, deliver only `assembleRelease` APKs (a debug APK fails with a
 signature mismatch on the phone).
+- 2026-11-26: T20 done. Manifest-only: `android:taskAffinity=""` on
+  `VoiceInputActivity` and `MicPermissionActivity`; merged debug manifest
+  checked. Commit `f67eb80`. On-device check pending (owner).
+- 2026-11-26: T21 done. Writer idu-pi work-1 (opencode, deepseek-v4.1-flash).
+  RED: `BubbleVoiceConfirmTest` failed to compile (`Unresolved reference
+  'ConfirmReply'`, `'BubbleVoiceConfirmReducer'`, ...). GREEN: 29 new tests;
+  orchestrator re-ran `./gradlew :app:testDebugUnitTest`: 126 suites, 1206
+  tests, 0 failures, 0 errors. Review fix: the writer split "dale" to dodge
+  `NeutralSpanishCopyTest`; replaced with an explicit per-file input
+  vocabulary exemption in the test. TTS/recognizer timing only checked
+  on-device. Commit `0dbe3a7`.
+- 2026-11-26: T12 partial. 1.56-burbuja-voz (versionCode 57, commit
+  `880ea31`), assembleRelease, signer SHA-256 matches dlv-33a07717c839, pushed
+  as dlv-064e0a4214e9. Includes T11/T17 for the first time on the phone (1.55
+  was built before them). Pending: owner live check, PR.
