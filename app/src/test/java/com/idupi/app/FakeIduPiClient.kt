@@ -13,6 +13,8 @@ import com.idupi.app.domain.model.KillProcessOutcome
 import com.idupi.app.domain.model.OsProcessSample
 import com.idupi.app.domain.model.Project
 import com.idupi.app.domain.model.PtyInfo
+import com.idupi.app.domain.model.PhoneAgentTurn
+import com.idupi.app.domain.model.PhoneAgentTurnStartResult
 import com.idupi.app.domain.model.PhoneApproval
 import com.idupi.app.domain.model.PhoneApprovalDecisionResult
 import com.idupi.app.domain.model.PhoneApprovalState
@@ -967,8 +969,61 @@ class FakeIduPiClient : IduPiClient {
         )
     }
 
-    // --- Remote screen module ---
+    // --- Phone bubble turns (phone-bubble T6) ---
 
+    /** Every text posted to POST /phone/agent/turns, in order. */
+    val startedPhoneTurns = mutableListOf<String>()
+
+    /** Scripted start answers, FIFO; falls back to [phoneTurnStartResult]. */
+    val phoneTurnStartResults: ArrayDeque<PhoneAgentTurnStartResult> = ArrayDeque()
+    var phoneTurnStartResult: PhoneAgentTurnStartResult? = null
+
+    /** When set, starting a turn throws it (the controller maps to Failure). */
+    var failPhoneTurnStartWith: Exception? = null
+
+    /** Every (id, waitSeconds) pair passed to the long poll, in order. */
+    val phoneTurnPolls = mutableListOf<Pair<String, Int>>()
+
+    /** Scripted poll answers, FIFO. Throw from a handler to simulate a blip. */
+    val phoneTurnPollHandlers: ArrayDeque<suspend (String, Int) -> PhoneAgentTurn> = ArrayDeque()
+    var phoneTurnPollDefault: PhoneAgentTurn? = null
+
+    var phoneTurnsListToReturn: List<PhoneAgentTurn> = emptyList()
+    var lastPhoneTurnsLimit: Int? = null
+
+    override suspend fun startPhoneAgentTurn(text: String): PhoneAgentTurnStartResult {
+        failPhoneTurnStartWith?.let { throw it }
+        maybeFail()
+        startedPhoneTurns += text
+        if (phoneTurnStartResults.isNotEmpty()) return phoneTurnStartResults.removeFirst()
+        return phoneTurnStartResult ?: PhoneAgentTurnStartResult.Started(
+            PhoneAgentTurn(
+                id = "pat-fake-${startedPhoneTurns.size}",
+                text = text,
+                status = com.idupi.app.domain.model.PhoneAgentTurnStatus.QUEUED,
+            )
+        )
+    }
+
+    override suspend fun getPhoneAgentTurn(id: String, waitSeconds: Int): PhoneAgentTurn {
+        phoneTurnPolls += id to waitSeconds
+        maybeFail()
+        if (phoneTurnPollHandlers.isNotEmpty()) {
+            return phoneTurnPollHandlers.removeFirst().invoke(id, waitSeconds)
+        }
+        return phoneTurnPollDefault ?: PhoneAgentTurn(
+            id = id,
+            status = com.idupi.app.domain.model.PhoneAgentTurnStatus.DONE,
+        )
+    }
+
+    override suspend fun listPhoneAgentTurns(limit: Int): List<PhoneAgentTurn> {
+        maybeFail()
+        lastPhoneTurnsLimit = limit
+        return phoneTurnsListToReturn
+    }
+
+    // --- Remote screen module ---
     var screenMonitorsToReturn: List<ScreenMonitor> = listOf(
         ScreenMonitor(id = 0, name = "\\\\.\\DISPLAY2", primary = true, width = 1920, height = 1080)
     )

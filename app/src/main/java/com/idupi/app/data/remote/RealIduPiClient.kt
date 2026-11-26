@@ -1151,6 +1151,48 @@ class RealIduPiClient : IduPiClient {
             }
         }
 
+    // --- Phone bubble turns (phone-bubble T6) ---
+
+    override suspend fun startPhoneAgentTurn(text: String): PhoneAgentTurnStartResult =
+        try {
+            val turn = send(HttpMethod.Post, "/api/v1/phone/agent/turns") {
+                contentType(ContentType.Application.Json)
+                setBody(PhoneAgentTurnPayload(text = text))
+            }.body<PhoneAgentTurnEnvelope>().turn
+            PhoneAgentTurnStartResult.Started(turn)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (rejected: IduPiHttpException) {
+            when (rejected.statusCode) {
+                400, 413 -> PhoneAgentTurnStartResult.Invalid()
+                503 -> PhoneAgentTurnStartResult.Unavailable()
+                else -> PhoneAgentTurnStartResult.Failure()
+            }
+        } catch (error: Exception) {
+            // The PC may be off or the token stale: the bubble shows the
+            // connection copy and lets the owner retry.
+            PhoneAgentTurnStartResult.Failure()
+        }
+
+    override suspend fun getPhoneAgentTurn(id: String, waitSeconds: Int): PhoneAgentTurn {
+        val wait = waitSeconds.coerceIn(0, 30)
+        // Same rule as the command long poll: the request timeout must outlive
+        // the server's hold, or a healthy poll would be cancelled every cycle.
+        val timeoutMillis = wait * 1000L + 15_000L
+        return send(HttpMethod.Get, "/api/v1/phone/agent/turns/$id") {
+            parameter("wait", wait)
+            timeout {
+                requestTimeoutMillis = timeoutMillis
+                socketTimeoutMillis = timeoutMillis
+            }
+        }.body<PhoneAgentTurnEnvelope>().turn
+    }
+
+    override suspend fun listPhoneAgentTurns(limit: Int): List<PhoneAgentTurn> =
+        send(HttpMethod.Get, "/api/v1/phone/agent/turns") {
+            parameter("limit", limit.coerceIn(1, 20))
+        }.body<PhoneAgentTurnsEnvelope>().turns
+
     companion object {
         private const val TAG = "RealIduPiClient"
     }
@@ -1162,6 +1204,10 @@ private data class ApplySddProfilePayload(val profileId: String)
 /** `POST /api/v1/phone/approvals/{id}/decision` body. */
 @Serializable
 private data class PhoneApprovalDecisionPayload(val decision: String)
+
+/** `POST /api/v1/phone/agent/turns` body (phone-bubble T6). */
+@Serializable
+private data class PhoneAgentTurnPayload(val text: String)
 
 /** The approval decision route wraps the updated approval. */
 @Serializable

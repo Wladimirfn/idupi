@@ -271,6 +271,23 @@ interface IduPiClient {
      */
     suspend fun decidePhoneApproval(id: String, approve: Boolean): PhoneApprovalDecisionResult
 
+    /**
+     * Starts one phone bubble turn (phone-bubble T6). The server answers 202
+     * with the queued turn, 400/413 for invalid text and 503 when the
+     * configured agent cannot run phone turns; all three are typed values here
+     * so the bubble shows copy instead of a stack trace.
+     */
+    suspend fun startPhoneAgentTurn(text: String): PhoneAgentTurnStartResult
+
+    /**
+     * Long-polls one turn. The server holds the request until the status, the
+     * steps or the answer change, or [waitSeconds] pass (0..30).
+     */
+    suspend fun getPhoneAgentTurn(id: String, waitSeconds: Int = 25): PhoneAgentTurn
+
+    /** Recent turns, newest first (1..20); used to reconnect after a restart. */
+    suspend fun listPhoneAgentTurns(limit: Int = 20): List<PhoneAgentTurn>
+
     // Remote screen module (docs/remote-screen-module.md)
     suspend fun getScreenMonitors(): List<ScreenMonitor>
 
