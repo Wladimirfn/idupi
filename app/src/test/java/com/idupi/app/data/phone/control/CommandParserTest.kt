@@ -202,4 +202,75 @@ class CommandParserTest {
         assertEquals("phc-123456789abc", result.commandId)
         assertEquals("nope", result.type)
     }
+
+    @Test
+    fun `an approved tap exposes the approval args`() {
+        val parsed = valid(
+            """
+            {"id":"phc-2","type":"tap",
+             "args":{"text":"Enviar","approvalId":"apr-123456789abc",
+                     "approvedTarget":"Enviar","approvalReason":"risky_text"},
+             "approvalId":"apr-123456789abc","approvalReason":"risky_text",
+             "approvalTarget":"Enviar","approvalExpiresAt":"2026-11-24T12:10:00.000Z"}
+            """.trimIndent()
+        ) as PhoneCommand.Tap
+
+        assertEquals(
+            CommandApproval(
+                approvalId = "apr-123456789abc",
+                approvedTarget = "Enviar",
+                reason = "risky_text",
+            ),
+            parsed.approval,
+        )
+    }
+
+    @Test
+    fun `an approved type with submit exposes a null target`() {
+        val parsed = valid(
+            """
+            {"id":"phc-3","type":"type",
+             "args":{"text":"hola","submit":true,"approvalId":"apr-123456789abc",
+                     "approvedTarget":null,"approvalReason":"type_submit"},
+             "approvalId":"apr-123456789abc","approvalReason":"type_submit",
+             "approvalTarget":null}
+            """.trimIndent()
+        ) as PhoneCommand.TypeText
+
+        assertEquals(true, parsed.submit)
+        assertEquals(CommandApproval("apr-123456789abc", null, "type_submit"), parsed.approval)
+    }
+
+    @Test
+    fun `the top-level approval fields are read when args omits them`() {
+        val parsed = valid(
+            """
+            {"id":"phc-4","type":"tap","args":{"text":"Enviar"},
+             "approvalId":"apr-123456789abc","approvalReason":"risky_text",
+             "approvalTarget":"Enviar"}
+            """.trimIndent()
+        ) as PhoneCommand.Tap
+
+        assertEquals(
+            CommandApproval("apr-123456789abc", "Enviar", "risky_text"),
+            parsed.approval,
+        )
+    }
+
+    @Test
+    fun `a free command carries no approval`() {
+        val parsed = valid("""{"id":"phc-5","type":"tap","args":{"text":"Chats"}}""")
+            as PhoneCommand.Tap
+
+        assertEquals(null, parsed.approval)
+    }
+
+    @Test
+    fun `an unknown argument is still rejected next to approval args`() {
+        assertTrue(
+            invalid(
+                """{"id":"phc-1","type":"tap","args":{"text":"Enviar","approvalId":"apr-1","evil":1}}"""
+            ).error.contains("argumento desconocido"),
+        )
+    }
 }

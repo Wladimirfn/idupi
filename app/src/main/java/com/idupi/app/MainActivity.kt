@@ -16,6 +16,7 @@ import com.idupi.app.data.inbox.requestInboxListenerRebind
 import com.idupi.app.data.notification.DeliveryNotifications
 import com.idupi.app.data.notification.NotificationPermissionState
 import com.idupi.app.data.notification.currentNotificationPermissionPlan
+import com.idupi.app.data.phone.approval.ApprovalNotifier
 import com.idupi.app.ui.navigation.AppNavigation
 import com.idupi.app.ui.navigation.AppNavigationIntents
 import com.idupi.app.ui.navigation.Screen
@@ -115,6 +116,13 @@ class MainActivity : ComponentActivity() {
             intent?.getBooleanExtra(CalendarNotifier.EXTRA_OPEN_AGENDA, false) == true
         if (openAgenda) {
             AppNavigationIntents.request(Screen.AGENDA)
+            return
+        }
+        // The approvals card lives in Ajustes > Asistente del teléfono.
+        val openApprovals =
+            intent?.getBooleanExtra(ApprovalNotifier.EXTRA_OPEN_APPROVALS, false) == true
+        if (openApprovals) {
+            AppNavigationIntents.request(Screen.SETTINGS)
         }
     }
 }

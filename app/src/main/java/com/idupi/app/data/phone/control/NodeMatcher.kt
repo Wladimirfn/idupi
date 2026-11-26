@@ -68,6 +68,62 @@ object NodeMatcher {
         }
     }
 
+    /**
+     * Text and content description of [node] and its descendants, pre-order.
+     *
+     * Used by the phone-side risky-node check: the visible label of a button is
+     * often a child TextView, so looking only at the clickable ancestor would
+     * miss "Enviar".
+     */
+    fun textCandidates(node: NodeSnapshot): List<String> {
+        val texts = mutableListOf<String>()
+        collectTexts(node, texts)
+        return texts
+    }
+
+    private fun collectTexts(node: NodeSnapshot, into: MutableList<String>) {
+        if (node.text.isNotBlank()) into += node.text
+        if (node.desc.isNotBlank()) into += node.desc
+        node.children.forEach { child -> collectTexts(child, into) }
+    }
+
+    /**
+     * Texts of the smallest visible node containing the coordinates, falling
+     * back to the nearest annotated ancestor. This is what lets a blind
+     * `tap --xy` be stopped on a send button (phone-approvals T2).
+     */
+    fun textsAtPoint(roots: List<NodeSnapshot>, x: Int, y: Int): List<String> {
+        var best: NodeSnapshot? = null
+        var bestChain: List<NodeSnapshot> = emptyList()
+        var bestArea = Long.MAX_VALUE
+
+        fun walk(node: NodeSnapshot, ancestors: List<NodeSnapshot>) {
+            val bounds = node.bounds
+            val contains = x >= bounds.x && x < bounds.x + bounds.width &&
+                y >= bounds.y && y < bounds.y + bounds.height
+            if (node.visible && contains) {
+                val area = bounds.width.toLong() * bounds.height.toLong()
+                // Deepest/smallest wins; `<=` keeps the later (deeper) node on a tie.
+                if (area <= bestArea) {
+                    best = node
+                    bestChain = ancestors
+                    bestArea = area
+                }
+            }
+            node.children.forEach { child -> walk(child, ancestors + node) }
+        }
+
+        roots.forEach { walk(it, emptyList()) }
+        val node = best ?: return emptyList()
+        val own = textCandidates(node)
+        if (own.isNotEmpty()) return own
+        for (index in bestChain.indices.reversed()) {
+            val ancestors = textCandidates(bestChain[index])
+            if (ancestors.isNotEmpty()) return ancestors
+        }
+        return emptyList()
+    }
+
     private fun collect(
         node: NodeSnapshot,
         ancestors: List<NodeSnapshot>,

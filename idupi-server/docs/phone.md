@@ -90,6 +90,113 @@ result carries a short `error`; a successful one may carry `result`.
 A failed phone-side execution reports `{ ok: false, error: "<reason>" }`; the
 CLI prints `El teléfono falló: <reason>` and exits non-zero.
 
+## Approvals
+
+Source: [`lib/phone-risk.mjs`](../lib/phone-risk.mjs), store in
+[`lib/phone-approval-store.mjs`](../lib/phone-approval-store.mjs).
+
+The server classifies every command at creation (`POST /phone/commands`). Free
+commands enter the queue as before. Gated commands park as `awaiting_approval`:
+they are never returned by `/commands/next`, the 60 s command TTL does not
+apply to them, and they wait for the owner's decision on the phone.
+
+Free commands: `screen`, `status`, `scroll`, `global` (`back`, `home`,
+`recents`, `notifications`, `quick_settings`), `open`, `wait`, and
+`tap`/`long_press` by text that is not risky.
+
+Gated commands:
+
+- `type` with `submit: true`. The text may be harmless; the send is not.
+- `tap`/`long_press` whose text matches a risky verb as a whole word, ignoring
+  case and accents: `enviar`, `send`, `pagar`, `pay`, `eliminar`, `borrar`,
+  `delete`, `aprobar`, `approve`, `confirmar`, `confirm`, `comprar`, `buy`,
+  `transferir`, `transfer`, `publicar`, `post`, `share`, `compartir`. So
+  "Reenviar", "Responder" and "Pagaré mañana" stay free.
+- `tap`/`long_press` by `id` or `x + y` while the foreground app (from the
+  latest status snapshot) is a messaging, email, payment or banking app:
+  WhatsApp, Telegram, Messenger, Instagram, Gmail, Outlook, Samsung Messages,
+  Google Messages, Signal, Mercado Pago, PayPal, Santander Chile, BCI,
+  BancoEstado, and any package containing `bank`, `banco`, `pay` or `wallet`.
+
+The phone performs a second check: an unapproved tap that resolves to a node
+whose text is risky is refused with `error: "APPROVAL_REQUIRED"` and optionally
+`result.nodeText`. The server turns that refusal into an approval for the same
+command with reason `phone_detected_risky_target` and the node text as target.
+
+### Approval routes
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET | `/api/v1/phone/approvals?state=pending&limit=50` | Newest first; `state` is `pending`, `approved`, `rejected`, `expired` or `all` (`limit` 1..200) |
+| GET | `/api/v1/phone/approvals/{id}` | One approval, or `404 NOT_FOUND` |
+| POST | `/api/v1/phone/approvals/{id}/decision` | `{ "decision": "approve" \| "reject" }`; answers `200 { approval }` |
+
+A decision on an unknown id answers `404`; an invalid decision `400`; a second
+decision `409 ALREADY_DECIDED`; an expired approval `409 EXPIRED`. Commands are
+gated even before the first status snapshot arrives; without one the approval
+simply carries no `foregroundApp`.
+
+Approval shape:
+
+```json
+{
+  "id": "apr-1a2b3c4d5e6f",
+  "state": "pending",
+  "command": { "type": "tap", "args": { "text": "Enviar" } },
+  "reason": "risky_text",
+  "target": "Enviar",
+  "foregroundApp": { "packageName": "com.whatsapp", "label": "WhatsApp" },
+  "requestedBy": "cli",
+  "createdAt": "2026-11-24T12:00:00.000Z",
+  "expiresAt": "2026-11-24T12:10:00.000Z",
+  "decidedAt": null,
+  "commandId": "phc-1a2b3c4d5e6f",
+  "resultCommandId": null
+}
+```
+
+`state` is `pending`, `approved`, `rejected` or `expired`. `reason` is
+`risky_text`, `type_submit`, `sensitive_app` or
+`phone_detected_risky_target`. `resultCommandId` is the command that will
+actually run: the parked one, or a rebuilt one when the server restarted while
+the approval was pending.
+
+An approval is REQUIRED to change the command, never to authorize it lazily:
+
+- `approve` requeues the command with a fresh 60 s TTL. The phone receives it
+  with `args.approvalId` and `args.approvedTarget`; the app must verify the
+  node text against `approvedTarget` before touching it.
+- `reject` fails the command with `APPROVAL_REJECTED`.
+- An unanswered approval expires after 10 minutes and fails the command with
+  `APPROVAL_EXPIRED`. **Expiry never approves.**
+- No code path auto-approves. `bypassApprovals` exists only for tests and is
+  never wired in `index.mjs`.
+
+Approved command delivered to the phone:
+
+```json
+{
+  "id": "phc-1a2b3c4d5e6f",
+  "type": "tap",
+  "args": {
+    "text": "Enviar",
+    "approvalId": "apr-1a2b3c4d5e6f",
+    "approvedTarget": "Enviar"
+  },
+  "state": "delivered",
+  "approvalId": "apr-1a2b3c4d5e6f",
+  "approvalExpiresAt": "2026-11-24T12:10:00.000Z",
+  "approvalReason": "risky_text",
+  "approvalTarget": "Enviar"
+}
+```
+
+Approvals are persisted in `idupi-server/data/phone-approvals.json`
+(gitignored): at most 200 entries, decided ones older than 24 h pruned. A
+pending approval survives a server restart; approving it rebuilds the queued
+command from the approval itself. Decisions are logged by id only, never by
+target text.
+
 ## Status snapshot contract
 
 The phone posts an object (max 64 KiB). The server stores it as-is and adds
@@ -248,7 +355,10 @@ It reads the token from `IDUPI_TOKEN` or `.idupi-token`, uses `IDUPI_PORT`
 Every action enqueues a command, then waits up to ~65 s in 30 s long polls. If
 the phone never answers, it prints
 `El teléfono no respondió: ¿está activo el control desde la PC?` and exits
-non-zero.
+non-zero. A gated action prints
+`Esperando tu aprobación en el teléfono (<reason>, vence en N min)…` and keeps
+polling until the owner decides; a rejection prints `Rechazado en el teléfono.`
+and an expiry prints `La aprobación venció; no se hizo nada.`
 
 ```bash
 idupi-phone status                 # pretty summary
@@ -275,6 +385,7 @@ idupi-phone calendar propose --title "Almuerzo con Ana" \
   --start 2026-11-25T13:00:00-03:00 --end 2026-11-25T14:00:00-03:00 \
   --location "Centro" --notes "Llevar el informe"
 idupi-phone calendar proposals           # pending proposals
+idupi-phone approvals              # pending approvals waiting for the owner
 idupi-phone log                    # last 20 commands
 idupi-phone help
 ```
