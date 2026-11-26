@@ -61,7 +61,7 @@ started from a floating IDUPI button) builds on this gate.
       `POST /api/v1/phone/approvals/{id}/decision` (409 EXPIRED /
       ALREADY_DECIDED), `APPROVAL_REQUIRED` result -> approval, CLI wait +
       `approvals`, docs/phone.md. Tests.
-- [ ] T2 App: approvals client + poll, notification with actions (auth on lock
+- [x] T2 App: approvals client + poll, notification with actions (auth on lock
       screen), pending card, phone-side risky-node check and approved-target
       check. Local approval ledger: the phone only executes a command carrying
       an `approvalId` that the owner approved ON THIS PHONE (a PC process with
@@ -104,6 +104,19 @@ Delivery: about 900 authored lines forecast; one PR for the feature with
   in review: the decision route shares the PC bearer token, so a PC agent could
   approve itself; closed on the phone in T2 with a local approval ledger.
   RDD: off (not enabled by the owner); ordinary checks only.
+- 2026-11-26: T2 app done (work-2) 713e599. Local ledger (`ApprovalLedger`,
+  one use, bounded 100, fail-closed), pure `ApprovalGate` (APPROVAL_REQUIRED /
+  APPROVAL_NOT_GRANTED_ON_PHONE / APPROVED_TARGET_MISMATCH; sensitive_app bound
+  to the exact id/xy), `PhoneRiskText` port, poller (10 s, backoff), "Aprobaciones"
+  channel with auth-required actions, non-exported receiver, immutable
+  PendingIntents, pending card in Asistente del teléfono. RED: unit tests did not
+  compile on the missing APIs. GREEN (parent re-run): 1009 tests, 0 failures;
+  `assembleRelease` green.
+- 2026-11-26: T3 partial. 1.51-aprobaciones (versionCode 52) 1c60a48, APK pushed
+  off-LAN (dlv-0d3e0acb6980). Server restart pending: one live PTY (e2060b).
+  Known limit: with adb connected (home Wi-Fi) a PC process can tap the
+  approval UI through `adb input`, which bypasses accessibility; the
+  accessibility path itself is gated (the "Aprobar" button text is a risky verb).
 
 ## Next step
 
