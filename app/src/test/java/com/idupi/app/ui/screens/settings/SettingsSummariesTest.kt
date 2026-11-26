@@ -95,6 +95,18 @@ class SettingsSummariesTest {
     }
 
     @Test
+    fun `digital assistant reports whether IDUPI holds the role`() {
+        assertEquals(
+            "IDUPI es tu asistente digital. Mantén presionado el botón lateral para dictar.",
+            assistantRoleSummary(true),
+        )
+        assertEquals(
+            "Elige IDUPI en Aplicación de asistente digital para abrirlo con el botón lateral.",
+            assistantRoleSummary(false),
+        )
+    }
+
+    @Test
     fun `calendar summarises permission and sharing`() {
         assertEquals(
             "Sin permiso de calendario",

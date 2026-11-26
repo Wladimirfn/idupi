@@ -49,6 +49,17 @@ internal fun phoneAssistantSummary(controlEnabled: Boolean, pendingApprovals: In
     }
 }
 
+/**
+ * Row summary of "Asistente digital" (assistant-key T2). Holding the system's
+ * assistant role is what makes a side-key long press reach IDUPI; otherwise
+ * the summary names the exact system screen where the owner picks it.
+ */
+internal fun assistantRoleSummary(roleHeld: Boolean): String = if (roleHeld) {
+    "IDUPI es tu asistente digital. Mantén presionado el botón lateral para dictar."
+} else {
+    "Elige IDUPI en Aplicación de asistente digital para abrirlo con el botón lateral."
+}
+
 internal fun calendarSummary(shareEnabled: Boolean, permission: CalendarPermissionState): String =
     when {
         !permission.canRead -> "Sin permiso de calendario"

@@ -10,13 +10,20 @@ enum class BubbleMode { COLLAPSED, EXPANDED }
  * Whether the accessibility service may draw the bubble (phone-bubble T4).
  * All three are required: the owner's setting, the phone-control master switch
  * and the system accessibility grant the service itself represents.
+ *
+ * [temporarySessionActive] is the assistant-key T1 override: a launch from the
+ * system assistant shows the panel for that session even with the bubble icon
+ * (and phone control) off. It never rewrites the persisted setting; the gate
+ * returns to the owner's choice as soon as the session ends.
  */
 object BubbleGate {
     fun shouldShow(
         bubbleEnabled: Boolean,
         phoneControlEnabled: Boolean,
         accessibilityConnected: Boolean,
-    ): Boolean = bubbleEnabled && phoneControlEnabled && accessibilityConnected
+        temporarySessionActive: Boolean = false,
+    ): Boolean = temporarySessionActive ||
+        (bubbleEnabled && phoneControlEnabled && accessibilityConnected)
 }
 
 /**

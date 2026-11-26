@@ -9,6 +9,7 @@ import com.idupi.app.data.health.HealthReporting
 import com.idupi.app.data.phone.PhoneStatusReporting
 import com.idupi.app.data.phone.approval.PhoneApprovalReporting
 import com.idupi.app.data.phone.approval.PhoneApprovals
+import com.idupi.app.data.phone.bubble.AssistDictationHost
 import com.idupi.app.data.phone.bubble.BubbleGate
 import com.idupi.app.data.phone.bubble.PhoneBubbleOverlay
 import com.idupi.app.data.settings.SettingsProvider
@@ -18,6 +19,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
@@ -49,11 +51,34 @@ class IdupiAccessibilityService : AccessibilityService() {
     /** The floating bubble (phone-bubble T4); created on first use. */
     private val bubbleOverlay by lazy { PhoneBubbleOverlay(this) }
 
+    /**
+     * True while a launch from the system assistant keeps the bubble showing
+     * even though the owner's bubble setting is off (assistant-key T1). It is
+     * session state only: the persisted "Burbuja de IDUPI" setting is never
+     * written here, and the gate falls back to it when the session ends.
+     */
+    private val assistSessionActive = MutableStateFlow(false)
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         PhoneStatusReporting.start(this)
         CalendarReporting.start(this)
         HealthReporting.start(this)
+
+        // assistant-key T1: the exported ASSIST/VOICE_ASSIST activity reaches
+        // the overlay through this process-wide host. The service being bound
+        // IS the accessibility grant, so the request can open the panel even
+        // when the owner's bubble setting is off (temporary session).
+        AssistDictationHost.attach {
+            assistSessionActive.value = true
+            val opened = bubbleOverlay.openForAssistantDictation {
+                assistSessionActive.value = false
+            }
+            // A window that could not be drawn leaves no temporary session
+            // behind; the activity falls back to the app-with-hint path.
+            if (!opened) assistSessionActive.value = false
+            opened
+        }
 
         settingsJob?.cancel()
         settingsJob = scope.launch {
@@ -70,19 +95,22 @@ class IdupiAccessibilityService : AccessibilityService() {
         }
 
         // The bubble needs the owner's setting AND phone control; the service
-        // being bound IS the accessibility grant (phone-bubble T4).
-        // WindowManager.addView/removeView must run on the main thread, so this
-        // collector overrides the service's IO dispatcher.
+        // being bound IS the accessibility grant (phone-bubble T4). A launch
+        // from the system assistant overrides those settings for its session
+        // (assistant-key T1). WindowManager.addView/removeView must run on the
+        // main thread, so this collector overrides the service's IO dispatcher.
         bubbleJob?.cancel()
         bubbleJob = scope.launch(Dispatchers.Main.immediate) {
             combine(
                 SettingsProvider.repository.phoneBubbleEnabled,
                 SettingsProvider.repository.phoneControlEnabled,
-            ) { bubble, control ->
+                assistSessionActive,
+            ) { bubble, control, assist ->
                 BubbleGate.shouldShow(
                     bubbleEnabled = bubble,
                     phoneControlEnabled = control,
                     accessibilityConnected = true,
+                    temporarySessionActive = assist,
                 )
             }.collect { show -> bubbleOverlay.setVisible(show) }
         }
@@ -104,6 +132,9 @@ class IdupiAccessibilityService : AccessibilityService() {
     override fun onUnbind(intent: Intent?): Boolean {
         stopControlLoop()
         PhoneApprovalReporting.stop()
+        // assistant-key T1: no launch may reach a dead service.
+        AssistDictationHost.detach()
+        assistSessionActive.value = false
         bubbleOverlay.setVisible(false)
         bubbleJob?.cancel()
         bubbleJob = null
@@ -115,6 +146,8 @@ class IdupiAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         stopControlLoop()
         PhoneApprovalReporting.stop()
+        AssistDictationHost.detach()
+        assistSessionActive.value = false
         bubbleOverlay.destroy()
         bubbleJob?.cancel()
         bubbleJob = null

@@ -30,6 +30,29 @@ class BubbleOverlayModelTest {
         assertFalse(BubbleGate.shouldShow(false, false, false))
     }
 
+    @Test
+    fun `a temporary assistant session overrides the persisted bubble setting`() {
+        // The assistant entry point (assistant-key T1) is a session-only show:
+        // it works with the bubble icon off and with phone control off, and the
+        // owner's setting is never rewritten to achieve it.
+        assertTrue(
+            BubbleGate.shouldShow(
+                bubbleEnabled = false,
+                phoneControlEnabled = false,
+                accessibilityConnected = true,
+                temporarySessionActive = true,
+            ),
+        )
+        assertFalse(
+            BubbleGate.shouldShow(
+                bubbleEnabled = false,
+                phoneControlEnabled = true,
+                accessibilityConnected = true,
+                temporarySessionActive = false,
+            ),
+        )
+    }
+
     // --- window spec ------------------------------------------------------
 
     @Test
