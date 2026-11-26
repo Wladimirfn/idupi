@@ -41,6 +41,21 @@ class OwnerTurnRegistryTest {
     }
 
     @Test
+    fun `the registry reports whether any phone-started turn is active`() {
+        assertFalse(OwnerTurnRegistry.hasActiveTurn())
+
+        OwnerTurnRegistry.register("pat-0123456789ab")
+        assertTrue(OwnerTurnRegistry.hasActiveTurn())
+
+        OwnerTurnRegistry.register("pat-fedcba987654")
+        OwnerTurnRegistry.remove("pat-0123456789ab")
+        assertTrue(OwnerTurnRegistry.hasActiveTurn())
+
+        OwnerTurnRegistry.remove("pat-fedcba987654")
+        assertFalse(OwnerTurnRegistry.hasActiveTurn())
+    }
+
+    @Test
     fun `an owner approval is materialized at most once`() {
         assertTrue(OwnerTurnRegistry.claimOwnerApproval("apr-0123456789ab"))
         assertFalse(OwnerTurnRegistry.claimOwnerApproval("apr-0123456789ab"))

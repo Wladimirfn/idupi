@@ -1,19 +1,19 @@
 package com.idupi.app.data.phone.bubble
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Voice confirmation loop and reply classifier (phone-bubble T21).
+ * Spoken reply classifier and dictated-send rule (phone-bubble T21, updated by
+ * T23).
  *
- * The owner's ask, "como Android Auto con Gemini": after a dictated request the
- * bubble reads it back on screen and out loud ("¿Lo envío o quieres agregar
- * algo?") and her spoken answer decides what happens next. The classifier and
- * the loop live in one Android-free file so the whole conversation is pinned
- * here; the overlay only starts/stops the recognizer, TextToSpeech and the
- * field writes.
+ * Owner rule, 2026-11-26: a dictated request is NOT read back any more
+ * ("quita la de T21"). A final transcript goes straight to the agent through
+ * the same path as the send button, and that includes a dictated reply to an
+ * agent question (the T17 follow-up keeps reopening the microphone). The same
+ * classifier still serves the spoken approval of an outbound message (T23),
+ * which is why it stays here and is pinned by these tests.
  *
  * Copy is neutral Latin American Spanish (tú, no voseo).
  */
@@ -85,6 +85,37 @@ class BubbleVoiceConfirmTest {
     }
 
     @Test
+    fun `read requests are recognized with accents, case and punctuation`() {
+        val reads = listOf(
+            "léemelo",
+            "leemelo",
+            "léelo",
+            "leelo",
+            "lee",
+            "Lee.",
+            "lee el mensaje",
+            "Lee el mensaje.",
+            "qué dice",
+            "Que dice",
+            "¿Qué dice?",
+            "repítelo",
+            "repitelo",
+            "repite",
+            "Repite.",
+        )
+
+        reads.forEach { answer ->
+            assertEquals("'$answer' asks to read it", ConfirmReply.Read, classify(answer))
+        }
+    }
+
+    @Test
+    fun `read words inside a longer sentence are not a read request`() {
+        assertTrue(classify("lee el mensaje de Juan y cópialo") is ConfirmReply.Other)
+        assertTrue(classify("repite el pedido") is ConfirmReply.Other)
+    }
+
+    @Test
     fun `add intents without content ask what to add`() {
         val addOnly = listOf(
             "agrega",
@@ -147,7 +178,7 @@ class BubbleVoiceConfirmTest {
         assertEquals(ConfirmReply.Other("mañana a las 10"), classify("  mañana a las 10  "))
         assertEquals(ConfirmReply.Other("¿lo envío?"), classify("¿lo envío?"))
         // "para Juan" starts with a cancel word but is content, and with no add
-        // verb it stays Other so the loop appends it instead of dropping it.
+        // verb it stays Other so the approval loop appends it instead of dropping it.
         assertEquals(ConfirmReply.Other("para Juan"), classify("para Juan"))
     }
 
@@ -157,305 +188,22 @@ class BubbleVoiceConfirmTest {
         assertEquals(ConfirmReply.Other(""), classify("   "))
     }
 
-    @Test
-    fun `plain no is the short reply the follow-up sends directly`() {
-        assertTrue(BubbleVoiceConfirm.isPlainNo("no"))
-        assertTrue(BubbleVoiceConfirm.isPlainNo("No."))
-        assertTrue(BubbleVoiceConfirm.isPlainNo(" NO "))
-        assertFalse(BubbleVoiceConfirm.isPlainNo("no lo envíes"))
-        assertFalse(BubbleVoiceConfirm.isPlainNo("sí"))
-    }
+    // --- T23: a dictated final is sent straight to the agent --------------
 
     @Test
-    fun `the read-back copy is neutral Spanish`() {
-        assertEquals("¿Lo envío o quieres agregar algo?", BubbleVoiceConfirm.PROMPT_CONFIRM)
-        assertEquals("Dime qué agrego", BubbleVoiceConfirm.PROMPT_ADD)
-    }
-
-    // --- loop: read-back --------------------------------------------------
-
-    @Test
-    fun `a dictated final asks on screen and out loud`() {
-        val decision = reduce(
-            BubbleConfirmState.Idle,
-            BubbleConfirmEvent.FinalTranscript("revisa mi correo"),
-        )
-
-        assertEquals(
-            BubbleConfirmState.Speaking(
-                BubbleVoiceConfirm.PROMPT_CONFIRM,
-                ConfirmListenTarget.ANSWER,
-            ),
-            decision.state,
-        )
-        assertEquals(
-            listOf(
-                BubbleConfirmAction.ShowPrompt(BubbleVoiceConfirm.PROMPT_CONFIRM),
-                BubbleConfirmAction.Speak(BubbleVoiceConfirm.PROMPT_CONFIRM),
-            ),
-            decision.actions,
-        )
-    }
-
-    @Test
-    fun `a blank final transcript never starts the loop`() {
-        val decision = reduce(
-            BubbleConfirmState.Idle,
-            BubbleConfirmEvent.FinalTranscript("   "),
-        )
-
-        assertEquals(BubbleConfirmState.Idle, decision.state)
-        assertTrue(decision.actions.isEmpty())
-    }
-
-    @Test
-    fun `finished speech starts listening for the answer`() {
-        val decision = reduce(
-            speakingAnswer(),
-            BubbleConfirmEvent.TtsDone,
-        )
-
-        assertEquals(BubbleConfirmState.AwaitingAnswer, decision.state)
-        assertEquals(listOf(BubbleConfirmAction.StartRecognizer), decision.actions)
-    }
-
-    @Test
-    fun `TTS unavailable starts listening right away`() {
-        val decision = reduce(
-            speakingAnswer(),
-            BubbleConfirmEvent.TtsUnavailable,
-        )
-
-        assertEquals(BubbleConfirmState.AwaitingAnswer, decision.state)
-        assertEquals(listOf(BubbleConfirmAction.StartRecognizer), decision.actions)
-    }
-
-    // --- loop: answers ----------------------------------------------------
-
-    @Test
-    fun `an affirmative answer sends and clears the prompt`() {
-        val decision = reduce(
-            BubbleConfirmState.AwaitingAnswer,
-            BubbleConfirmEvent.Answer("Sí, envíalo."),
-        )
-
-        assertEquals(BubbleConfirmState.Idle, decision.state)
-        assertEquals(
-            listOf(BubbleConfirmAction.HidePrompt, BubbleConfirmAction.Send),
-            decision.actions,
-        )
-    }
-
-    @Test
-    fun `an answer with an addition appends it and asks again`() {
-        val decision = reduce(
-            BubbleConfirmState.AwaitingAnswer,
-            BubbleConfirmEvent.Answer("agrega que mañana es feriado"),
-        )
-
-        assertEquals(
-            BubbleConfirmState.Speaking(
-                BubbleVoiceConfirm.PROMPT_CONFIRM,
-                ConfirmListenTarget.ANSWER,
-            ),
-            decision.state,
-        )
-        assertEquals(
-            listOf(
-                BubbleConfirmAction.AppendText("que mañana es feriado"),
-                BubbleConfirmAction.ShowPrompt(BubbleVoiceConfirm.PROMPT_CONFIRM),
-                BubbleConfirmAction.Speak(BubbleVoiceConfirm.PROMPT_CONFIRM),
-            ),
-            decision.actions,
-        )
-    }
-
-    @Test
-    fun `a bare add intent asks what to add`() {
-        val decision = reduce(
-            BubbleConfirmState.AwaitingAnswer,
-            BubbleConfirmEvent.Answer("agregar algo"),
-        )
-
-        assertEquals(
-            BubbleConfirmState.Speaking(
-                BubbleVoiceConfirm.PROMPT_ADD,
-                ConfirmListenTarget.ADDITION,
-            ),
-            decision.state,
-        )
-        assertEquals(
-            listOf(
-                BubbleConfirmAction.ShowPrompt(BubbleVoiceConfirm.PROMPT_ADD),
-                BubbleConfirmAction.Speak(BubbleVoiceConfirm.PROMPT_ADD),
-            ),
-            decision.actions,
-        )
-    }
-
-    @Test
-    fun `the addition prompt listens for the addition once spoken`() {
-        val decision = reduce(
-            speakingAddition(),
-            BubbleConfirmEvent.TtsDone,
-        )
-
-        assertEquals(BubbleConfirmState.AwaitingAddition, decision.state)
-        assertEquals(listOf(BubbleConfirmAction.StartRecognizer), decision.actions)
-    }
-
-    @Test
-    fun `a heard addition is appended as-is and the request is read back`() {
-        val decision = reduce(
-            BubbleConfirmState.AwaitingAddition,
-            BubbleConfirmEvent.Answer("que mañana es feriado"),
-        )
-
-        assertEquals(
-            BubbleConfirmState.Speaking(
-                BubbleVoiceConfirm.PROMPT_CONFIRM,
-                ConfirmListenTarget.ANSWER,
-            ),
-            decision.state,
-        )
-        assertEquals(
-            listOf(
-                BubbleConfirmAction.AppendText("que mañana es feriado"),
-                BubbleConfirmAction.ShowPrompt(BubbleVoiceConfirm.PROMPT_CONFIRM),
-                BubbleConfirmAction.Speak(BubbleVoiceConfirm.PROMPT_CONFIRM),
-            ),
-            decision.actions,
-        )
-    }
-
-    @Test
-    fun `an unclassified answer is appended whole and asked again`() {
-        val decision = reduce(
-            BubbleConfirmState.AwaitingAnswer,
-            BubbleConfirmEvent.Answer("a Juan"),
-        )
-
-        assertEquals(
-            BubbleConfirmState.Speaking(
-                BubbleVoiceConfirm.PROMPT_CONFIRM,
-                ConfirmListenTarget.ANSWER,
-            ),
-            decision.state,
-        )
-        assertEquals(BubbleConfirmAction.AppendText("a Juan"), decision.actions.first())
-    }
-
-    @Test
-    fun `a cancel stops the loop and keeps the text`() {
-        val decision = reduce(
-            BubbleConfirmState.AwaitingAnswer,
-            BubbleConfirmEvent.Answer("no lo envíes"),
-        )
-
-        assertEquals(BubbleConfirmState.Idle, decision.state)
-        assertEquals(listOf(BubbleConfirmAction.HidePrompt), decision.actions)
-    }
-
-    // --- loop: stopping ---------------------------------------------------
-
-    @Test
-    fun `silence and recognizer errors stop the loop`() {
-        listOf(BubbleConfirmState.AwaitingAnswer, BubbleConfirmState.AwaitingAddition)
-            .forEach { state ->
-                val decision = reduce(state, BubbleConfirmEvent.NoSpeech)
-                assertEquals(BubbleConfirmState.Idle, decision.state)
-                assertEquals(listOf(BubbleConfirmAction.HidePrompt), decision.actions)
-            }
-    }
-
-    @Test
-    fun `typing while the loop runs stops it and silences the prompt`() {
+    fun `a dictated request is sent straight to the agent without a read-back`() {
         listOf(
-            BubbleConfirmState.AwaitingAnswer,
-            BubbleConfirmState.AwaitingAddition,
-            speakingAnswer(),
-        ).forEach { state ->
-            val decision = reduce(state, BubbleConfirmEvent.UserTyped)
-            assertEquals(BubbleConfirmState.Idle, decision.state)
-            assertEquals(
-                listOf(BubbleConfirmAction.StopTts, BubbleConfirmAction.HidePrompt),
-                decision.actions,
-            )
-        }
-    }
-
-    @Test
-    fun `tapping send while the loop runs stops it`() {
-        val decision = reduce(BubbleConfirmState.AwaitingAnswer, BubbleConfirmEvent.SendTapped)
-
-        assertEquals(BubbleConfirmState.Idle, decision.state)
-        assertEquals(
-            listOf(BubbleConfirmAction.StopTts, BubbleConfirmAction.HidePrompt),
-            decision.actions,
-        )
-    }
-
-    @Test
-    fun `the owner can cancel while the prompt is being spoken`() {
-        val decision = reduce(speakingAnswer(), BubbleConfirmEvent.Cancelled)
-
-        assertEquals(BubbleConfirmState.Idle, decision.state)
-        assertEquals(
-            listOf(BubbleConfirmAction.StopTts, BubbleConfirmAction.HidePrompt),
-            decision.actions,
-        )
-    }
-
-    @Test
-    fun `callbacks after the loop stopped change nothing`() {
-        listOf(
-            BubbleConfirmEvent.TtsDone,
-            BubbleConfirmEvent.TtsUnavailable,
-            BubbleConfirmEvent.Answer("sí"),
-            BubbleConfirmEvent.NoSpeech,
-            BubbleConfirmEvent.UserTyped,
-            BubbleConfirmEvent.SendTapped,
-            BubbleConfirmEvent.Cancelled,
-        ).forEach { event ->
-            val decision = reduce(BubbleConfirmState.Idle, event)
-            assertEquals(BubbleConfirmState.Idle, decision.state)
-            assertTrue(decision.actions.isEmpty())
-        }
-    }
-
-    @Test
-    fun `a late answer while the prompt is spoken is ignored`() {
-        val decision = reduce(speakingAnswer(), BubbleConfirmEvent.Answer("sí"))
-
-        assertEquals(speakingAnswer(), decision.state)
-        assertTrue(decision.actions.isEmpty())
-    }
-
-    @Test
-    fun `a blank final while the prompt is spoken stops the speech`() {
-        val decision = reduce(
-            speakingAnswer(),
-            BubbleConfirmEvent.FinalTranscript("   "),
-        )
-
-        assertEquals(BubbleConfirmState.Idle, decision.state)
-        assertEquals(
-            listOf(BubbleConfirmAction.StopTts, BubbleConfirmAction.HidePrompt),
-            decision.actions,
-        )
-    }
-
-    // --- T17: short reply to the agent's question -------------------------
-
-    @Test
-    fun `a dictated yes or plain no to the agent is sent directly`() {
-        listOf("Sí.", "sí", "dale", "No.", "no").forEach { answer ->
+            "revisa mi correo",
+            "sí",
+            "no",
+            "abre WhatsApp y dime qué me escribió Juan",
+        ).forEach { text ->
             val decision = reduce(
                 BubbleConfirmState.Idle,
-                BubbleConfirmEvent.FinalTranscript(answer, followUp = true),
+                BubbleConfirmEvent.FinalTranscript(text),
             )
 
-            assertEquals("'$answer' goes straight to the agent", BubbleConfirmState.Idle, decision.state)
+            assertEquals("'$text' goes straight to the agent", BubbleConfirmState.Idle, decision.state)
             assertEquals(
                 listOf(BubbleConfirmAction.HidePrompt, BubbleConfirmAction.Send),
                 decision.actions,
@@ -464,54 +212,52 @@ class BubbleVoiceConfirmTest {
     }
 
     @Test
-    fun `a longer reply to the agent goes through the read-back`() {
+    fun `a blank final transcript sends nothing`() {
         val decision = reduce(
             BubbleConfirmState.Idle,
-            BubbleConfirmEvent.FinalTranscript("a Juan", followUp = true),
+            BubbleConfirmEvent.FinalTranscript("   "),
         )
 
-        assertEquals(
-            BubbleConfirmState.Speaking(
-                BubbleVoiceConfirm.PROMPT_CONFIRM,
-                ConfirmListenTarget.ANSWER,
-            ),
-            decision.state,
-        )
-        assertEquals(BubbleConfirmAction.ShowPrompt(BubbleVoiceConfirm.PROMPT_CONFIRM), decision.actions.first())
-
-        // Only a plain "no" is a direct answer; a longer cancel is a request.
-        val longerCancel = reduce(
-            BubbleConfirmState.Idle,
-            BubbleConfirmEvent.FinalTranscript("no lo envíes", followUp = true),
-        )
-        assertTrue(longerCancel.state is BubbleConfirmState.Speaking)
+        assertEquals(BubbleConfirmState.Idle, decision.state)
+        assertTrue(decision.actions.isEmpty())
     }
 
     @Test
-    fun `a new dictated request without follow-up always reads back`() {
-        listOf("sí", "no").forEach { answer ->
-            val decision = reduce(
-                BubbleConfirmState.Idle,
-                BubbleConfirmEvent.FinalTranscript(answer, followUp = false),
-            )
+    fun `a final transcript while the approval loop runs is not a request`() {
+        listOf(
+            BubbleConfirmState.AwaitingAnswer,
+            BubbleConfirmState.AwaitingAddition,
+            BubbleConfirmState.Reading,
+            BubbleConfirmState.Writing,
+            BubbleConfirmState.Speaking(
+                ApprovalVoiceCopy.sendPrompt("WhatsApp"),
+                ConfirmListenTarget.ANSWER,
+            ),
+        ).forEach { state ->
+            val decision = reduce(state, BubbleConfirmEvent.FinalTranscript("sí"))
 
-            assertEquals(
-                BubbleConfirmState.Speaking(
-                    BubbleVoiceConfirm.PROMPT_CONFIRM,
-                    ConfirmListenTarget.ANSWER,
-                ),
-                decision.state,
-            )
+            assertEquals(state, decision.state)
+            assertTrue(decision.actions.isEmpty())
         }
     }
 
-    private fun speakingAnswer(): BubbleConfirmState = BubbleConfirmState.Speaking(
-        BubbleVoiceConfirm.PROMPT_CONFIRM,
-        ConfirmListenTarget.ANSWER,
-    )
+    @Test
+    fun `loop events outside the approval flow change nothing`() {
+        listOf(
+            BubbleConfirmEvent.TtsDone,
+            BubbleConfirmEvent.TtsUnavailable,
+            BubbleConfirmEvent.Answer("sí"),
+            BubbleConfirmEvent.NoSpeech,
+            BubbleConfirmEvent.Cancelled,
+            BubbleConfirmEvent.UserTyped,
+            BubbleConfirmEvent.SendTapped,
+            BubbleConfirmEvent.Expired,
+            BubbleConfirmEvent.DecidedElsewhere,
+        ).forEach { event ->
+            val decision = reduce(BubbleConfirmState.Idle, event)
 
-    private fun speakingAddition(): BubbleConfirmState = BubbleConfirmState.Speaking(
-        BubbleVoiceConfirm.PROMPT_ADD,
-        ConfirmListenTarget.ADDITION,
-    )
+            assertEquals(BubbleConfirmState.Idle, decision.state)
+            assertTrue(decision.actions.isEmpty())
+        }
+    }
 }

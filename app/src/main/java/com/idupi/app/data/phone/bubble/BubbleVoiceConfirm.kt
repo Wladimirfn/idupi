@@ -4,55 +4,61 @@ import java.text.Normalizer
 import java.util.Locale
 
 /**
- * Meaning of the owner's spoken answer to the read-back question (T21).
+ * Meaning of the owner's spoken answer (phone-bubble T21, READ added by T23).
  *
- * The owner asked for a hands-free flow "like Android Auto with Gemini": after
- * a dictated request the bubble reads it back ("¿Lo envío o quieres agregar
- * algo?") and her answer decides what happens next. Classification is a pure
- * question of text, so it lives here and is pinned by unit tests.
+ * T21 began as the read-back of a dictated request; T23 removed that read-back
+ * ("quita la de T21"), but the same classifier still decides every spoken
+ * answer of the approval loop: yes approves, no rejects, "léemelo" asks to
+ * hear the message, an add verb appends to the compose field, and anything
+ * else is treated as content.
  */
 sealed interface ConfirmReply {
 
-    /** "sí", "envíalo", "está bien": send the field the way the button does. */
+    /** "sí", "envíalo", "está bien": approve / send. */
     data object Affirmative : ConfirmReply
 
     /**
-     * An add verb followed by content ("agrega que mañana tengo reunión").
+     * "léemelo", "qué dice", "repítelo": read the message back from the screen.
+     *
+     * Screen text is data only; it shapes the spoken sentence and never changes
+     * the decision logic.
+     */
+    data object Read : ConfirmReply
+
+    /**
+     * An add verb followed by content ("agrégale que mañana tengo reunión").
      *
      * @property addition the answer with the verb removed, trimmed and ready
-     *   to append to the request with a single space.
+     *   to append to the compose field with a single space.
      */
     data class AddWithContent(val addition: String) : ConfirmReply
 
     /** Only an add intent ("agregar algo"): ask what to add and listen again. */
     data object AddOnly : ConfirmReply
 
-    /** "no", "cancela", "déjalo": stop the loop; the text stays unsent. */
+    /** "no", "cancela", "déjalo": reject; the message is not sent. */
     data object Cancel : ConfirmReply
 
     /**
      * Anything else non-empty.
      *
-     * The task's rule is deliberate: an unclassified answer is treated as an
-     * addition with content, so "a Juan" extends the request instead of being
-     * thrown away or sent blindly. [text] is the whole answer, trimmed.
+     * An unclassified answer is treated as an addition with content, so "a
+     * Juan" extends the message instead of being thrown away or approved
+     * blindly. [text] is the whole answer, trimmed.
      */
     data class Other(val text: String) : ConfirmReply
 }
 
 /**
- * Reply classifier and loop copy for the voice confirmation loop (T21).
+ * Reply classifier and input copy of the voice loops (T21, extended by T23).
  *
  * Matching ignores case, accents and punctuation, so "Sí, envíalo." is the
  * same answer as "si envialo". Accents are folded with NFD and combining marks
  * removed, and every non letter/digit character becomes a word separator. The
- * whole answer must match an affirmative or cancel phrase; a sentence that
- * merely starts with one is not a yes/no.
+ * whole answer must match an affirmative, read or cancel phrase; a sentence
+ * that merely starts with one is not a yes/no.
  */
 object BubbleVoiceConfirm {
-
-    /** Shown and spoken after a dictated request. Neutral Spanish, no voseo. */
-    const val PROMPT_CONFIRM = "¿Lo envío o quieres agregar algo?"
 
     /** Shown and spoken when the owner asked to add something without saying what. */
     const val PROMPT_ADD = "Dime qué agrego"
@@ -63,18 +69,11 @@ object BubbleVoiceConfirm {
         if (normalized.isEmpty()) return ConfirmReply.Other(trimmed)
         if (normalized in AFFIRMATIVE) return ConfirmReply.Affirmative
         if (normalized in CANCEL) return ConfirmReply.Cancel
+        if (normalized in READ) return ConfirmReply.Read
         if (normalized in ADD_ONLY) return ConfirmReply.AddOnly
         additionAfterVerb(trimmed)?.let { return ConfirmReply.AddWithContent(it) }
         return ConfirmReply.Other(trimmed)
     }
-
-    /**
-     * True when [answer] is only the word "no" (ignoring case, accents and
-     * punctuation). The T17 follow-up sends exactly that short answer straight
-     * to the agent; "no lo envíes" is a longer reply and goes through the
-     * read-back loop instead.
-     */
-    fun isPlainNo(answer: String): Boolean = normalize(answer) == "no"
 
     /** Case/accent/punctuation-insensitive form used for every whole match. */
     private fun normalize(text: String): String =
@@ -143,14 +142,33 @@ object BubbleVoiceConfirm {
         "para",
     )
 
+    /** Whole-answer read requests (T23). Input vocabulary, never copy. */
+    private val READ = setOf(
+        "leemelo",
+        "leelo",
+        "lee",
+        "lee el mensaje",
+        "leeme",
+        "leer",
+        "leerlo",
+        "que dice",
+        "repitelo",
+        "repitemelo",
+        "repite",
+    )
+
     /** Answers that ask to add something without saying what. */
     private val ADD_ONLY = setOf(
         "agrega",
         "agregar",
         "agregale",
+        "agrega algo",
+        "agregale algo",
         "anade",
         "anadir",
         "anadele",
+        "anade algo",
+        "anadele algo",
         "y tambien",
         "tambien",
         "ademas",
@@ -182,10 +200,13 @@ object BubbleVoiceConfirm {
 }
 
 /**
- * Where the loop is in the spoken conversation (T21).
+ * Where a spoken loop is (T21, reused by the approval loop in T23).
  *
- * Idle -> Speaking -> AwaitingAnswer -> (Speaking | Idle) and, when the owner
- * only asked to add, AwaitingAddition -> Speaking -> AwaitingAnswer.
+ * Idle -> Speaking -> AwaitingAnswer -> (Speaking | Reading | Writing | Idle)
+ * and, when the owner only asked to add, AwaitingAddition -> Writing ->
+ * Speaking -> AwaitingAnswer. Since T23 Idle is also the resting state of the
+ * bubble outside any approval: a dictated final transcript is a request and is
+ * sent straight to the agent instead of entering the loop.
  */
 sealed interface BubbleConfirmState {
 
@@ -203,32 +224,38 @@ sealed interface BubbleConfirmState {
         val next: ConfirmListenTarget,
     ) : BubbleConfirmState
 
-    /** The recognizer is listening for yes / add / cancel. */
+    /** The recognizer is listening for yes / read / add / cancel. */
     data object AwaitingAnswer : BubbleConfirmState
 
     /** The recognizer is listening for the words to append. */
     data object AwaitingAddition : BubbleConfirmState
+
+    /** The overlay is reading the recipient and message from the screen (T23). */
+    data object Reading : BubbleConfirmState
+
+    /** The overlay is setting the compose field of the app behind (T23). */
+    data object Writing : BubbleConfirmState
 }
 
 /** What the loop listens for after speaking a prompt. */
 enum class ConfirmListenTarget { ANSWER, ADDITION }
 
-/** One thing that can happen during the voice confirmation loop. */
+/** One thing that can happen during a spoken loop. */
 sealed interface BubbleConfirmEvent {
 
     /**
-     * The in-bubble recognizer delivered a final transcript and the T11
-     * reducer already placed it in the field.
+     * The in-bubble recognizer delivered a final transcript outside a loop.
      *
-     * @property text the transcript, trimmed by the reducer.
-     * @property followUp the mic was opened by the T17 agent-question
-     *   follow-up, so a short yes/no is an answer to the agent and is sent
-     *   directly instead of being read back.
+     * Since T23 the bubble sends it straight to the agent (the send button's
+     * own path); there is no request read-back any more.
      */
-    data class FinalTranscript(
-        val text: String,
-        val followUp: Boolean = false,
-    ) : BubbleConfirmEvent
+    data class FinalTranscript(val text: String) : BubbleConfirmEvent
+
+    /**
+     * Start the approval loop with [prompt] (T23): the sentence is shown and
+     * spoken, then the answer is heard.
+     */
+    data class StartApproval(val prompt: String) : BubbleConfirmEvent
 
     /** `UtteranceProgressListener.onDone`, posted to the main thread. */
     data object TtsDone : BubbleConfirmEvent
@@ -239,7 +266,7 @@ sealed interface BubbleConfirmEvent {
     /** A final transcript heard while the loop listens. */
     data class Answer(val text: String) : BubbleConfirmEvent
 
-    /** Silence or a recognizer error while the loop listens. */
+    /** Silence, an empty answer or a recognizer error while the loop listens. */
     data object NoSpeech : BubbleConfirmEvent
 
     /** The panel collapsed, the service stopped, or the mic was tapped. */
@@ -250,6 +277,24 @@ sealed interface BubbleConfirmEvent {
 
     /** The owner tapped Enviar while the loop ran. */
     data object SendTapped : BubbleConfirmEvent
+
+    /**
+     * The screen read finished. Screen text is untrusted data: it only feeds
+     * the spoken sentence, never the decision.
+     */
+    data class ReadDone(val recipient: String?, val text: String?) : BubbleConfirmEvent
+
+    /** The compose field took the appended words. */
+    data object AppendDone : BubbleConfirmEvent
+
+    /** The compose field was not found or refused the text. */
+    data object AppendFailed : BubbleConfirmEvent
+
+    /** The approval deadline passed while the loop ran. */
+    data object Expired : BubbleConfirmEvent
+
+    /** Another surface decided the approval while the loop ran. */
+    data object DecidedElsewhere : BubbleConfirmEvent
 }
 
 /** One side effect the overlay must apply on the main thread. */
@@ -264,10 +309,7 @@ sealed interface BubbleConfirmAction {
     /** Start the in-bubble recognizer for one answer. */
     data object StartRecognizer : BubbleConfirmAction
 
-    /** Append [text] to the field with a single separating space. */
-    data class AppendText(val text: String) : BubbleConfirmAction
-
-    /** Send the field through the send button's own path. */
+    /** Send the bubble field through the send button's own path. */
     data object Send : BubbleConfirmAction
 
     /** Hide the read-back line. */
@@ -275,6 +317,21 @@ sealed interface BubbleConfirmAction {
 
     /** Stop the spoken prompt immediately. */
     data object StopTts : BubbleConfirmAction
+
+    /** Approve the bound approval through the notification's approve path. */
+    data object Approve : BubbleConfirmAction
+
+    /** Reject the bound approval through the notification's reject path. */
+    data object Reject : BubbleConfirmAction
+
+    /** Read the recipient and composed text with the accessibility service. */
+    data object ReadScreen : BubbleConfirmAction
+
+    /** Append [text] to the other app's compose field (accessibility set-text). */
+    data class AppendToCompose(val text: String) : BubbleConfirmAction
+
+    /** Post the normal approval notification, so nothing hangs silently. */
+    data object PostFallbackNotification : BubbleConfirmAction
 }
 
 /**
@@ -287,18 +344,14 @@ data class BubbleConfirmDecision(
 )
 
 /**
- * Pure event -> state -> action table for the voice confirmation loop (T21).
+ * Pure event -> state -> action table for a dictated final transcript (T21,
+ * changed by T23).
  *
- * The owner's rule: a dictated final transcript is read back on screen and out
- * loud. An affirmative sends the field, an add verb with content appends it and
- * asks again, a bare add intent asks what to add, a cancel or silence stops and
- * leaves the text in the field, and anything else is appended whole before
- * asking again (see [ConfirmReply.Other]). Typed requests never enter the loop:
- * the overlay only routes in-bubble final transcripts here.
- *
- * The T17 follow-up (the agent asked a question) is the one shortcut: a short
- * yes or plain "no" is the answer itself, so it is sent directly as the next
- * request instead of being read back.
+ * The owner removed the request read-back: a final transcript outside a loop
+ * is the request itself and is sent straight through the send button's path.
+ * That includes a dictated reply to an agent question; the T17 follow-up still
+ * reopens the microphone, it just never asks the owner to confirm the text.
+ * The loop itself lives in [BubbleVoiceApprovalReducer].
  */
 object BubbleVoiceConfirmReducer {
 
@@ -306,134 +359,25 @@ object BubbleVoiceConfirmReducer {
         state: BubbleConfirmState,
         event: BubbleConfirmEvent,
     ): BubbleConfirmDecision = when (event) {
-        is BubbleConfirmEvent.FinalTranscript -> onFinalTranscript(state, event)
-        is BubbleConfirmEvent.Answer -> onAnswer(state, event.text)
-        BubbleConfirmEvent.TtsDone,
-        BubbleConfirmEvent.TtsUnavailable,
-        -> onSpeechFinished(state)
-        BubbleConfirmEvent.NoSpeech -> stop(state, stopSpeech = false)
-        BubbleConfirmEvent.Cancelled,
-        BubbleConfirmEvent.UserTyped,
-        BubbleConfirmEvent.SendTapped,
-        -> stop(state, stopSpeech = true)
+        is BubbleConfirmEvent.FinalTranscript -> onFinalTranscript(state, event.text)
+        // Every other event belongs to the approval loop; outside it nothing
+        // happened that this reducer owns.
+        else -> BubbleConfirmDecision(state)
     }
 
     private fun onFinalTranscript(
         state: BubbleConfirmState,
-        event: BubbleConfirmEvent.FinalTranscript,
+        raw: String,
     ): BubbleConfirmDecision {
-        val answer = event.text.trim()
-        if (answer.isEmpty()) {
-            // A blank transcript ends an active loop; if the prompt is still
-            // being spoken it must be silenced too.
-            return stop(state, stopSpeech = state is BubbleConfirmState.Speaking)
+        if (state != BubbleConfirmState.Idle || raw.isBlank()) {
+            return BubbleConfirmDecision(state)
         }
-        if (state != BubbleConfirmState.Idle) return onAnswer(state, answer)
-        if (event.followUp && isDirectAgentAnswer(answer)) {
-            return BubbleConfirmDecision(
-                state = BubbleConfirmState.Idle,
-                actions = listOf(
-                    BubbleConfirmAction.HidePrompt,
-                    BubbleConfirmAction.Send,
-                ),
-            )
-        }
-        return askOnScreenAndOutLoud()
-    }
-
-    /** A dictated yes / plain no is the agent question's answer, not a request. */
-    private fun isDirectAgentAnswer(answer: String): Boolean =
-        BubbleVoiceConfirm.classify(answer) == ConfirmReply.Affirmative ||
-            BubbleVoiceConfirm.isPlainNo(answer)
-
-    private fun askOnScreenAndOutLoud(): BubbleConfirmDecision = BubbleConfirmDecision(
-        state = BubbleConfirmState.Speaking(
-            prompt = BubbleVoiceConfirm.PROMPT_CONFIRM,
-            next = ConfirmListenTarget.ANSWER,
-        ),
-        actions = listOf(
-            BubbleConfirmAction.ShowPrompt(BubbleVoiceConfirm.PROMPT_CONFIRM),
-            BubbleConfirmAction.Speak(BubbleVoiceConfirm.PROMPT_CONFIRM),
-        ),
-    )
-
-    private fun onAnswer(state: BubbleConfirmState, raw: String): BubbleConfirmDecision {
-        val answer = raw.trim()
-        return when (state) {
-            BubbleConfirmState.Idle -> BubbleConfirmDecision(state)
-            // The prompt is still being spoken; the recognizer is not running,
-            // so this can only be a stale callback and must not double-answer.
-            is BubbleConfirmState.Speaking -> BubbleConfirmDecision(state)
-            BubbleConfirmState.AwaitingAnswer -> onAnswerToReadBack(answer)
-            BubbleConfirmState.AwaitingAddition -> {
-                if (answer.isEmpty()) {
-                    stop(state, stopSpeech = false)
-                } else {
-                    appendAndAskAgain(answer)
-                }
-            }
-        }
-    }
-
-    private fun onAnswerToReadBack(answer: String): BubbleConfirmDecision {
-        if (answer.isEmpty()) return stop(BubbleConfirmState.AwaitingAnswer, stopSpeech = false)
-        return when (val reply = BubbleVoiceConfirm.classify(answer)) {
-            ConfirmReply.Affirmative -> BubbleConfirmDecision(
-                state = BubbleConfirmState.Idle,
-                actions = listOf(
-                    BubbleConfirmAction.HidePrompt,
-                    BubbleConfirmAction.Send,
-                ),
-            )
-            is ConfirmReply.AddWithContent -> appendAndAskAgain(reply.addition)
-            ConfirmReply.AddOnly -> askWhatToAdd()
-            ConfirmReply.Cancel -> stop(BubbleConfirmState.AwaitingAnswer, stopSpeech = false)
-            is ConfirmReply.Other -> appendAndAskAgain(reply.text)
-        }
-    }
-
-    private fun askWhatToAdd(): BubbleConfirmDecision = BubbleConfirmDecision(
-        state = BubbleConfirmState.Speaking(
-            prompt = BubbleVoiceConfirm.PROMPT_ADD,
-            next = ConfirmListenTarget.ADDITION,
-        ),
-        actions = listOf(
-            BubbleConfirmAction.ShowPrompt(BubbleVoiceConfirm.PROMPT_ADD),
-            BubbleConfirmAction.Speak(BubbleVoiceConfirm.PROMPT_ADD),
-        ),
-    )
-
-    private fun appendAndAskAgain(addition: String): BubbleConfirmDecision {
-        val next = askOnScreenAndOutLoud()
-        return next.copy(
-            actions = listOf(BubbleConfirmAction.AppendText(addition)) + next.actions,
+        return BubbleConfirmDecision(
+            state = BubbleConfirmState.Idle,
+            actions = listOf(
+                BubbleConfirmAction.HidePrompt,
+                BubbleConfirmAction.Send,
+            ),
         )
-    }
-
-    private fun onSpeechFinished(state: BubbleConfirmState): BubbleConfirmDecision =
-        when (state) {
-            is BubbleConfirmState.Speaking -> BubbleConfirmDecision(
-                state = when (state.next) {
-                    ConfirmListenTarget.ANSWER -> BubbleConfirmState.AwaitingAnswer
-                    ConfirmListenTarget.ADDITION -> BubbleConfirmState.AwaitingAddition
-                },
-                actions = listOf(BubbleConfirmAction.StartRecognizer),
-            )
-            // A late TTS callback after the loop stopped or before it started
-            // owns nothing.
-            else -> BubbleConfirmDecision(state)
-        }
-
-    /** Cancels an active loop; stale events on an idle loop change nothing. */
-    private fun stop(
-        state: BubbleConfirmState,
-        stopSpeech: Boolean,
-    ): BubbleConfirmDecision {
-        if (state == BubbleConfirmState.Idle) return BubbleConfirmDecision(state)
-        val actions = buildList {
-            if (stopSpeech) add(BubbleConfirmAction.StopTts)
-            add(BubbleConfirmAction.HidePrompt)
-        }
-        return BubbleConfirmDecision(state = BubbleConfirmState.Idle, actions = actions)
     }
 }

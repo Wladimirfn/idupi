@@ -43,6 +43,14 @@ object OwnerTurnRegistry {
     }
 
     /**
+     * True while any bubble turn started on this phone is queued or running
+     * (T23). The voice approval of an outbound message only applies inside such
+     * a turn; with none active the approval keeps its notification.
+     */
+    @Synchronized
+    fun hasActiveTurn(): Boolean = active.isNotEmpty()
+
+    /**
      * Claims [approvalId] for materialization and returns true exactly once, so
      * a replayed command cannot mint a second grant from the same approval. The
      * gate records a one-use ledger grant right after a successful claim.
