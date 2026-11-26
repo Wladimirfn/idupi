@@ -80,6 +80,12 @@ import { createInboxRoutes } from "./lib/inbox-routes.mjs";
 import { createPhoneStore } from "./lib/phone-store.mjs";
 import { createPhoneRoutes } from "./lib/phone-routes.mjs";
 import { createPhoneApprovalStore } from "./lib/phone-approval-store.mjs";
+// Phone bubble (phone-bubble, T1/T2): free-form owner requests typed in the
+// on-device bubble, one serialized agent turn at a time, answer long-polled by
+// the phone. Turns are persisted in data/ (last 20); the runner profile lives in
+// lib/phone-agent.mjs.
+import { createPhoneAgentTurnStore } from "./lib/phone-agent-turns.mjs";
+import { createPhoneAgentRoutes } from "./lib/phone-agent-routes.mjs";
 // Phone calendar (phone-calendar, T1): the phone's calendar snapshot, conflict
 // and free-slot math, and the PC proposal queue the owner approves on the
 // phone. Times are UTC; day boundaries use the phone's reported offset.
@@ -1369,6 +1375,17 @@ const phoneStore = createPhoneStore({
 });
 const handlePhoneRoute = createPhoneRoutes({ store: phoneStore });
 const handlePhoneCalendarRoute = createPhoneCalendarRoutes({ store: phoneCalendarStore });
+
+// Phone bubble turns (phone-bubble, T1): the owner request and its answer are
+// persisted; the agent runner that executes them is wired below (T2).
+const phoneAgentTurnStore = createPhoneAgentTurnStore({
+    dataDir: fileURLToPath(new URL("./data", import.meta.url)),
+});
+const handlePhoneAgentRoute = createPhoneAgentRoutes({
+    store: phoneAgentTurnStore,
+    runner: null,
+    getConfig: () => inboxStore.getConfig(),
+});
 
 // Phone health (phone-health, T1/T3/T4): the ADB link, the hidden-display
 // reader, the daily store and the digest. The scheduler only runs when a target
@@ -3357,6 +3374,10 @@ const handleRequest = async (req, res) => {
     if (await handleOsProcessesRoute(req, res, pathname)) return;
     // Phone inbox items, agent config and model catalog (lib/inbox-routes.mjs).
     if (await handleInboxRoute(req, res, pathname)) return;
+    // Phone bubble turns: POST a request, long-poll its answer
+    // (lib/phone-agent-routes.mjs). Mounted before the phone agent so
+    // /agent/turns is never mistaken for a command path.
+    if (await handlePhoneAgentRoute(req, res, pathname)) return;
     // Phone calendar: snapshot, agenda, conflicts, free slots and proposals
     // (lib/phone-calendar-routes.mjs). Mounted before the phone agent so the
     // /calendar subtree is never mistaken for a phone command path.
