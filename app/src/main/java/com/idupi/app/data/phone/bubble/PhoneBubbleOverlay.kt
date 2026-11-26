@@ -175,6 +175,10 @@ class PhoneBubbleOverlay(
             gravity = Gravity.TOP or Gravity.START
             x = position.first
             y = position.second
+            // The panel is focusable when expanded; resizing keeps the input
+            // row above the keyboard instead of under it.
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or
+                WindowManager.LayoutParams.SOFT_INPUT_STATE_UNSPECIFIED
         }
         root = view
         params = layoutParams
@@ -434,7 +438,8 @@ class PhoneBubbleOverlay(
         }
     }
 
-    private fun buildStatusLine(): View =        TextView(service).apply {
+    private fun buildStatusLine(): View =
+        TextView(service).apply {
             setTextColor(COLOR_SECONDARY)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             setPadding(0, dp(4), 0, dp(2))
@@ -811,7 +816,9 @@ class PhoneBubbleOverlay(
         private const val TAG = "PhoneBubbleOverlay"
 
         /** Kept in both modes; the focus flag is the only one we toggle. */
-        private const val BASE_FLAGS = WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+        private const val BASE_FLAGS =
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
 
         // Mirror of DarkAppColors: Compose colour accessors are @Composable-only.
         private val COLOR_BACKGROUND = 0xFF0B0F19.toInt()
