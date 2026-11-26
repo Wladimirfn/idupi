@@ -68,7 +68,7 @@ screen; Personalizado colors can be opened and closed.
 - [x] T5 Asistente del teléfono, Calendario, Salud, Acciones y seguridad as
       sub-screens (content moved as-is; "Actividad reciente" and "Aprobaciones
       pendientes" stay inside Asistente). Tests where state changes.
-- [ ] T6 Release: version bump, assembleRelease (same cert), install, owner
+- [x] T6 Release: version bump, assembleRelease (same cert), install, owner
       live check, PR.
 
 ## Acceptance criteria
@@ -115,6 +115,9 @@ Delivery: forecast ~1500 authored lines (mostly moved code); strategy
   seguir -> Alertas -> hub. An earlier jump to Terminales was the owner tapping
   the phone at the same time (owner confirmed), not a bug.
 
+- 2026-11-26: T6 done. Owner approved the redesign on 1.59 ("me gusta así"); PR
+  opened stacked on #29.
+
 ## Next step
 
-Owner review of 1.59, then PR stacked on #29.
+None; feature complete pending PR review.
