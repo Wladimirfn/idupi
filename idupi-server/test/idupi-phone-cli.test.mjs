@@ -8,6 +8,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+    failureMessage,
+    formatApprovals,
+    formatApprovalWait,
     formatBytes,
     formatCalendarAgenda,
     formatCalendarFree,
@@ -709,4 +712,119 @@ test("formatHealthSources lists future sources", () => {
     });
     assert.ok(text.includes("Fuentes futuras:"));
     assert.ok(text.includes("huawei_health_kit (Huawei Health Kit): deshabilitada"));
+});
+
+// --- approvals CLI (phone-approvals, T1) ----------------------------------
+
+test("parseArgs handles the approvals command with and without --json", () => {
+    assert.deepEqual(parseArgs(["approvals"]), { command: "approvals", json: false });
+    assert.deepEqual(parseArgs(["approvals", "--json"]), { command: "approvals", json: true });
+    assert.equal(parseArgs(["approvals", "extra"]).command, "help");
+    assert.ok(parseArgs(["approvals", "extra"]).error);
+    assert.equal(parseArgs(["approvals", "--nope"]).command, "help");
+});
+
+test("formatApprovalWait explains the reason and the remaining minutes", () => {
+    const nowMs = Date.parse("2026-11-24T12:00:00.000Z");
+    assert.equal(
+        formatApprovalWait(
+            {
+                approvalReason: "risky_text",
+                approvalTarget: "Enviar",
+                approvalExpiresAt: "2026-11-24T12:10:00.000Z",
+            },
+            nowMs,
+        ),
+        'Esperando tu aprobación en el teléfono (toque en "Enviar", vence en 10 min)…',
+    );
+    assert.match(
+        formatApprovalWait(
+            { approvalReason: "type_submit", approvalExpiresAt: "2026-11-24T12:05:00.000Z" },
+            nowMs,
+        ),
+        /envío de texto, vence en 5 min/,
+    );
+    assert.match(
+        formatApprovalWait({ approvalReason: "sensitive_app" }, nowMs),
+        /acción en una app sensible, vence en 10 min/,
+    );
+    assert.match(
+        formatApprovalWait(
+            {
+                approvalReason: "phone_detected_risky_target",
+                approvalTarget: "Pagar",
+                approvalExpiresAt: "2026-11-24T12:10:00.000Z",
+            },
+            nowMs,
+        ),
+        /toque en "Pagar"/,
+    );
+    // A stale timestamp still shows a minimum of one minute.
+    assert.match(
+        formatApprovalWait(
+            { approvalReason: "risky_text", approvalExpiresAt: "2026-11-24T11:00:00.000Z" },
+            nowMs,
+        ),
+        /vence en 1 min/,
+    );
+});
+
+test("formatApprovals lists pending approvals with their target and reason", () => {
+    assert.equal(formatApprovals({ approvals: [] }), "No hay aprobaciones pendientes.");
+    assert.equal(formatApprovals(null), "No hay aprobaciones pendientes.");
+
+    const text = formatApprovals(
+        {
+            approvals: [
+                {
+                    id: "apr-aaaaaaaaaaaa",
+                    state: "pending",
+                    command: { type: "tap", args: { text: "Enviar" } },
+                    reason: "risky_text",
+                    target: "Enviar",
+                    foregroundApp: { packageName: "com.whatsapp", label: "WhatsApp" },
+                    expiresAt: "2026-11-24T12:10:00.000Z",
+                },
+                {
+                    id: "apr-bbbbbbbbbbbb",
+                    state: "pending",
+                    command: { type: "type", args: { text: "hola", submit: true } },
+                    reason: "type_submit",
+                    target: null,
+                    expiresAt: "2026-11-24T12:08:00.000Z",
+                },
+            ],
+        },
+        Date.parse("2026-11-24T12:00:00.000Z"),
+    );
+    assert.match(text, /^Aprobaciones pendientes \(2\):$/m);
+    assert.ok(text.includes("apr-aaaaaaaaaaaa"));
+    assert.ok(text.includes('tap "Enviar"'));
+    assert.ok(text.includes("WhatsApp (com.whatsapp)"));
+    assert.ok(text.includes("vence en 10 min"));
+    assert.ok(text.includes("apr-bbbbbbbbbbbb"));
+    assert.ok(text.includes("envío de texto"));
+});
+
+test("a rejected or expired approval prints a clear Spanish result", () => {
+    assert.equal(
+        failureMessage({ state: "failed", error: "APPROVAL_REJECTED" }),
+        "Rechazado en el teléfono.",
+    );
+    assert.equal(
+        failureMessage({ state: "failed", error: "APPROVAL_EXPIRED" }),
+        "La aprobación venció; no se hizo nada.",
+    );
+    assert.equal(
+        formatCommandResult({ state: "failed", error: "APPROVAL_REJECTED" }),
+        "Rechazado en el teléfono.",
+    );
+    assert.equal(
+        formatCommandResult({ state: "failed", error: "APPROVAL_EXPIRED" }),
+        "La aprobación venció; no se hizo nada.",
+    );
+    assert.equal(
+        failureMessage({ state: "failed", error: "no node matched" }),
+        "El teléfono falló: no node matched",
+    );
 });

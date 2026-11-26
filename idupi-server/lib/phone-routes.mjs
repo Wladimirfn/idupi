@@ -14,6 +14,12 @@ import {
     DEFAULT_MAX_STATUS_BYTES,
     MAX_COMMAND_LIST_LIMIT,
 } from "./phone-store.mjs";
+import {
+    APPROVAL_ID_PATTERN,
+    APPROVAL_STATES,
+    DEFAULT_APPROVAL_LIST_LIMIT,
+    MAX_APPROVAL_LIST_LIMIT,
+} from "./phone-approval-store.mjs";
 
 const PREFIX = "/api/v1/phone";
 
@@ -108,6 +114,20 @@ function parseLimit(raw) {
     return value;
 }
 
+function parseApprovalState(raw) {
+    if (raw === null || raw === "") return "pending";
+    if (raw === "all") return "all";
+    return APPROVAL_STATES.includes(raw) ? raw : null;
+}
+
+function parseApprovalLimit(raw) {
+    if (raw === null || raw === "") return DEFAULT_APPROVAL_LIST_LIMIT;
+    if (!/^\d+$/.test(raw)) return null;
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 1 || value > MAX_APPROVAL_LIST_LIMIT) return null;
+    return value;
+}
+
 function isSettled(command) {
     return command.state === "done" || command.state === "failed" || command.state === "expired";
 }
@@ -125,6 +145,7 @@ function bodyError(res, err) {
  *   store: ReturnType<import("./phone-store.mjs").createPhoneStore>,
  *   maxStatusBytes?: number,
  *   maxResultBytes?: number,
+ *   log?: { info?: Function, warn?: Function },
  * }} options
  * @returns {(req: import("node:http").IncomingMessage, res: import("node:http").ServerResponse, pathname: string) => Promise<boolean>}
  */
@@ -132,6 +153,7 @@ export function createPhoneRoutes({
     store,
     maxStatusBytes = DEFAULT_MAX_STATUS_BYTES,
     maxResultBytes = DEFAULT_MAX_RESULT_BYTES,
+    log = console,
 } = {}) {
     // Only one phone poller is expected. A new poll supersedes the parked one
     // and resolves it with 204, including its timer and subscription.
@@ -189,7 +211,11 @@ export function createPhoneRoutes({
         }
         let command;
         try {
-            command = store.createCommand({ type: body.type, args: body.args });
+            command = store.createCommand({
+                type: body.type,
+                args: body.args,
+                requestedBy: body.requestedBy,
+            });
         } catch (err) {
             sendError(
                 res,
@@ -375,6 +401,87 @@ export function createPhoneRoutes({
         }
     }
 
+    function listApprovals(req, res) {
+        const state = parseApprovalState(queryValue(req, "state"));
+        if (state === null) {
+            sendError(
+                res,
+                400,
+                "state must be one of: " + APPROVAL_STATES.join(", "),
+                "INVALID_STATUS",
+            );
+            return;
+        }
+        const limit = parseApprovalLimit(queryValue(req, "limit"));
+        if (limit === null) {
+            sendError(
+                res,
+                400,
+                `limit must be an integer between 1 and ${MAX_APPROVAL_LIST_LIMIT}`,
+                "INVALID_LIMIT",
+            );
+            return;
+        }
+        sendJson(res, 200, { approvals: store.listApprovals({ state, limit }) });
+    }
+
+    function getApproval(res, id) {
+        const approval = store.getApproval(id);
+        if (!approval) {
+            sendError(res, 404, "approval not found", "NOT_FOUND");
+            return;
+        }
+        sendJson(res, 200, { approval });
+    }
+
+    async function postApprovalDecision(req, res, id) {
+        if (!APPROVAL_ID_PATTERN.test(id)) {
+            sendError(res, 404, "approval not found", "NOT_FOUND");
+            return;
+        }
+        let body;
+        try {
+            body = await readJsonBody(req, maxStatusBytes);
+        } catch (err) {
+            bodyError(res, err);
+            return;
+        }
+        if (!body || typeof body !== "object" || Array.isArray(body)) {
+            sendError(res, 400, "body must be a JSON object", "INVALID_DECISION");
+            return;
+        }
+
+        let outcome;
+        try {
+            outcome = store.decideApproval(id, body.decision);
+        } catch (err) {
+            sendError(
+                res,
+                400,
+                (err && err.message) || "invalid decision",
+                (err && err.code) || "INVALID_DECISION",
+            );
+            return;
+        }
+
+        if (outcome.ok) {
+            // Ids only: the target text and the command never enter a log line.
+            log?.info?.(`[phone] approval ${id} ${outcome.approval.state}`);
+            sendJson(res, 200, { approval: outcome.approval });
+            return;
+        }
+        switch (outcome.reason) {
+            case "not_found":
+                sendError(res, 404, "approval not found", "NOT_FOUND");
+                return;
+            case "expired":
+                sendError(res, 409, "approval expired", "EXPIRED");
+                return;
+            default:
+                sendError(res, 409, "approval already decided", "ALREADY_DECIDED");
+        }
+    }
+
     return async function handlePhoneRoute(req, res, pathname) {
         if (pathname !== PREFIX && !pathname.startsWith(PREFIX + "/")) return false;
         const parts = pathname.slice(PREFIX.length).split("/").filter(Boolean);
@@ -401,6 +508,38 @@ export function createPhoneRoutes({
             }
             methodNotAllowed(res, "GET, POST");
             return true;
+        }
+
+        if (parts[0] === "approvals") {
+            if (parts.length === 1) {
+                if (req.method === "GET") {
+                    listApprovals(req, res);
+                    return true;
+                }
+                methodNotAllowed(res, "GET");
+                return true;
+            }
+            const approvalId = parts[1];
+            if (!APPROVAL_ID_PATTERN.test(approvalId)) {
+                sendError(res, 404, "approval not found", "NOT_FOUND");
+                return true;
+            }
+            if (parts.length === 2) {
+                if (req.method !== "GET") {
+                    methodNotAllowed(res, "GET");
+                    return true;
+                }
+                getApproval(res, approvalId);
+                return true;
+            }
+            if (parts.length === 3 && parts[2] === "decision") {
+                if (req.method !== "POST") {
+                    methodNotAllowed(res, "POST");
+                    return true;
+                }
+                await postApprovalDecision(req, res, approvalId);
+                return true;
+            }
         }
 
         if (parts[0] === "commands") {

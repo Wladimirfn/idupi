@@ -18,6 +18,7 @@ import { join } from "node:path";
 
 import { createPhoneStore } from "../lib/phone-store.mjs";
 import { createPhoneRoutes } from "../lib/phone-routes.mjs";
+import { createPhoneApprovalStore } from "../lib/phone-approval-store.mjs";
 
 const silentLog = { log() {}, info() {}, warn() {}, error() {} };
 
@@ -399,4 +400,209 @@ test("invalid wait values are 400 and unsupported methods are 405", async (t) =>
 
     const missing = await fetch(base + "/api/v1/phone/commands/phc-000000000000");
     assert.equal(missing.status, 404);
+});
+
+// --- approvals (phone-approvals, T1) --------------------------------------
+
+async function startApprovalHarness(t) {
+    const dir = await mkdtemp(join(tmpdir(), "idupi-phone-approval-routes-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const clock = makeClock();
+    const approvals = createPhoneApprovalStore({
+        dataDir: dir,
+        now: clock.now,
+        log: silentLog,
+    });
+    const store = createPhoneStore({
+        dataDir: dir,
+        now: clock.now,
+        log: silentLog,
+        approvalStore: approvals,
+    });
+    const logs = [];
+    const log = {
+        log() {},
+        info(message) { logs.push(message); },
+        warn(message) { logs.push(message); },
+        error() {},
+    };
+    const handle = createPhoneRoutes({ store, log });
+
+    const server = http.createServer(async (req, res) => {
+        try {
+            const pathname = new URL(req.url, "http://localhost").pathname;
+            if (await handle(req, res, pathname)) return;
+            res.writeHead(418);
+            res.end();
+        } catch (err) {
+            if (!res.headersSent) res.writeHead(500);
+            res.end(String((err && err.message) || err));
+        }
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    t.after(async () => {
+        server.closeAllConnections?.();
+        await new Promise((resolve) => server.close(resolve));
+    });
+    return { base, store, clock, approvals, logs };
+}
+
+test("a gated command waits for approval and is not delivered by next", async (t) => {
+    const { base, clock } = await startApprovalHarness(t);
+    await postJson(base, "/api/v1/phone/status", {
+        foregroundApp: { packageName: "com.whatsapp", label: "WhatsApp" },
+    });
+
+    const created = await postCommand(base, "tap", { text: "Enviar" });
+    assert.equal(created.res.status, 201);
+    assert.equal(created.command.state, "awaiting_approval");
+    assert.match(created.command.approvalId, /^apr-[0-9a-f]{12}$/);
+
+    const next = await fetch(base + "/api/v1/phone/commands/next?wait=1");
+    assert.equal(next.status, 204);
+
+    const pending = await (await fetch(base + "/api/v1/phone/approvals")).json();
+    assert.equal(pending.approvals.length, 1);
+    assert.equal(pending.approvals[0].id, created.command.approvalId);
+    assert.equal(pending.approvals[0].state, "pending");
+    assert.equal(pending.approvals[0].target, "Enviar");
+
+    clock.advance(5 * 60_000);
+    const stillWaiting = await (await fetch(
+        base + `/api/v1/phone/commands/${created.command.id}?wait=0`,
+    )).json();
+    assert.equal(stillWaiting.command.state, "awaiting_approval");
+});
+
+test("POST approval decision approves, delivers with approvalId and target, then 409s", async (t) => {
+    const { base, logs } = await startApprovalHarness(t);
+    const created = await postCommand(base, "tap", { text: "Enviar" });
+
+    const decision = await postJson(
+        base,
+        `/api/v1/phone/approvals/${created.command.approvalId}/decision`,
+        { decision: "approve" },
+    );
+    const body = await decision.json();
+    assert.equal(decision.status, 200);
+    assert.equal(body.approval.state, "approved");
+    assert.equal(body.approval.resultCommandId, created.command.id);
+
+    const next = await (await fetch(base + "/api/v1/phone/commands/next?wait=1")).json();
+    assert.equal(next.command.id, created.command.id);
+    assert.equal(next.command.args.approvalId, created.command.approvalId);
+    assert.equal(next.command.args.approvedTarget, "Enviar");
+
+    const again = await postJson(
+        base,
+        `/api/v1/phone/approvals/${created.command.approvalId}/decision`,
+        { decision: "reject" },
+    );
+    assert.equal(again.status, 409);
+    assert.equal((await again.json()).code, "ALREADY_DECIDED");
+
+    // Decisions are logged with ids only, never the target text.
+    assert.ok(logs.some((line) => line.includes(created.command.approvalId)));
+    assert.ok(!logs.some((line) => line.includes("Enviar")));
+});
+
+test("a rejection fails the command with APPROVAL_REJECTED and nothing runs", async (t) => {
+    const { base } = await startApprovalHarness(t);
+    const created = await postCommand(base, "type", { text: "hola", submit: true });
+
+    const decision = await postJson(
+        base,
+        `/api/v1/phone/approvals/${created.command.approvalId}/decision`,
+        { decision: "reject" },
+    );
+    assert.equal(decision.status, 200);
+    assert.equal((await decision.json()).approval.state, "rejected");
+
+    const read = await (await fetch(
+        base + `/api/v1/phone/commands/${created.command.id}?wait=0`,
+    )).json();
+    assert.equal(read.command.state, "failed");
+    assert.equal(read.command.error, "APPROVAL_REJECTED");
+
+    const next = await fetch(base + "/api/v1/phone/commands/next?wait=1");
+    assert.equal(next.status, 204);
+});
+
+test("an expired approval answer 409 EXPIRED and fails the command", async (t) => {
+    const { base, clock } = await startApprovalHarness(t);
+    const created = await postCommand(base, "tap", { text: "Enviar" });
+
+    clock.advance(10 * 60_000);
+    const decision = await postJson(
+        base,
+        `/api/v1/phone/approvals/${created.command.approvalId}/decision`,
+        { decision: "approve" },
+    );
+    assert.equal(decision.status, 409);
+    assert.equal((await decision.json()).code, "EXPIRED");
+
+    const read = await (await fetch(
+        base + `/api/v1/phone/commands/${created.command.id}?wait=0`,
+    )).json();
+    assert.equal(read.command.state, "failed");
+    assert.equal(read.command.error, "APPROVAL_EXPIRED");
+    assert.equal((await fetch(base + "/api/v1/phone/commands/next?wait=1")).status, 204);
+});
+
+test("approval routes validate ids, decisions, state and methods", async (t) => {
+    const { base } = await startApprovalHarness(t);
+
+    const missing = await fetch(base + "/api/v1/phone/approvals/apr-000000000000");
+    assert.equal(missing.status, 404);
+    assert.equal((await missing.json()).code, "NOT_FOUND");
+
+    const badId = await fetch(base + "/api/v1/phone/approvals/apr-zzzzzzzzzzzz");
+    assert.equal(badId.status, 404);
+
+    const created = await postCommand(base, "tap", { text: "Enviar" });
+
+    const invalid = await postJson(
+        base,
+        `/api/v1/phone/approvals/${created.command.approvalId}/decision`,
+        { decision: "maybe" },
+    );
+    assert.equal(invalid.status, 400);
+    assert.equal((await invalid.json()).code, "INVALID_DECISION");
+
+    const badState = await fetch(base + "/api/v1/phone/approvals?state=sleeping");
+    assert.equal(badState.status, 400);
+    assert.equal((await badState.json()).code, "INVALID_STATUS");
+
+    const badLimit = await fetch(base + "/api/v1/phone/approvals?limit=0");
+    assert.equal(badLimit.status, 400);
+
+    const put = await fetch(
+        base + `/api/v1/phone/approvals/${created.command.approvalId}`,
+        { method: "PUT" },
+    );
+    assert.equal(put.status, 405);
+});
+
+test("APPROVAL_REQUIRED from the phone turns into a pending approval over HTTP", async (t) => {
+    const { base } = await startApprovalHarness(t);
+    const created = await postCommand(base, "tap", { x: 900, y: 2100 });
+    assert.equal(created.command.state, "pending");
+    await fetch(base + "/api/v1/phone/commands/next?wait=1");
+
+    const result = await postJson(
+        base,
+        `/api/v1/phone/commands/${created.command.id}/result`,
+        { ok: false, error: "APPROVAL_REQUIRED", result: { nodeText: "Enviar mensaje" } },
+    );
+    const body = await result.json();
+    assert.equal(result.status, 200);
+    assert.equal(body.command.state, "awaiting_approval");
+
+    const pending = await (await fetch(
+        base + "/api/v1/phone/approvals?state=pending",
+    )).json();
+    assert.equal(pending.approvals.length, 1);
+    assert.equal(pending.approvals[0].reason, "phone_detected_risky_target");
+    assert.equal(pending.approvals[0].target, "Enviar mensaje");
 });

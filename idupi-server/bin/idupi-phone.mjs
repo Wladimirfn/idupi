@@ -52,10 +52,13 @@ Uso:
   idupi-phone health adb [status|pair <host:puerto> <código>|connect <host:puerto>]
                                         Estado y emparejamiento de ADB inalámbrico
   idupi-phone log                       Últimos comandos
+  idupi-phone approvals [--json]        Aprobaciones pendientes en el teléfono
   idupi-phone help                      Muestra esta ayuda
 
 El control debe estar activo en la app: permiso de accesibilidad e interruptor
 maestro. Los comandos expiran a los 60 s si el teléfono no los toma a tiempo.
+Los comandos riesgosos esperan tu aprobación en el teléfono (10 min); si no
+respondes, no se ejecutan.
 `;
 
 const SERVER_UNREACHABLE =
@@ -209,6 +212,14 @@ export function parseArgs(argv = []) {
     if (head === "log") {
         if (rest.length > 0) return { command: "help", error: "Uso: idupi-phone log" };
         return { command: "log" };
+    }
+
+    if (head === "approvals") {
+        if (rest.length === 0) return { command: "approvals", json: false };
+        if (rest.length === 1 && rest[0] === "--json") {
+            return { command: "approvals", json: true };
+        }
+        return { command: "help", error: "Uso: idupi-phone approvals [--json]" };
     }
 
     if (head === "calendar") return parseCalendarArgs(rest);
@@ -654,6 +665,15 @@ export function formatPhoneStatus(payload, nowMs = Date.now()) {
     return lines.join("\n");
 }
 
+/** Human-readable outcome of one failed command, including approval outcomes. */
+export function failureMessage(command) {
+    if (!command || typeof command !== "object") return NO_RESPONSE;
+    const error = typeof command.error === "string" ? command.error : "";
+    if (error === "APPROVAL_REJECTED") return "Rechazado en el teléfono.";
+    if (error === "APPROVAL_EXPIRED") return "La aprobación venció; no se hizo nada.";
+    return `El teléfono falló: ${error || "sin detalle"}`;
+}
+
 /** Human-readable outcome of one finished command. */
 export function formatCommandResult(command) {
     if (!command || typeof command !== "object") return NO_RESPONSE;
@@ -671,7 +691,7 @@ export function formatCommandResult(command) {
             return "Listo.";
         }
         case "failed":
-            return `El teléfono falló: ${command.error || "sin detalle"}`;
+            return failureMessage(command);
         case "expired":
             return EXPIRED;
         default:
@@ -690,6 +710,92 @@ export function formatCommandList(commands) {
         let line = `  ${command.id}  ${state}  ${type}  ${command.createdAt}`;
         if (command.state === "failed" && command.error) line += ` — ${command.error}`;
         lines.push(line);
+    }
+    return lines.join("\n");
+}
+
+// --- approvals formatting (phone-approvals, T1) ---------------------------
+
+const APPROVAL_REASON_LABELS = {
+    type_submit: "envío de texto",
+    sensitive_app: "acción en una app sensible",
+    risky_text: "texto riesgoso",
+    phone_detected_risky_target: "texto riesgoso detectado en el teléfono",
+};
+
+const DEFAULT_APPROVAL_MINUTES = 10;
+
+function approvalExpiresMs(entry) {
+    const raw = entry && (entry.approvalExpiresAt ?? entry.expiresAt);
+    const ms = typeof raw === "string" ? Date.parse(raw) : Number.NaN;
+    return Number.isFinite(ms) ? ms : null;
+}
+
+function approvalMinutesLeft(entry, nowMs) {
+    const expiresMs = approvalExpiresMs(entry);
+    if (expiresMs === null) return DEFAULT_APPROVAL_MINUTES;
+    return Math.max(1, Math.ceil((expiresMs - nowMs) / 60_000));
+}
+
+/** Legible reason of a pending approval, target included when there is one. */
+export function formatApprovalReason(entry) {
+    const reason = entry && (entry.approvalReason ?? entry.reason);
+    const target = entry && (entry.approvalTarget ?? entry.target);
+    if (
+        (reason === "risky_text" || reason === "phone_detected_risky_target") &&
+        typeof target === "string" && target.length > 0
+    ) {
+        return `toque en "${target}"`;
+    }
+    return APPROVAL_REASON_LABELS[reason] || "acción riesgosa";
+}
+
+/**
+ * Line printed when a command is parked: the reason and the time left.
+ *
+ * @param {object} command the awaiting_approval command
+ * @param {number} [nowMs]
+ */
+export function formatApprovalWait(command, nowMs = Date.now()) {
+    return `Esperando tu aprobación en el teléfono (${formatApprovalReason(command)}, ` +
+        `vence en ${approvalMinutesLeft(command, nowMs)} min)…`;
+}
+
+function approvalCommandLabel(command) {
+    if (!command || typeof command !== "object") return "comando";
+    const type = typeof command.type === "string" && command.type ? command.type : "comando";
+    const label = type === "long_press" ? "long-press" : type;
+    const args = command.args && typeof command.args === "object" ? command.args : {};
+    let target = null;
+    if (typeof args.text === "string" && args.text.trim()) target = args.text.trim();
+    else if (typeof args.id === "string" && args.id.trim()) target = args.id.trim();
+    else if (Number.isInteger(args.x) && Number.isInteger(args.y)) target = `${args.x},${args.y}`;
+    if (!target) return label;
+    const short = target.length > 60 ? `${target.slice(0, 57)}...` : target;
+    return `${label} "${short}"`;
+}
+
+/** Pending approval list from GET /api/v1/phone/approvals. */
+export function formatApprovals(payload, nowMs = Date.now()) {
+    const approvals = payload && Array.isArray(payload.approvals) ? payload.approvals : [];
+    if (approvals.length === 0) return "No hay aprobaciones pendientes.";
+    const lines = [`Aprobaciones pendientes (${approvals.length}):`];
+    for (const approval of approvals) {
+        if (!approval || typeof approval !== "object") continue;
+        const bits = [approval.id, approvalCommandLabel(approval.command)];
+        const foreground = approval.foregroundApp;
+        if (foreground && typeof foreground === "object") {
+            const packageName = typeof foreground.packageName === "string"
+                ? foreground.packageName
+                : "";
+            const label = typeof foreground.label === "string" ? foreground.label : "";
+            if (label && packageName) bits.push(`${label} (${packageName})`);
+            else if (label || packageName) bits.push(label || packageName);
+        }
+        lines.push(
+            `  ${bits.join("  ")}  — ${formatApprovalReason(approval)}, ` +
+            `vence en ${approvalMinutesLeft(approval, nowMs)} min`,
+        );
     }
     return lines.join("\n");
 }
@@ -1260,6 +1366,22 @@ async function fetchStatus(json) {
     writeOut(formatPhoneStatus(res.json) + "\n");
 }
 
+async function fetchApprovals(json) {
+    let res;
+    try {
+        res = await apiRequest("GET", "/api/v1/phone/approvals?state=pending");
+    } catch {
+        fail(serverUnreachable());
+    }
+    if (res.status === 401) fail(TOKEN_REJECTED);
+    if (res.status !== 200) fail(`IDUPI respondió HTTP ${res.status}.`);
+    if (json) {
+        writeOut(JSON.stringify(res.json, null, 2) + "\n");
+        return;
+    }
+    writeOut(formatApprovals(res.json) + "\n");
+}
+
 async function enqueue(type, args) {
     let res;
     try {
@@ -1278,7 +1400,7 @@ async function enqueue(type, args) {
 }
 
 async function waitForCommand(id) {
-    const deadline = Date.now() + DEADLINE_MS;
+    let deadline = Date.now() + DEADLINE_MS;
     for (;;) {
         const remaining = deadline - Date.now();
         if (remaining <= 0) return null;
@@ -1302,6 +1424,17 @@ async function waitForCommand(id) {
         if (command.state === "done" || command.state === "failed" || command.state === "expired") {
             return command;
         }
+        if (command.state === "awaiting_approval") {
+            // The approval owns a 10 min TTL, longer than the command budget:
+            // keep polling until the owner decides or the approval expires.
+            const approvalMs = typeof command.approvalExpiresAt === "string"
+                ? Date.parse(command.approvalExpiresAt)
+                : Number.NaN;
+            if (Number.isFinite(approvalMs)) {
+                const approvalDeadline = approvalMs + DEADLINE_MS;
+                if (approvalDeadline > deadline) deadline = approvalDeadline;
+            }
+        }
         await sleep(200);
     }
 }
@@ -1309,9 +1442,7 @@ async function waitForCommand(id) {
 function requireFinished(command) {
     if (!command) fail(NO_RESPONSE);
     if (command.state === "expired") fail(EXPIRED);
-    if (command.state === "failed") {
-        fail(`El teléfono falló: ${command.error || "sin detalle"}`);
-    }
+    if (command.state === "failed") fail(failureMessage(command));
     return command;
 }
 
@@ -1573,6 +1704,11 @@ async function main() {
         return;
     }
 
+    if (parsed.command === "approvals") {
+        await fetchApprovals(parsed.json);
+        return;
+    }
+
     if (parsed.command === "log") {
         let res;
         try {
@@ -1600,6 +1736,9 @@ async function main() {
     if (!action) fail("Comando no reconocido.");
 
     const created = await enqueue(action.type, action.args);
+    if (created.state === "awaiting_approval") {
+        writeOut(formatApprovalWait(created) + "\n");
+    }
     const finished = requireFinished(await waitForCommand(created.id));
 
     if (parsed.command === "screen") {

@@ -79,6 +79,7 @@ import { createInboxRoutes } from "./lib/inbox-routes.mjs";
 // memory-only so a restart never replays a stale tap.
 import { createPhoneStore } from "./lib/phone-store.mjs";
 import { createPhoneRoutes } from "./lib/phone-routes.mjs";
+import { createPhoneApprovalStore } from "./lib/phone-approval-store.mjs";
 // Phone calendar (phone-calendar, T1): the phone's calendar snapshot, conflict
 // and free-slot math, and the PC proposal queue the owner approves on the
 // phone. Times are UTC; day boundaries use the phone's reported offset.
@@ -1357,8 +1358,14 @@ const handleInboxRoute = createInboxRoutes({
 
 // Phone agent: the phone reports status and collects queued commands here; the
 // PC CLI asks for status and enqueues actions. Same data dir as the inbox.
+// Risky commands park as awaiting_approval against the persisted approval
+// store until the owner decides on the phone (phone-approvals, T1).
+const phoneApprovalStore = createPhoneApprovalStore({
+    dataDir: fileURLToPath(new URL("./data", import.meta.url)),
+});
 const phoneStore = createPhoneStore({
     dataDir: fileURLToPath(new URL("./data", import.meta.url)),
+    approvalStore: phoneApprovalStore,
 });
 const handlePhoneRoute = createPhoneRoutes({ store: phoneStore });
 const handlePhoneCalendarRoute = createPhoneCalendarRoutes({ store: phoneCalendarStore });

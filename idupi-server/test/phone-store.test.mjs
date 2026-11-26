@@ -15,6 +15,10 @@ import {
     createPhoneStore,
     normalizeCommandArgs,
 } from "../lib/phone-store.mjs";
+import {
+    APPROVAL_ID_PATTERN,
+    createPhoneApprovalStore,
+} from "../lib/phone-approval-store.mjs";
 
 const silentLog = { log() {}, info() {}, warn() {}, error() {} };
 
@@ -372,4 +376,205 @@ test("subscribers hear about enqueue, delivery and result", async (t) => {
     store.createCommand({ type: "screen" });
 
     assert.equal(events.length, 3);
+});
+
+// --- approvals (phone-approvals, T1) --------------------------------------
+
+function approvalHarness(dir, clock, overrides = {}) {
+    const approvals = createPhoneApprovalStore({
+        dataDir: dir,
+        now: clock.now,
+        log: silentLog,
+    });
+    const store = createPhoneStore({
+        dataDir: dir,
+        now: clock.now,
+        log: silentLog,
+        approvalStore: approvals,
+        ...overrides,
+    });
+    return { store, approvals };
+}
+
+test("a risky command parks in awaiting_approval and is never delivered", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+    store.recordStatus({ foregroundApp: { packageName: "com.whatsapp", label: "WhatsApp" } });
+
+    const command = store.createCommand({ type: "tap", args: { text: "Enviar" } });
+
+    assert.equal(command.state, "awaiting_approval");
+    assert.equal(command.expiresAt, null);
+    assert.match(command.approvalId, APPROVAL_ID_PATTERN);
+    assert.equal(command.approvalReason, "risky_text");
+    assert.equal(command.approvalTarget, "Enviar");
+    assert.equal(store.takeNext(), null);
+
+    const pending = approvals.listApprovals();
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].id, command.approvalId);
+    assert.equal(pending[0].commandId, command.id);
+    assert.deepEqual(pending[0].command, { type: "tap", args: { text: "Enviar" } });
+    assert.equal(pending[0].target, "Enviar");
+    assert.deepEqual(pending[0].foregroundApp, {
+        packageName: "com.whatsapp",
+        label: "WhatsApp",
+    });
+    assert.equal(pending[0].requestedBy, "cli");
+
+    // The 60 s command TTL does not apply while the owner decides.
+    clock.advance(5 * 60_000);
+    assert.equal(store.takeNext(), null);
+    assert.equal(store.getCommand(command.id).state, "awaiting_approval");
+});
+
+test("approve requeues the command with a fresh TTL, approvalId and approvedTarget", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+
+    const command = store.createCommand({ type: "tap", args: { text: "Pagar" } });
+    clock.advance(30_000);
+
+    const outcome = store.decideApproval(command.approvalId, "approve");
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.approval.state, "approved");
+    assert.equal(outcome.approval.resultCommandId, command.id);
+    assert.equal(approvals.getApproval(command.approvalId).resultCommandId, command.id);
+
+    const requeued = store.getCommand(command.id);
+    assert.equal(requeued.state, "pending");
+    assert.equal(requeued.expiresAt, "2026-11-24T12:01:30.000Z");
+    assert.equal(requeued.approvalId, command.approvalId);
+    assert.equal(requeued.args.approvalId, command.approvalId);
+    assert.equal(requeued.args.approvedTarget, "Pagar");
+
+    const delivered = store.takeNext();
+    assert.equal(delivered.id, command.id);
+    assert.equal(delivered.args.approvedTarget, "Pagar");
+});
+
+test("a rejected command fails with APPROVAL_REJECTED and never runs", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+
+    const command = store.createCommand({ type: "type", args: { text: "hola", submit: true } });
+    assert.equal(command.state, "awaiting_approval");
+
+    const outcome = store.decideApproval(command.approvalId, "reject");
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.approval.state, "rejected");
+
+    const failed = store.getCommand(command.id);
+    assert.equal(failed.state, "failed");
+    assert.equal(failed.error, "APPROVAL_REJECTED");
+    assert.equal(failed.finishedAt, "2026-11-24T12:00:00.000Z");
+    assert.equal(store.takeNext(), null);
+    assert.equal(approvals.getApproval(command.approvalId).state, "rejected");
+});
+
+test("an expired approval fails the command with APPROVAL_EXPIRED and never approves", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+
+    const command = store.createCommand({ type: "tap", args: { text: "Enviar" } });
+    clock.advance(10 * 60_000);
+
+    // Reading the command expires the approval and fails the command.
+    const failed = store.getCommand(command.id);
+    assert.equal(failed.state, "failed");
+    assert.equal(failed.error, "APPROVAL_EXPIRED");
+    assert.equal(approvals.getApproval(command.approvalId).state, "expired");
+    assert.equal(store.takeNext(), null);
+
+    assert.deepEqual(store.decideApproval(command.approvalId, "approve"), {
+        ok: false,
+        reason: "expired",
+    });
+    assert.equal(store.takeNext(), null);
+});
+
+test("subscribers hear every approval transition", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store } = approvalHarness(dir, clock);
+    const events = [];
+    const unsubscribe = store.subscribe(() => events.push(events.length + 1));
+
+    const command = store.createCommand({ type: "tap", args: { text: "Enviar" } });
+    store.decideApproval(command.approvalId, "approve");
+    unsubscribe();
+
+    assert.equal(events.length, 2);
+});
+
+test("APPROVAL_REQUIRED from the phone becomes a new approval for the same command", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+
+    const command = store.createCommand({ type: "tap", args: { x: 900, y: 2100 } });
+    assert.equal(command.state, "pending");
+    store.takeNext();
+
+    const outcome = store.finishCommand(command.id, {
+        ok: false,
+        error: "APPROVAL_REQUIRED",
+        result: { nodeText: "Enviar mensaje" },
+    });
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.command.state, "awaiting_approval");
+    assert.equal(outcome.command.error, null);
+
+    const pending = approvals.listApprovals();
+    assert.equal(pending.length, 1);
+    assert.equal(pending[0].commandId, command.id);
+    assert.equal(pending[0].reason, "phone_detected_risky_target");
+    assert.equal(pending[0].target, "Enviar mensaje");
+
+    store.decideApproval(pending[0].id, "approve");
+    const requeued = store.getCommand(command.id);
+    assert.equal(requeued.state, "pending");
+    assert.equal(requeued.args.approvedTarget, "Enviar mensaje");
+    assert.equal(requeued.args.approvalId, pending[0].id);
+    assert.equal(store.takeNext().id, command.id);
+});
+
+test("the bypass option exists for tests only and no path auto-approves", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+
+    const gated = store.createCommand({ type: "tap", args: { text: "Enviar" } });
+    assert.equal(gated.state, "awaiting_approval");
+    assert.equal(approvals.getApproval(gated.approvalId).state, "pending");
+
+    const bypassed = createPhoneStore({
+        dataDir: dir,
+        now: clock.now,
+        log: silentLog,
+        approvalStore: approvals,
+        bypassApprovals: true,
+    });
+    assert.equal(bypassed.createCommand({ type: "tap", args: { text: "Enviar" } }).state, "pending");
+
+    // Without an approval store there is nothing to decide against, so the
+    // gate is inert; production always wires one in index.mjs.
+    const bare = createPhoneStore({ dataDir: dir, now: clock.now, log: silentLog });
+    assert.equal(bare.createCommand({ type: "tap", args: { text: "Enviar" } }).state, "pending");
+});
+
+test("requestedBy defaults to cli and can be overridden", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+
+    store.createCommand({ type: "tap", args: { text: "Enviar" } });
+    store.createCommand({ type: "tap", args: { text: "Enviar" }, requestedBy: "agent" });
+
+    const listed = approvals.listApprovals();
+    assert.deepEqual(listed.map((entry) => entry.requestedBy), ["agent", "cli"]);
 });
