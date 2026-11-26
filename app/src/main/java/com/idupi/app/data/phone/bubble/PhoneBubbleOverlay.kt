@@ -2,6 +2,7 @@ package com.idupi.app.data.phone.bubble
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
+import android.content.Intent
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -64,6 +65,7 @@ class PhoneBubbleOverlay(
     private var root: FrameLayout? = null
     private var params: WindowManager.LayoutParams? = null
     private var stateJob: Job? = null
+    private var voiceJob: Job? = null
 
     private var mode = BubbleMode.COLLAPSED
     private var visible = false
@@ -87,6 +89,8 @@ class PhoneBubbleOverlay(
     private var retryButton: Button? = null
     private var input: EditText? = null
     private var sendButton: Button? = null
+    private var voiceButton: Button? = null
+    private var voiceHint: TextView? = null
 
     /** Adds the window when the gate turns on, removes it when it turns off. */
     fun setVisible(show: Boolean) {
@@ -181,6 +185,8 @@ class PhoneBubbleOverlay(
     private fun detach() {
         stateJob?.cancel()
         stateJob = null
+        voiceJob?.cancel()
+        voiceJob = null
         controller.close()
         val view = root ?: return
         root = null
@@ -195,6 +201,8 @@ class PhoneBubbleOverlay(
         retryButton = null
         input = null
         sendButton = null
+        voiceButton = null
+        voiceHint = null
         try {
             windowManager.removeView(view)
         } catch (error: Exception) {
@@ -208,6 +216,15 @@ class PhoneBubbleOverlay(
             controller.state.collect { state ->
                 chatState = state
                 render()
+            }
+        }
+        voiceJob?.cancel()
+        voiceJob = scope.launch {
+            VoiceInputChannel.events.collect { event ->
+                when (event) {
+                    is VoiceInputEvent.Transcript -> acceptTranscript(event.text)
+                    VoiceInputEvent.Failed -> showVoiceFailure()
+                }
             }
         }
     }
@@ -268,6 +285,8 @@ class PhoneBubbleOverlay(
         retryButton = null
         input = null
         sendButton = null
+        voiceButton = null
+        voiceHint = null
     }
 
     // --- expanded panel ---------------------------------------------------
@@ -419,17 +438,84 @@ class PhoneBubbleOverlay(
             setPadding(dp(16), dp(8), dp(16), dp(8))
             setOnClickListener { sendDraft() }
         }
+        val dictate = Button(service).apply {
+            text = "Dictar"
+            setTextColor(COLOR_TEXT)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+            background = rounded(COLOR_BACKGROUND, radiusDp = 10, strokeColor = COLOR_BORDER)
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = 0
+            minimumHeight = 0
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            setOnClickListener { launchDictation() }
+        }
+        val buttons = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(8) }
+            addView(send)
+            addView(
+                dictate,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply { leftMargin = dp(8) },
+            )
+        }
+        val hint = TextView(service).apply {
+            text = VoiceInputContract.FAILURE_MESSAGE
+            setTextColor(COLOR_ERROR)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setPadding(0, dp(6), 0, 0)
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            )
+        }
         column.addView(field)
-        column.addView(
-            send,
-            LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply { topMargin = dp(8) },
-        )
+        column.addView(buttons)
+        column.addView(hint)
         input = field
         sendButton = send
+        voiceButton = dictate
+        voiceHint = hint
         return column
+    }
+
+    // --- dictation (T5) ---------------------------------------------------
+
+    private fun launchDictation() {
+        val intent = Intent(service, VoiceInputActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_NO_HISTORY or
+                    Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+            )
+        }
+        try {
+            service.startActivity(intent)
+        } catch (error: Exception) {
+            Log.w(TAG, "could not open dictation: ${error.javaClass.simpleName}")
+            showVoiceFailure()
+        }
+    }
+
+    /** The transcript lands in the field for editing; it is never auto-sent. */
+    private fun acceptTranscript(text: String) {
+        val field = input ?: return
+        field.setText(text)
+        field.setSelection(text.length)
+        field.requestFocus()
+        voiceHint?.visibility = View.GONE
+    }
+
+    private fun showVoiceFailure() {
+        voiceHint?.text = VoiceInputContract.FAILURE_MESSAGE
+        voiceHint?.visibility = View.VISIBLE
     }
 
     // --- interaction ------------------------------------------------------

@@ -186,6 +186,19 @@
             android:name="com.idupi.app.data.phone.approval.ApprovalActionReceiver"
             android:exported="false" />
 
+        <!-- Phone bubble dictation (phone-bubble T5). Launched from the
+             accessibility overlay with FLAG_ACTIVITY_NEW_TASK, transparent and
+             history-free: it only opens the system recognizer sheet and relays
+             the transcript to the bubble. It is never exported and owns no
+             microphone permission of its own. -->
+        <activity
+            android:name="com.idupi.app.data.phone.bubble.VoiceInputActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
     </application>
 
 </manifest>
