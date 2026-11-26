@@ -14,7 +14,9 @@ import android.os.SystemClock
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
+import android.text.Editable
 import android.text.InputType
+import android.text.TextWatcher
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
@@ -170,6 +172,15 @@ class PhoneBubbleOverlay(
 
     /** Live in-process recognizer; created on first use, destroyed on collapse. */
     private var speech: SpeechRecognizer? = null
+
+    /** Where the last request came from; the follow-up only applies to voice (T17). */
+    private var requestOrigin = BubbleRequestOrigin.TYPED
+
+    /** The field holds a transcript the owner has not edited since (T17). */
+    private var dictatedDraft = false
+
+    /** True while the overlay writes the field itself; the watcher ignores it. */
+    private var applyingTranscript = false
 
     private var idleAnimator: ValueAnimator? = null
     private var dockAnimator: ValueAnimator? = null
@@ -340,9 +351,11 @@ class PhoneBubbleOverlay(
             combine(controller.state, approvals.pending) { state, pending ->
                 state to pending.size
             }.collect { (state, pendingCount) ->
+                val previousPhase = chatState.phase
                 chatState = state
                 approvalUi = BubbleApprovalState.of(state.phase, pendingCount)
                 render()
+                maybeReopenForVoice(previousPhase, state)
             }
         }
         voiceJob?.cancel()
@@ -701,6 +714,28 @@ class PhoneBubbleOverlay(
                 }
                 false
             }
+            // T17: dictation tracks its own drafts. The overlay's writes are
+            // flagged, so only a real edit by the owner turns the draft typed.
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(
+                    s: CharSequence?,
+                    start: Int,
+                    count: Int,
+                    after: Int,
+                ) = Unit
+
+                override fun onTextChanged(
+                    s: CharSequence?,
+                    start: Int,
+                    before: Int,
+                    count: Int,
+                ) = Unit
+
+                override fun afterTextChanged(s: Editable?) {
+                    if (applyingTranscript) return
+                    dictatedDraft = false
+                }
+            })
         }
         val send = filledButton("Enviar") { sendDraft() }
         // T11: the primary path is in-bubble dictation; the recognizer sheet is
@@ -952,8 +987,12 @@ class PhoneBubbleOverlay(
      */
     private fun putTranscript(text: String) {
         val field = input ?: return
+        applyingTranscript = true
         field.setText(text)
         field.setSelection(text.length)
+        applyingTranscript = false
+        // T17: this draft is a transcript until the owner edits it.
+        dictatedDraft = true
         voiceHint?.visibility = View.GONE
     }
 
@@ -967,6 +1006,7 @@ class PhoneBubbleOverlay(
         val listening = voiceState as? BubbleVoiceState.Listening
         voiceListeningRow?.visibility = if (listening != null) View.VISIBLE else View.GONE
         listening?.let { voiceLevels?.setLevel(it.level) }
+        voiceLevels?.setActive(listening != null)
 
         voiceButton?.text = if (listening != null) "Detener" else "Dictar"
         voiceButton?.contentDescription =
@@ -1025,6 +1065,49 @@ class PhoneBubbleOverlay(
             ?.firstOrNull { it.isNotBlank() }
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
+
+    // --- voice follow-up (T17) --------------------------------------------
+
+    /**
+     * Runs after every chat emission. A dictated request whose finished turn
+     * answered with a question opens the bubble and starts listening; the phase
+     * guard makes it fire once per turn, not on every later emission.
+     */
+    private fun maybeReopenForVoice(
+        previousPhase: BubbleChatPhase,
+        state: BubbleChatState,
+    ) {
+        if (!visible) return
+        // Staying DONE (an approval update, a re-render) must not fire again.
+        if (previousPhase == BubbleChatPhase.DONE) return
+        // The answer is rendered last for a finished turn, so requiring it to be
+        // the last message ties the follow-up to this turn and never to a
+        // previous answer the panel still shows.
+        val last = state.messages.lastOrNull()
+        if (last?.role != BubbleMessageRole.ANSWER) return
+        if (!BubbleVoiceFollowUp.shouldListen(requestOrigin, state.phase, last.text)) return
+        openForVoiceFollowUp()
+    }
+
+    /**
+     * Shows the answer (the panel already renders it) and leaves the mic
+     * listening. Expanding undocks first, and nothing here shows the keyboard:
+     * T16 keeps the IME owner's choice. Never sends.
+     */
+    private fun openForVoiceFollowUp() {
+        if (mode == BubbleMode.COLLAPSED) expand()
+        if (voiceState is BubbleVoiceState.Listening ||
+            voiceState == BubbleVoiceState.RequestingPermission
+        ) {
+            return
+        }
+        dispatchVoice(
+            BubbleVoiceEvent.MicTapped(
+                permissionGranted = MicPermission.isGranted(service),
+                recognizerAvailable = inBubbleRecognitionAvailable(),
+            ),
+        )
+    }
 
     // --- interaction ------------------------------------------------------
 
@@ -1193,7 +1276,13 @@ class PhoneBubbleOverlay(
         abandonVoice(render = false)
         hideKeyboard()
         input?.clearFocus()
-        controller.close()
+        // T17: a dictated request still in flight keeps following while the
+        // bubble is minimized, so a question answer can reopen it with the mic
+        // ready. A typed request keeps the T6/T18 rule: minimizing stops the
+        // poll and this turn stops approving steps on the phone.
+        if (requestOrigin != BubbleRequestOrigin.DICTATED || !chatState.isBusy) {
+            controller.close()
+        }
         focusState = BubbleFocusState()
         val screen = screenSize()
         val spec = BubbleWindowSpecs.forMode(
@@ -1221,10 +1310,19 @@ class PhoneBubbleOverlay(
     private fun sendDraft() {
         val text = input?.text?.toString().orEmpty()
         if (text.isBlank()) return
+        val dictated = dictatedDraft
         // A live recognizer must not drop a late transcript into the field the
         // request is leaving from.
         abandonVoice(render = true)
         input?.setText("")
+        dictatedDraft = false
+        // T17: remember how the owner asked. Only a dictated request may reopen
+        // the microphone when the answer is a question.
+        requestOrigin = if (dictated) {
+            BubbleRequestOrigin.DICTATED
+        } else {
+            BubbleRequestOrigin.TYPED
+        }
         // The service can start in a process where MainActivity never ran, so
         // the shared client may still point at the emulator default.
         IduPiClientProvider.configureFromStorage(service)

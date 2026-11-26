@@ -11,7 +11,8 @@ import java.util.Locale
 
 /**
  * Tiny transparent activity that opens the system dictation sheet for the
- * bubble (phone-bubble T5).
+ * bubble. Fallback only since T11: in-bubble dictation owns the microphone
+ * directly and comes here when RECORD_AUDIO is denied or no recognizer exists.
  *
  * `RecognizerIntent.ACTION_RECOGNIZE_SPEECH` is only startable from an
  * Activity, and the overlay lives in an AccessibilityService, so this

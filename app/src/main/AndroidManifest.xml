@@ -214,7 +214,6 @@
             android:name="com.idupi.app.data.phone.bubble.MicPermissionActivity"
             android:exported="false"
             android:excludeFromRecents="true"
-            android:noHistory="true"
             android:launchMode="singleTop"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 

@@ -43,9 +43,17 @@ class VoiceLevelView(
         level = value.coerceIn(0f, 1f)
     }
 
-    override fun onAttachedToWindow() {
-        super.onAttachedToWindow()
-        if (!animator.isStarted) animator.start()
+    /**
+     * Starts the wave only while the row is on screen, so a closed panel never
+     * pays for an animation nobody sees.
+     */
+    fun setActive(active: Boolean) {
+        if (active) {
+            if (!animator.isStarted) animator.start()
+        } else {
+            animator.cancel()
+            phase = 0f
+        }
     }
 
     override fun onDetachedFromWindow() {
