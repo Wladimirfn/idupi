@@ -23,7 +23,11 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import com.idupi.app.MainActivity
 import com.idupi.app.data.IduPiClientProvider
+import com.idupi.app.data.inbox.InboxNotifier
+import com.idupi.app.data.phone.approval.PendingApprovalsStore
+import com.idupi.app.data.phone.approval.PhoneApprovals
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
@@ -31,6 +35,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 /**
@@ -55,6 +60,7 @@ import kotlinx.coroutines.launch
 class PhoneBubbleOverlay(
     private val service: AccessibilityService,
     private val controller: BubbleChatController = BubbleChatController(IduPiClientProvider),
+    private val approvals: PendingApprovalsStore = PhoneApprovals.pendingStore,
 ) {
 
     private val windowManager =
@@ -77,7 +83,11 @@ class PhoneBubbleOverlay(
     private var collapsedPosition = 0 to 0
 
     private var chatState = BubbleChatState()
-    private var pendingApprovalCount = 0
+    private var approvalUi = BubbleApprovalUi(
+        waitingForApproval = false,
+        badgeVisible = false,
+        pendingCount = 0,
+    )
 
     private var pill: TextView? = null
     private var badge: TextView? = null
@@ -213,8 +223,11 @@ class PhoneBubbleOverlay(
     private fun startCollecting() {
         stateJob?.cancel()
         stateJob = scope.launch {
-            controller.state.collect { state ->
+            combine(controller.state, approvals.pending) { state, pending ->
+                state to pending.size
+            }.collect { (state, pendingCount) ->
                 chatState = state
+                approvalUi = BubbleApprovalState.of(state.phase, pendingCount)
                 render()
             }
         }
@@ -306,6 +319,7 @@ class PhoneBubbleOverlay(
         }
 
         card.addView(buildHeader())
+        card.addView(buildApprovalBanner())
 
         val scroll = ScrollView(service).apply {
             isFillViewport = true
@@ -363,8 +377,64 @@ class PhoneBubbleOverlay(
         return row
     }
 
-    private fun buildStatusLine(): View =
-        TextView(service).apply {
+    private fun buildApprovalBanner(): View {
+        val row = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            background = rounded(COLOR_WARNING_BG, radiusDp = 10, strokeColor = COLOR_WARNING)
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(8) }
+        }
+        val label = TextView(service).apply {
+            text = "Esperando tu aprobación"
+            setTextColor(COLOR_TEXT)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setTypeface(typeface, Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val open = Button(service).apply {
+            text = "Ver en Alertas"
+            setTextColor(COLOR_TEXT)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            background = rounded(COLOR_PRIMARY, radiusDp = 10)
+            minWidth = 0
+            minimumWidth = 0
+            minHeight = 0
+            minimumHeight = 0
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+            setOnClickListener { openAlerts() }
+        }
+        row.addView(label)
+        row.addView(open)
+        return row.also { approvalBanner = it }
+    }
+
+    /**
+     * Sends the owner to Alertas, where the approvals card owns the decision.
+     * The bubble never approves or rejects: that is the whole point of the
+     * queue living on the phone.
+     */
+    private fun openAlerts() {
+        val intent = Intent(service, MainActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+            )
+            putExtra(InboxNotifier.EXTRA_OPEN_ALERTS, true)
+        }
+        try {
+            service.startActivity(intent)
+        } catch (error: Exception) {
+            Log.w(TAG, "could not open Alertas: ${error.javaClass.simpleName}")
+        }
+    }
+
+    private fun buildStatusLine(): View =        TextView(service).apply {
             setTextColor(COLOR_SECONDARY)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             setPadding(0, dp(4), 0, dp(2))
@@ -658,7 +728,7 @@ class PhoneBubbleOverlay(
     }
 
     private fun renderPill() {
-        badge?.visibility = if (pendingApprovalCount > 0) View.VISIBLE else View.GONE
+        badge?.visibility = if (approvalUi.badgeVisible) View.VISIBLE else View.GONE
     }
 
     private fun renderPanel() {
@@ -699,7 +769,7 @@ class PhoneBubbleOverlay(
         sendButton?.isEnabled = !chatState.isBusy
         sendButton?.alpha = if (chatState.isBusy) 0.5f else 1f
         approvalBanner?.visibility =
-            if (pendingApprovalCount > 0 && chatState.isBusy) View.VISIBLE else View.GONE
+            if (approvalUi.waitingForApproval) View.VISIBLE else View.GONE
     }
 
     // --- helpers ----------------------------------------------------------
@@ -751,5 +821,7 @@ class PhoneBubbleOverlay(
         private val COLOR_SECONDARY = 0xFF94A3B8.toInt()
         private val COLOR_PRIMARY = 0xFF6366F1.toInt()
         private val COLOR_ERROR = 0xFFEF4444.toInt()
+        private val COLOR_WARNING = 0xFFF59E0B.toInt()
+        private val COLOR_WARNING_BG = 0xFF3A2E14.toInt()
     }
 }
