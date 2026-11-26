@@ -106,10 +106,10 @@ every outbound or irreversible step goes through the approval queue (B1).
       `com.whatsapp:id/send`) and disambiguation when "varios elementos
       coinciden"; `type --submit` that leaves text in a chat field falls back
       to tapping the send button by id. Tests on prompt/CLI.
-- [ ] T15 App: movable panel. The expanded chat panel drags by its header
+- [x] T15 App: movable panel. The expanded chat panel drags by its header
       like the circle instead of staying fixed at the centre; position
       clamped to the screen and remembered while the service lives. Tests.
-- [ ] T16 App: keyboard and navigation. While the panel has focus the
+- [x] T16 App: keyboard and navigation. While the panel has focus the
       owner can hide the keyboard (back key closes the IME first, a second
       back collapses the panel; a tap outside the panel releases focus via
       `FLAG_WATCH_OUTSIDE_TOUCH`), and system back/home keep working. Tests on
@@ -285,12 +285,45 @@ stacked on #28 with `size:exception`, same as #27/#28.
   coordinate ban is gone because the phone still checks the node under a point
   (`ApprovalGate.checkNode` + `textsAtPoint`); `tap --xy` is a last resort.
   Commit `2174d26`.
+- 2026-11-26: T18 BLOCKED at inspection; no app code written. The delivered
+  command shape (`applyApproval` + `takeNext` in `phone-store.mjs`;
+  `docs/phone.md` "Approved command delivered to the phone") carries only
+  `approvalId`, `approvedTarget`, `approvalReason` and `approvalTarget`.
+  `createCommand({ ownerTurnId })` uses the turn id to mark the approval
+  (`decidedBy: "owner-request:<turnId>"`, persisted in
+  `phone-approval-store.mjs`) and never stores it on the command. The app's
+  `CommandApproval` has `approvalId`/`approvedTarget`/`reason` only, and
+  `PhoneApproval` has no `decidedBy`; the app has no single-approval fetch.
+  So the phone cannot bind an incoming approval to a turn started by THIS
+  bubble (rule a of T18) from what it receives. The approval GET route would
+  return the `decidedBy` field (the store clones the whole record), but that is
+  a new app-only lookup, not data "on the command", and it was not implemented
+  under the task's stop rule. Missing wire field: `decidedBy` (or an equivalent
+  `ownerTurnId`) on the delivered command.
+- 2026-11-26: T15 green. RED: `BubbleOverlayModelTest` failed to compile with
+  `Unresolved reference 'panel'` (4 call sites). GREEN: `BubbleOverlayModelTest`
+  = 17 tests, 0 failures (+3). `BubbleOverlayPosition.panel` centers the first
+  expansion and clamps a remembered spot on a smaller display;
+  `PhoneBubbleOverlay` drags the panel by its header with raw touch deltas,
+  updates the window on the main thread, remembers `panelPosition` while the
+  service lives, and leaves Minimizar as a clickable child so its taps never
+  start a drag; the rotation path re-clamps the panel. Commit `2fdd16d`.
+- 2026-11-26: T16 green. RED: `BubbleFocusReducerTest` failed to compile
+  (`BubbleFocusState`, `BubbleFocusReducer`, `BubbleFocusEvent`,
+  `BubbleFocusAction` absent); the model tests also wanted
+  `FLAG_WATCH_OUTSIDE_TOUCH` and `withFocus`. GREEN: 8 reducer tests + 20
+  overlay-model tests; full suite 1134 tests, 0 failures (+14 since T14);
+  `assembleRelease` success. BACK hides the IME and clears the field first, a
+  second BACK collapses; `ACTION_OUTSIDE` and the new "⌨" glass button
+  (contentDescription "Ocultar teclado") hide the IME and set
+  `FLAG_NOT_FOCUSABLE`; tapping the field clears that flag and re-shows the IME.
+  Every `WindowManager` call stays on the main thread. Commit `4a44efe`.
 
 ## Next step
 
-T11 in-bubble dictation and T15-T17 app follow-ups (movable panel, keyboard and
-back behaviour, voice follow-up) on `feat/phone-bubble`. Before T12, add the
-app-side half of T13 so the phone accepts a server-approved owner-request
-command (its `ApprovalGate` still requires a local ledger grant). Deliver only
+T11 in-bubble dictation and T17 voice follow-up. T18 is blocked on the
+command wire: the phone needs `decidedBy`/`ownerTurnId` on the delivered
+command (or an explicit app-only approval lookup) before the ledger can bind a
+grant to the bubble's own running turn. Before T12, deliver only
 `assembleRelease` APKs (a debug APK fails with a signature mismatch on the
 phone).
