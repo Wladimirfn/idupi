@@ -58,10 +58,10 @@ screen; Personalizado colors can be opened and closed.
       existing section unchanged. Pure route/back tests.
 - [x] T2 Hub summaries: pure summary functions per category from the existing
       view-model state; tests.
-- [ ] T3 Apariencia: Personalizado color editor behind "Editar colores"
+- [x] T3 Apariencia: Personalizado color editor behind "Editar colores"
       (expand/collapse, collapsed on entry, opened right after choosing
       Personalizado); pure state tests.
-- [ ] T4 Alertas: inline access, reminders and auto-reply; rows that open
+- [x] T4 Alertas: inline access, reminders and auto-reply; rows that open
       "Apps a seguir" (full searchable list, followed first, no 420dp cap),
       "Chats silenciados", "Analista en la PC" and "Estado de captura". Tests
       on any new state.
@@ -103,6 +103,18 @@ Delivery: forecast ~1500 authored lines (mostly moved code); strategy
   the same change (sections moved as-is into sub-screens). Back/rotation only
   compile-verified (no Compose UI tests); device check in T6. Commit below.
 
+- 2026-11-26: T3+T4 done (writer idu-pi work-1). RED: compile failures on
+  `nextColorsExpanded`, `followedFirstApps` and the new row summaries. GREEN:
+  134 suites, 1269 tests, 0 failures (orchestrator re-run). Review fix: the
+  Apps a seguir order is snapshotted when the screen opens so a toggled row
+  does not jump away. Commits `a260379`, `74a048c`.
+- 2026-11-26: T6 partial. 1.59-ajustes (versionCode 60) assembleRelease, same
+  signer, installed over adb. Orchestrator device check over adb: hub with live
+  summaries, Apariencia with collapsed "Editar colores", Alertas rows, Apps a
+  seguir full-screen list with search and followed first, back chain Apps a
+  seguir -> Alertas -> hub. An earlier jump to Terminales was the owner tapping
+  the phone at the same time (owner confirmed), not a bug.
+
 ## Next step
 
-T3 (collapsible colors) and T4 (Alertas sub-screens).
+Owner review of 1.59, then PR stacked on #29.
