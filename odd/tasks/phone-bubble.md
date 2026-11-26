@@ -163,6 +163,21 @@ every outbound or irreversible step goes through the approval queue (B1).
       the standard recognizer (on-device disabled for the service's life);
       standard-recognizer non-speech failure -> system dictation sheet
       (`VoiceInputActivity`, works since 1.55); error codes logged.
+- [x] T23 App: voice approval of the outbound message + direct dictated send
+      (owner 2026-11-26 after testing 1.57). (a) Drop T21's request read-back:
+      a dictated final transcript of a new request is sent straight to the agent
+      (owner: "quita la de T21"); T17 follow-up kept. (b) The phone-side safety
+      net (`phone_detected_risky_target`, e.g. tap `com.whatsapp:id/send`
+      labelled "Enviar") asked by notification during an owner bubble turn
+      (apr-f028e4165b37, requestedBy=phone). While a bubble turn started on this
+      phone is active (T18 registry) and the step is messaging (never money or
+      destructive), the approval goes to the bubble by voice instead: "Voy a
+      enviar el mensaje por <app>. ¿Está bien?" on screen + TTS, then listen:
+      yes -> approve through the existing approve path; "léemelo" -> read the
+      recipient and the composed text from the screen, ask again; "agrégale
+      ..." -> append to the compose field (accessibility set-text), ask again;
+      no -> reject; silence/error -> post the usual notification as fallback.
+      Reuses the T21 classifier/loop. Tests.
 - [ ] T12 Release: version bump, assembleRelease (same cert), push, live check,
       PR.
 
@@ -426,6 +441,22 @@ stacked on #28 with `size:exception`, same as #27/#28.
   types. Orchestrator re-ran the suite: 127 suites, 1212 tests, 0 failures.
   Commit `8d027af`; 1.57-burbuja-voz (versionCode 58, `c396b47`) installed
   over adb. On-device check pending (owner).
+
+- 2026-11-26: T23 done. Owner tested 1.57: dictation worked (logcat: code=12
+  onDevice=true recovery=RETRY_STANDARD) but the send step raised a phone-side
+  approval notification (apr-f028e4165b37, phone_detected_risky_target, target
+  "Enviar"). Writer idu-pi work-1: `ApprovalVoiceRouting` (owner turn active +
+  bubble attached + phone-detected + messaging only), `ApprovalVoiceHost`,
+  `BubbleVoiceApproval` loop, `ApprovalScreenReader` (WhatsApp
+  conversation_contact_name/entry + generic fallback, ACTION_SET_TEXT append);
+  interception at the poller (notification only on fallback); decisions via
+  `PhoneApprovals.decisionFlow`. Part A: dictated requests sent directly (T21
+  read-back removed). RED: compile failures on the new types. Review fix: the
+  spoken app label now comes from the command resource id, then the live
+  window, then the stored foregroundApp (it was a stale "Inicio de One UI").
+  Orchestrator suite: 130 suites, 1240 tests, 0 failures. Commit `e133b42`;
+  1.58-burbuja-aprobar-voz (versionCode 59, `a6b1866`) installed over adb.
+  On-device check pending (owner); generic non-WhatsApp node heuristics untested.
 
 ## Next step
 
