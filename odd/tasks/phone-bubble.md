@@ -68,8 +68,29 @@ every outbound or irreversible step goes through the approval queue (B1).
       steps/answer rendering, error mapping. Tests.
 - [x] T7 App: approval state in the bubble ("Esperando tu aprobación", tap
       opens Alertas); no approve action inside the bubble. Tests.
-- [ ] T8 Release: version bump, build, push APK, server restart (check
-      `idupi-term ls` first), live e2e, PR.
+- [x] T8 First on-device release: 1.53-burbuja (versionCode 54) pushed as a
+      release-signed APK (dlv-d9ba3eadd7c0). Owner verdict: works well, design
+      needs a full pass (T9-T11).
+- [ ] T9 App: glass look. The bubble and panel take the owner's theme
+      (`ThemePalettes.resolve(themeSettings)`), not hard-coded colours;
+      translucent "liquid glass" surfaces (alpha fill + light rim + soft
+      highlight; real blur behind on API 31+ when cross-window blur is enabled,
+      plain translucency otherwise). Collapsed = a circle with the IDUPI
+      hedgehog as a translucent white mark (from `docs/assets/icon-512-transparent.png`)
+      and a subtle idle animation (breathing glow / shimmer) so it never looks
+      solid. Pure colour/alpha mapping tested.
+- [ ] T10 App: edge docking. After a short idle the circle slides half off the
+      nearest edge (liquid tuck), at reduced opacity; touch brings it back with
+      a spring; drag still works. Pure dock-position maths tested.
+- [ ] T11 App: in-bubble dictation. Replace the Google recognizer sheet with
+      `SpeechRecognizer` driven from the overlay: listening state inside the
+      panel (animated level bars from `onRmsChanged`, live partial text into the
+      field), never auto-sends. Needs `RECORD_AUDIO`: requested once from
+      Ajustes when the bubble is enabled or via a tiny transparent permission
+      activity on first tap; falls back to the current `VoiceInputActivity`
+      when the permission is denied or no recognizer exists. Tests.
+- [ ] T12 Release: version bump, assembleRelease (same cert), push, live check,
+      PR.
 
 ## Acceptance criteria
 
@@ -163,8 +184,15 @@ stacked on #28 with `size:exception`, same as #27/#28.
 - 2026-11-26: full app check:
   `./gradlew testDebugUnitTest assembleDebug` = 1103 tests, 0 failures
   (baseline 1057 + 46 new), APK built.
+- 2026-11-26: T8 on device. A debug APK was refused ("la firma no coincide");
+  rebuilt with `assembleRelease` (cert SHA-256 d8ba0fc9...7f00, same as earlier
+  deliveries) and pushed as dlv-d9ba3eadd7c0. Owner: the system works very
+  well; the bubble looks solid and plain, and dictation shows the Google sheet
+  over the app. Design pass T9-T11 added.
 
 ## Next step
 
-T8 release: version bump, build, push APK, server restart (check `idupi-term ls`
-first), live e2e, PR.
+T9-T11 design pass (owner feedback 2026-11-26 on 1.53): glass look in the
+owner's palette with the translucent logo, edge docking, in-bubble dictation.
+Then T12 release. Deliver only `assembleRelease` APKs (a debug APK fails with a
+signature mismatch on the phone).
