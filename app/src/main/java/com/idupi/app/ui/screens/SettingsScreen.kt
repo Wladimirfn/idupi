@@ -2,6 +2,10 @@ package com.idupi.app.ui.screens
 
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -11,6 +15,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Menu
@@ -22,8 +27,10 @@ import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -46,6 +53,7 @@ import com.idupi.app.domain.model.contrastRatioArgb
 import com.idupi.app.domain.model.isLowContrast
 import com.idupi.app.domain.model.relativeLuminance
 import com.idupi.app.ui.screens.settings.ACTIONS_CATEGORY_SUMMARY
+import com.idupi.app.ui.screens.settings.COLORS_EXPANDED_ON_ENTRY
 import com.idupi.app.ui.screens.settings.HELP_CATEGORY_SUMMARY
 import com.idupi.app.ui.screens.settings.SettingsCategoryRow
 import com.idupi.app.ui.screens.settings.SettingsRoute
@@ -56,6 +64,7 @@ import com.idupi.app.ui.screens.settings.back
 import com.idupi.app.ui.screens.settings.calendarSummary
 import com.idupi.app.ui.screens.settings.connectionSummary
 import com.idupi.app.ui.screens.settings.healthSummary
+import com.idupi.app.ui.screens.settings.nextColorsExpanded
 import com.idupi.app.ui.screens.settings.phoneAssistantSummary
 import com.idupi.app.ui.theme.AppShapes
 import com.idupi.app.ui.theme.AppSpacing
@@ -137,18 +146,16 @@ fun SettingsScreen(
                 onCustomColorsChange = { mainViewModel.setCustomThemeColors(it) }
             )
         }
-        SettingsRoute.Alerts,
-        SettingsRoute.FollowedApps,
-        SettingsRoute.SilencedChats,
-        SettingsRoute.AlertAnalyst,
-        SettingsRoute.CaptureStatus -> SettingsSubScreen(
-            // T4 gives "Apps a seguir" and the other long blocks their own
-            // screens; until then every alerts route shows the Alertas section.
+        SettingsRoute.Alerts -> SettingsSubScreen(
             title = "Alertas",
             onBack = goBack,
         ) {
-            InboxAlertsSection(inboxViewModel)
+            InboxAlertsSection(inboxViewModel, onOpenRoute = openRoute)
         }
+        SettingsRoute.FollowedApps -> FollowedAppsScreen(inboxViewModel, onBack = goBack)
+        SettingsRoute.SilencedChats -> SilencedChatsScreen(inboxViewModel, onBack = goBack)
+        SettingsRoute.AlertAnalyst -> AlertAnalystScreen(inboxViewModel, onBack = goBack)
+        SettingsRoute.CaptureStatus -> CaptureStatusScreen(inboxViewModel, onBack = goBack)
         SettingsRoute.PhoneAssistant -> SettingsSubScreen(
             title = "Asistente del teléfono",
             onBack = goBack,
@@ -334,8 +341,9 @@ internal fun SettingsSection(
 
 /**
  * "Apariencia": dark/light/custom mode, the three accent presets and — in
- * custom mode — the colour editor with a live preview. Every choice is
- * persisted immediately (DataStore) and applied app-wide by IDUPITheme.
+ * custom mode — the colour editor behind a collapsible "Editar colores" row
+ * (settings redesign T3). Every choice is persisted immediately (DataStore) and
+ * applied app-wide by IDUPITheme; only the expansion is screen state.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -345,6 +353,11 @@ private fun AppearanceSection(
     onPresetSelect: (ThemePreset) -> Unit,
     onCustomColorsChange: (ThemeColors) -> Unit
 ) {
+    // Collapsed on entry even in Personalizado; survives rotation through
+    // rememberSaveable, is forgotten when Apariencia closes, and is never
+    // written to DataStore.
+    var colorsExpanded by rememberSaveable { mutableStateOf(COLORS_EXPANDED_ON_ENTRY) }
+
     SettingsSection {
         Card(
             modifier = Modifier.fillMaxWidth(),
@@ -356,7 +369,17 @@ private fun AppearanceSection(
                 verticalArrangement = Arrangement.spacedBy(AppSpacing.md)
             ) {
                 Text("Modo", style = AppTypography.bodySmall, color = TextSecondary)
-                ModeSelector(selected = settings.mode, onSelect = onModeSelect)
+                ModeSelector(
+                    selected = settings.mode,
+                    onSelect = { newMode ->
+                        colorsExpanded = nextColorsExpanded(
+                            previousMode = settings.mode,
+                            newMode = newMode,
+                            expanded = colorsExpanded
+                        )
+                        onModeSelect(newMode)
+                    }
+                )
 
                 when (settings.mode) {
                     ThemeMode.DARK, ThemeMode.LIGHT -> {
@@ -364,11 +387,21 @@ private fun AppearanceSection(
                         PresetRow(selected = settings.preset, onSelect = onPresetSelect)
                     }
                     ThemeMode.CUSTOM -> {
-                        Text("Colores", style = AppTypography.bodySmall, color = TextSecondary)
-                        CustomColorsEditor(
+                        ColorsEditorToggle(
                             colors = settings.custom,
-                            onChange = onCustomColorsChange
+                            expanded = colorsExpanded,
+                            onToggle = { colorsExpanded = !colorsExpanded }
                         )
+                        AnimatedVisibility(
+                            visible = colorsExpanded,
+                            enter = expandVertically(),
+                            exit = shrinkVertically()
+                        ) {
+                            CustomColorsEditor(
+                                colors = settings.custom,
+                                onChange = onCustomColorsChange
+                            )
+                        }
                     }
                 }
 
@@ -379,6 +412,59 @@ private fun AppearanceSection(
                 )
             }
         }
+    }
+}
+
+/**
+ * "Editar colores" row (settings redesign T3): the four current custom colours
+ * as a small preview and a chevron that rotates when the editor opens.
+ */
+@Composable
+private fun ColorsEditorToggle(
+    colors: ThemeColors,
+    expanded: Boolean,
+    onToggle: () -> Unit
+) {
+    val chevronRotation by animateFloatAsState(
+        targetValue = if (expanded) 90f else 0f,
+        label = "colorsChevron"
+    )
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onToggle() },
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = "Editar colores",
+            style = AppTypography.bodyLarge,
+            color = TextPrimary,
+            modifier = Modifier.weight(1f)
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(AppSpacing.xs)) {
+            listOf(
+                colors.accentArgb,
+                colors.backgroundArgb,
+                colors.cardArgb,
+                colors.textArgb
+            ).forEach { argb ->
+                Box(
+                    modifier = Modifier
+                        .size(14.dp)
+                        .clip(CircleShape)
+                        .background(Color(argb))
+                        .border(1.dp, SlateBorder, CircleShape)
+                )
+            }
+        }
+        Spacer(modifier = Modifier.width(AppSpacing.sm))
+        Icon(
+            imageVector = Icons.Default.ChevronRight,
+            contentDescription = if (expanded) "Contraer colores" else "Expandir colores",
+            tint = TextSecondary,
+            modifier = Modifier.rotate(chevronRotation)
+        )
     }
 }
 
