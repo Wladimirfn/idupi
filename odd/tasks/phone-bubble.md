@@ -20,9 +20,12 @@ every outbound or irreversible step goes through the approval queue (B1).
 
 ## Current state (exploration 2026-11-26, explore-1)
 
-- App: no overlay, no speech input, no chat UI. `IdupiAccessibilityService` is
-  the natural host (`TYPE_ACCESSIBILITY_OVERLAY`, no new permission). Drag math
-  exists: `domain/model/ScreenBubble.kt` `snapBubbleToEdge`.
+- App: phase 2 implemented T4-T7. The bubble is drawn by
+  `IdupiAccessibilityService` with `TYPE_ACCESSIBILITY_OVERLAY` (no new
+  permission), using classic Views; the pill drags and snaps with
+  `domain/model/ScreenBubble.kt` `snapBubbleToEdge`. Dictation goes through a
+  transparent `VoiceInputActivity`; the chat is a pure reducer over the turn
+  client; the approval banner links to Alertas.
 - Server: agent runner `lib/inbox-agent.mjs` (`createInboxAgentRunner`, A3
   read-only profiles for claude/opencode; codex/pi not viable). Phone commands:
   `lib/phone-store.mjs` `createCommand` -> `lib/phone-risk.mjs` -> approval
@@ -56,14 +59,14 @@ every outbound or irreversible step goes through the approval queue (B1).
       with trusted/untrusted split, step budget, answer cap, injection tests.
 - [x] T3 Server: safety rails (budget exhaustion, redacted logs: ids only),
       docs `idupi-server/docs/phone.md` "Bubble agent turns". Tests.
-- [ ] T4 App: bubble overlay in the accessibility service (pill, drag + snap,
+- [x] T4 App: bubble overlay in the accessibility service (pill, drag + snap,
       expanded panel, text input), setting "Burbuja de IDUPI" (default off).
       Tests (pure reducer, window params, gate).
-- [ ] T5 App: voice input (`RecognizerIntent`, es-CL, editable transcript,
+- [x] T5 App: voice input (`RecognizerIntent`, es-CL, editable transcript,
       graceful fallback). Tests.
-- [ ] T6 App: turn client (`IduPiClient` + Real + Fake), long-poll with cancel,
+- [x] T6 App: turn client (`IduPiClient` + Real + Fake), long-poll with cancel,
       steps/answer rendering, error mapping. Tests.
-- [ ] T7 App: approval state in the bubble ("Esperando tu aprobación", tap
+- [x] T7 App: approval state in the bubble ("Esperando tu aprobación", tap
       opens Alertas); no approve action inside the bubble. Tests.
 - [ ] T8 Release: version bump, build, push APK, server restart (check
       `idupi-term ls` first), live e2e, PR.
@@ -115,7 +118,51 @@ stacked on #28 with `size:exception`, same as #27/#28.
   (no server restart, one PTY alive): "¿Qué app tengo abierta y cuánta batería
   me queda?" -> one `status` CLI call, neutral Spanish answer in 8 s.
   Server 988 pass, 0 fail.
+- 2026-11-26: T6 green. RED: `PhoneAgentTurnWireTest` and
+  `BubbleChatControllerTest` failed to compile (`PhoneAgentTurn`,
+  `BubbleChatController` absent). GREEN: 20 targeted tests (6 wire + 14
+  controller). `IduPiClient` gained `startPhoneAgentTurn` /
+  `getPhoneAgentTurn(id, wait)` / `listPhoneAgentTurns`; the Real client maps
+  400/413 to `Invalid`, 503 `AGENT_UNAVAILABLE` to `Unavailable`, everything
+  else to `Failure`, and its poll timeout is `wait + 15 s` like the command
+  long poll. The controller POSTs, follows the turn with `wait=25` until a
+  terminal status, appends steps by count (skipping the duplicate `answer`
+  step), the answer once, and the failed/cancelled copy; three consecutive poll
+  failures fail the turn, `close()` cancels, `resume()` reattaches.
+  Commit `ab9791f`.
+- 2026-11-26: T4 green. RED: `BubbleOverlayModelTest` failed to compile
+  (`BubbleGate`, `BubbleWindowSpecs` absent); the new DataStore and ViewModel
+  tests failed on `phoneBubbleEnabled`. GREEN: 35 targeted tests (8 model + 4
+  DataStore + 23 ViewModel). Setting `phone_bubble_enabled`, default OFF, next
+  to "Control desde la PC" with copy that names both requirements. Gate =
+  setting AND phone control AND the accessibility grant (the bound service).
+  The overlay uses **classic Views**, not Compose: it lives in a Service with no
+  Activity, so Compose would need a hand-built lifecycle/saved-state/
+  recomposer owner for a window added and removed at runtime; the panel is a
+  few widgets and plain Views keep IME focus and window lifecycle obvious.
+  `TYPE_ACCESSIBILITY_OVERLAY`, no new permission; pill drags and snaps with
+  `snapBubbleToEdge`; expanded drops `FLAG_NOT_FOCUSABLE` so the field can take
+  input; the panel is clamped to the screen. Commit `0b49873`.
+- 2026-11-26: T5 green. RED: `VoiceInputContractTest` failed to compile
+  (`VoiceInputContract` absent). GREEN: 7 tests. `VoiceInputActivity` is
+  transparent, not exported, `excludeFromRecents`, `noHistory`, launched with
+  `FLAG_ACTIVITY_NEW_TASK`; it opens `ACTION_RECOGNIZE_SPEECH` with `es-CL` on a
+  Spanish phone and the device tag otherwise, publishes the transcript (or the
+  failure event) on the process-wide `VoiceInputChannel`, and the bubble places
+  it in the field for editing, never auto-sends. No RECORD_AUDIO. Dictation
+  needs the on-device check in T8 (the `noHistory` trampoline relies on the
+  recognizer sheet not stopping it). Commit `47ad7cb`.
+- 2026-11-26: T7 green. RED: `BubbleApprovalStateTest` failed to compile
+  (`BubbleApprovalState` absent). GREEN: 5 tests. `BubbleApprovalState.of(phase,
+  pendingCount)` drives the banner ("Esperando tu aprobación" + "Ver en
+  Alertas" -> `MainActivity` with `InboxNotifier.EXTRA_OPEN_ALERTS`) only while
+  a turn runs, and the pill badge whenever an approval is pending. The bubble
+  never approves or rejects. Commit `7019388`.
+- 2026-11-26: full app check:
+  `./gradlew testDebugUnitTest assembleDebug` = 1103 tests, 0 failures
+  (baseline 1057 + 46 new), APK built.
 
 ## Next step
 
-T4 app: bubble overlay.
+T8 release: version bump, build, push APK, server restart (check `idupi-term ls`
+first), live e2e, PR.
