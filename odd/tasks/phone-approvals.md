@@ -67,6 +67,12 @@ started from a floating IDUPI button) builds on this gate.
       an `approvalId` that the owner approved ON THIS PHONE (a PC process with
       the bearer token can call the decision route, so the server decision is
       not proof). Tests.
+- [ ] T4 App (owner request after the live check, 2026-11-26): approvals also
+      appear in Alertas with their detail (what, which app, why, who asked,
+      time left, expandable exact target/typed text) and Aprobar/Rechazar.
+      One process-wide pending StateFlow fed by the poller; any decision from
+      any surface (notification, Alertas, Ajustes card) removes the item and
+      cancels its notification, so it disappears everywhere. Tests.
 - [ ] T3 Release: version bump 1.51, build, push APK (off-LAN delivery),
       server restart (check `idupi-term ls` first), live check, PR.
 
