@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -74,12 +75,12 @@ internal fun SettingsCard(
     }
 }
 
-/** One hub category: icon badge, title, one-line summary and chevron. */
+/** One hub category: icon badge, title, optional one-line summary and chevron. */
 @Composable
 internal fun SettingsCategoryRow(
     icon: ImageVector,
     title: String,
-    summary: String,
+    summary: String?,
     onClick: () -> Unit,
 ) {
     SettingsCard(onClick = onClick) {
@@ -98,13 +99,15 @@ internal fun SettingsCategoryRow(
             Spacer(modifier = Modifier.width(AppSpacing.lg))
             Column(modifier = Modifier.weight(1f)) {
                 Text(title, style = AppTypography.bodyLarge, color = TextPrimary)
-                Text(
-                    text = summary,
-                    style = AppTypography.bodySmall,
-                    color = TextSecondary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                if (summary != null) {
+                    Text(
+                        text = summary,
+                        style = AppTypography.bodySmall,
+                        color = TextSecondary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
             Icon(Icons.Default.ChevronRight, contentDescription = null, tint = TextSecondary)
         }
@@ -112,12 +115,41 @@ internal fun SettingsCategoryRow(
 }
 
 /** Sub-screen shell: back arrow, title, scrolling padded content. */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun SettingsSubScreen(
     title: String,
     onBack: () -> Unit,
     content: @Composable ColumnScope.() -> Unit,
+) {
+    SettingsSubScreenScaffold(title = title, onBack = onBack) { paddingValues ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(paddingValues)
+                .verticalScroll(rememberScrollState())
+                .padding(AppSpacing.screenPadding),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.sectionGap),
+        ) {
+            content()
+            Spacer(modifier = Modifier.height(AppSpacing.xxxl))
+        }
+    }
+}
+
+/**
+ * Sub-screen shell whose content owns the scrolling (settings redesign T4).
+ *
+ * "Apps a seguir" renders a LazyColumn that must fill the screen; a
+ * LazyColumn inside [SettingsSubScreen]'s verticalScroll would measure with an
+ * infinite height. This variant passes the scaffold insets through and leaves
+ * the layout to the caller.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun SettingsSubScreenScaffold(
+    title: String,
+    onBack: () -> Unit,
+    content: @Composable (PaddingValues) -> Unit,
 ) {
     Scaffold(
         topBar = {
@@ -137,16 +169,6 @@ internal fun SettingsSubScreen(
         },
         containerColor = SlateBg,
     ) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .verticalScroll(rememberScrollState())
-                .padding(AppSpacing.screenPadding),
-            verticalArrangement = Arrangement.spacedBy(AppSpacing.sectionGap),
-        ) {
-            content()
-            Spacer(modifier = Modifier.height(AppSpacing.xxxl))
-        }
+        content(paddingValues)
     }
 }

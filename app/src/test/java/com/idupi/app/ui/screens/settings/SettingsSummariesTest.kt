@@ -2,12 +2,15 @@ package com.idupi.app.ui.screens.settings
 
 import com.idupi.app.data.calendar.CalendarPermissionState
 import com.idupi.app.data.health.HealthConnectAvailability
+import com.idupi.app.data.inbox.InboxCaptureState
 import com.idupi.app.domain.model.InboxSettings
 import com.idupi.app.domain.model.ThemeMode
 import com.idupi.app.domain.model.ThemePreset
 import com.idupi.app.domain.model.ThemeSettings
 import com.idupi.app.viewmodel.HealthSettingsState
+import com.idupi.app.viewmodel.InboxAgentConfigState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 /** Ajustes hub summaries (settings redesign T2): neutral Spanish, honest state. */
@@ -125,6 +128,46 @@ class SettingsSummariesTest {
             "Health Connect no está en el teléfono",
             healthSummary(healthState(HealthConnectAvailability.UNAVAILABLE)),
         )
+    }
+
+    // --- Alertas sub-screen rows (settings redesign T4) --------------------
+
+    @Test
+    fun `followed apps row counts the followed apps`() {
+        assertEquals("0 apps seguidas", followedAppsSummary(0))
+        assertEquals("1 app seguida", followedAppsSummary(1))
+        assertEquals("4 apps seguidas", followedAppsSummary(4))
+    }
+
+    @Test
+    fun `silenced chats row says none instead of zero`() {
+        assertEquals("Ninguno", silencedChatsSummary(0))
+        assertEquals("1 chat", silencedChatsSummary(1))
+        assertEquals("3 chats", silencedChatsSummary(3))
+    }
+
+    @Test
+    fun `analyst row names the agent and model once the PC answered`() {
+        assertEquals(
+            "OpenCode · opencode-go/deepseek-v4.1-flash",
+            analystSummary(InboxAgentConfigState(model = "opencode-go/deepseek-v4.1-flash")),
+        )
+        assertEquals(
+            "Claude · sonnet",
+            analystSummary(InboxAgentConfigState(agent = "claude", model = "sonnet")),
+        )
+    }
+
+    @Test
+    fun `analyst row is omitted while the model is unknown`() {
+        assertNull(analystSummary(InboxAgentConfigState()))
+        assertNull(analystSummary(InboxAgentConfigState(model = "   ")))
+    }
+
+    @Test
+    fun `capture row reads the listener diagnostics`() {
+        assertEquals("Escuchando", captureStatusSummary(InboxCaptureState(listenerConnected = true)))
+        assertEquals("Detenido", captureStatusSummary(InboxCaptureState(listenerConnected = false)))
     }
 
     @Test

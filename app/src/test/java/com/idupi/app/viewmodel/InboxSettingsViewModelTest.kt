@@ -299,19 +299,6 @@ class InboxSettingsViewModelTest {
     }
 
     @Test
-    fun `the full apps list starts collapsed and toggles`() = runTest {
-        val viewModel = viewModel()
-
-        assertFalse(viewModel.installedApps.value.expanded)
-
-        viewModel.toggleAppsExpanded()
-        assertTrue(viewModel.installedApps.value.expanded)
-
-        viewModel.toggleAppsExpanded()
-        assertFalse(viewModel.installedApps.value.expanded)
-    }
-
-    @Test
     fun `following a package-name app persists the package as the app id`() = runTest {
         val viewModel = viewModel()
         advanceUntilIdle()

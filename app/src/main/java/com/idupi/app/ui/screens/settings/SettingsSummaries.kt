@@ -2,11 +2,14 @@ package com.idupi.app.ui.screens.settings
 
 import com.idupi.app.data.calendar.CalendarPermissionState
 import com.idupi.app.data.health.HealthConnectAvailability
+import com.idupi.app.data.inbox.InboxCaptureState
 import com.idupi.app.domain.model.InboxSettings
 import com.idupi.app.domain.model.ThemeMode
 import com.idupi.app.domain.model.ThemeSettings
+import com.idupi.app.ui.screens.agentLabel
 import com.idupi.app.ui.theme.ThemePalettes
 import com.idupi.app.viewmodel.HealthSettingsState
+import com.idupi.app.viewmodel.InboxAgentConfigState
 
 /**
  * One-line summaries under the Ajustes hub categories (settings redesign T2).
@@ -68,3 +71,34 @@ internal const val HELP_CATEGORY_SUMMARY = "Referencia de comandos de la PC"
 
 /** Fixed copy of the "Acciones y seguridad" hub row. */
 internal const val ACTIONS_CATEGORY_SUMMARY = "Autodiagnóstico y cerrar sesión"
+
+// --- Alertas sub-screen rows (settings redesign T4) ------------------------
+
+/**
+ * Row summary of "Apps a seguir" inside Alertas. Counts what the owner follows
+ * (the same count the Alertas hub row uses), not what the phone inventory
+ * happens to show.
+ */
+internal fun followedAppsSummary(count: Int): String =
+    if (count == 1) "1 app seguida" else "$count apps seguidas"
+
+/** Row summary of "Chats silenciados por IDUPI": "Ninguno" when empty. */
+internal fun silencedChatsSummary(count: Int): String = when (count) {
+    0 -> "Ninguno"
+    1 -> "1 chat"
+    else -> "$count chats"
+}
+
+/**
+ * Row summary of "Analista en la PC": agent and model once the PC answered.
+ * Null while the model is still unknown, so the row shows no invented choice.
+ */
+internal fun analystSummary(config: InboxAgentConfigState): String? {
+    val model = config.model.trim()
+    if (model.isEmpty()) return null
+    return "${agentLabel(config.agent)} · $model"
+}
+
+/** Row summary of "Estado de captura" from the listener diagnostics. */
+internal fun captureStatusSummary(status: InboxCaptureState): String =
+    if (status.listenerConnected) "Escuchando" else "Detenido"
