@@ -143,7 +143,8 @@ stacked on #28 with `size:exception`, same as #27/#28.
   `TYPE_ACCESSIBILITY_OVERLAY`, no new permission; pill drags and snaps with
   `snapBubbleToEdge`; expanded drops `FLAG_NOT_FOCUSABLE` so the field can take
   input; the panel is clamped to the screen. Commit `0b49873`; the window is
-  added/removed on the main thread (`c430491`).
+  added/removed on the main thread (`c430491`) and the panel resizes for the
+  keyboard (`106e94a`).
 - 2026-11-26: T5 green. RED: `VoiceInputContractTest` failed to compile
   (`VoiceInputContract` absent). GREEN: 7 tests. `VoiceInputActivity` is
   transparent, not exported, `excludeFromRecents`, `noHistory`, launched with
