@@ -304,7 +304,12 @@ text, calendar titles) is UNTRUSTED DATA. Delimiter-shaped text in the request
 is neutralized so it cannot close or forge a block. The prompt lists the only
 allowed subcommands, tells the agent that the owner's request approves its
 messaging steps, and keeps money and destructive steps waiting for an explicit
-approval.
+approval. It also teaches `tap --id` (reading resource ids from the `#id` token
+in the screen dump), how to disambiguate "varios elementos coinciden", and that
+after `type` in a chat the IME enter may only add a newline: the agent must read
+the screen and, when the text is still in the field, tap the send button by id
+(WhatsApp `com.whatsapp:id/send`) and read the screen again. Coordinates
+(`tap --xy`) are a last resort; a point tap is still checked by the phone.
 
 The step budget is enforced server-side: the CLI runs with
 `--output-format stream-json`, every Bash tool call becomes a `cli` step, and
