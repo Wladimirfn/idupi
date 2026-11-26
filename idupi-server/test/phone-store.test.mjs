@@ -613,6 +613,10 @@ test("an owner turn approves a message submit without a pending card", async (t)
     const delivered = store.takeNext();
     assert.equal(delivered.id, command.id);
     assert.equal(delivered.args.approvalId, command.approvalId);
+    // The phone needs to know WHICH bubble turn approved the step, so it can
+    // bind the grant to a turn it started itself (phone-bubble, T18).
+    assert.equal(delivered.args.ownerTurnId, OWNER_TURN);
+    assert.equal(delivered.args.approvalCategory, "message");
 });
 
 test("an owner turn approves a messaging tap inside a messaging app", async (t) => {
@@ -692,6 +696,45 @@ test("requestedBy from the body never authorizes an owner turn", async (t) => {
     assert.equal(command.state, "awaiting_approval");
     assert.equal(approvals.getApproval(command.approvalId).state, "pending");
     assert.equal(approvals.getApproval(command.approvalId).decidedBy ?? null, null);
+});
+
+test("manual approvals and free commands never claim an owner turn", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+
+    const manual = store.createCommand({ type: "tap", args: { text: "Enviar" } });
+    store.decideApproval(manual.approvalId, "approve");
+    const manualDelivered = store.takeNext();
+    assert.equal(manualDelivered.id, manual.id);
+    assert.equal(manualDelivered.state, "delivered");
+    assert.equal(manualDelivered.args.ownerTurnId, undefined);
+    assert.equal(manualDelivered.args.approvalCategory, undefined);
+
+    // A money step created inside an owner turn and approved by hand is a
+    // manual grant: the command must not claim the turn approximated it.
+    const gated = store.createCommand({
+        type: "tap",
+        args: { text: "Pagar" },
+        ownerTurnId: OWNER_TURN,
+    });
+    assert.equal(gated.state, "awaiting_approval");
+    store.decideApproval(gated.approvalId, "approve");
+    const gatedDelivered = store.takeNext();
+    assert.equal(gatedDelivered.id, gated.id);
+    assert.equal(gatedDelivered.args.ownerTurnId, undefined);
+    assert.equal(gatedDelivered.args.approvalCategory, undefined);
+
+    // A free step never creates an approval, so it carries nothing either.
+    const free = store.createCommand({
+        type: "tap",
+        args: { text: "Chats" },
+        ownerTurnId: OWNER_TURN,
+    });
+    assert.equal(free.state, "pending");
+    assert.equal(free.args.ownerTurnId, undefined);
+    assert.equal(free.args.approvalCategory, undefined);
+    assert.equal(approvals.listApprovals().length, 0);
 });
 
 test("a manual decision leaves decidedBy empty and still requeues", async (t) => {

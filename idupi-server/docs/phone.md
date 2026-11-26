@@ -197,6 +197,12 @@ pending approval survives a server restart; approving it rebuilds the queued
 command from the approval itself. Decisions are logged by id only, never by
 target text.
 
+When the approval was granted automatically because an owner bubble turn asked
+for the step, `args` also carries `ownerTurnId: "pat-…"` and
+`approvalCategory: "message"`. The phone accepts such a grant only while that
+turn is queued/running on the device itself, so a PC cannot approve a step the
+owner did not request from the bubble. Every other command omits both fields.
+
 ## Bubble agent turns
 
 The on-device bubble sends one free-form request ("revisa mi correo", "abre

@@ -646,6 +646,12 @@ export function createPhoneStore({
                 if (decided.ok) {
                     requeueCommand(command, decided.approval);
                     approvalStore.attachResultCommand(decided.approval.id, command.id);
+                    // T18: the phone only honours an automatic grant when it
+                    // matches a bubble turn this device started and is still
+                    // running, so the delivered command carries the turn id and
+                    // the category that justified it.
+                    command.args.ownerTurnId = turnId;
+                    command.args.approvalCategory = verdict.category;
                 }
             }
         }

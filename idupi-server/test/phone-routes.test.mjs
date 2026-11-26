@@ -650,6 +650,9 @@ test("a valid owner turn grant approves a message submit over HTTP", async (t) =
     assert.equal(next.command.args.approvalId, created.command.approvalId);
     assert.equal(next.command.args.approvedTarget, null);
     assert.equal(next.command.approvalReason, "type_submit");
+    // T18: the phone binds this grant to the bubble turn it started.
+    assert.equal(next.command.args.ownerTurnId, OWNER_TURN);
+    assert.equal(next.command.args.approvalCategory, "message");
 
     // The secret is never logged.
     const joined = logs.join("\n");
