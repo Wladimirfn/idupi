@@ -118,7 +118,17 @@ Delivery: about 900 authored lines forecast; one PR for the feature with
   approval UI through `adb input`, which bypasses accessibility; the
   accessibility path itself is gated (the "Aprobar" button text is a risky verb).
 
+- 2026-11-26: server restarted (23:24) on this branch. Live check, approve path:
+  `idupi-phone tap "Enviar"` on the launcher parked `apr-6ece657f12db`, the CLI
+  waited, the owner approved on the phone, the phone accepted it through the
+  local ledger and the tap failed harmlessly ("no se encontró el texto").
+  Caveat: for a text target the executor returns NotFound before
+  `ApprovalGate.checkNode`, so this run proves the queue and decision flow but
+  not the phone ledger; a strict live check needs a real "Enviar" on screen.
+- 2026-11-26: reject path live: `apr-2933223b51f2` rejected on the phone, CLI
+  printed "Rechazado en el teléfono." and exited 1; nothing was tapped.
+
 ## Next step
 
-T2 app: approvals client + poll, notification with actions (auth on lock
-screen), pending card, phone-side risky-node check and approved-target check.
+Open the PR (`size:exception`). Follow-up: live ledger check with a real
+"Enviar" button on screen (unit tests already cover the ledger).
