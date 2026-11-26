@@ -9,6 +9,11 @@ object InboxDigestStatus {
     const val FAILED = "failed"
 }
 
+/** Server digest scope of the one promotions summary (alerts-flow A2). */
+object InboxDigestScope {
+    const val PROMOTIONS = "promotions"
+}
+
 /**
  * One conversation digest: what the owner has not seen in a chat, summarized
  * by the PC agent. Built from the open items of `app` + `conversation`; the
@@ -18,6 +23,11 @@ object InboxDigestStatus {
 data class InboxDigest(
     val app: String = "",
     val conversation: String = "",
+    /**
+     * alerts-flow A2: "promotions" for the one digest over every open
+     * promotion; null for a per-conversation digest.
+     */
+    val scope: String? = null,
     /** Items the digest covered (0 when nothing is open). */
     val itemCount: Int = 0,
     val summary: String = "",

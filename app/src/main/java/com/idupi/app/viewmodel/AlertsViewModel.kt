@@ -7,16 +7,22 @@ import com.idupi.app.IduPiApp
 import com.idupi.app.data.IduPiClientProvider
 import com.idupi.app.data.inbox.InboxConversationGroup
 import com.idupi.app.data.inbox.InboxConversationGroups
+import com.idupi.app.data.inbox.InboxNotifier
+import com.idupi.app.data.inbox.InboxReadyReply
 import com.idupi.app.data.inbox.ReplyActionRegistry
 import com.idupi.app.data.inbox.inboxConversationKey
 import com.idupi.app.data.settings.SettingsProvider
 import com.idupi.app.data.settings.SettingsRepository
 import com.idupi.app.domain.model.InboxDigest
+import com.idupi.app.domain.model.InboxDigestScope
 import com.idupi.app.domain.model.InboxDigestStatus
 import com.idupi.app.domain.model.InboxImportance
+import com.idupi.app.domain.model.InboxInteraction
+import com.idupi.app.domain.model.InboxInteractionStatus
 import com.idupi.app.domain.model.InboxItem
 import com.idupi.app.domain.model.InboxItemState
 import com.idupi.app.domain.model.InboxItemStatus
+import com.idupi.app.domain.model.Project
 import com.idupi.app.domain.repository.IduPiClientSource
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -64,6 +70,19 @@ class AlertsViewModel(
             .getOrDefault(false)
     },
     private val settingsRepository: SettingsRepository = SettingsProvider.repository,
+    private val notifyAgentAnswer: (InboxItem) -> Unit = { item ->
+        // alerts-flow A3: the investigation finished while the owner was away.
+        // Posting is a side effect; a shade that refuses the notification must
+        // never break the polling loop.
+        runCatching { InboxNotifier(IduPiApp.instance).showAgentAnswer(item) }
+            .onFailure { Log.w(TAG, "could not post the agent answer notification") }
+    },
+    private val notifyReadyReply: (InboxItem) -> Unit = { item ->
+        // alerts-flow A4: a high-importance message arrived with its draft
+        // ready. Same rule as above: a refused post must not stop polling.
+        runCatching { InboxNotifier(IduPiApp.instance).showReadyReply(item) }
+            .onFailure { Log.w(TAG, "could not post the ready reply notification") }
+    },
 ) : ViewModel() {
 
     private val client get() = clientSource.client
@@ -95,6 +114,24 @@ class AlertsViewModel(
     /** Silenced conversations, from the persisted settings. */
     private val _silencedConversations = MutableStateFlow<Set<String>>(emptySet())
     val silencedConversations: StateFlow<Set<String>> = _silencedConversations.asStateFlow()
+
+    /** Linked PC projects the Interactuar sheet offers; empty until loaded. */
+    private val _projects = MutableStateFlow<List<Project>>(emptyList())
+    val projects: StateFlow<List<Project>> = _projects.asStateFlow()
+
+    /**
+     * Last interaction status seen per item id, for the one-shot
+     * "Respuesta del agente lista" ping (alerts-flow A3). A done answer that
+     * was already done on the first load is history, not news.
+     */
+    private val interactionStatuses = mutableMapOf<String, String>()
+
+    /**
+     * Item ids already announced as "Respuesta lista para revisar"
+     * (alerts-flow A4). A bounded in-memory set is enough: one ping per item
+     * for the life of this ViewModel.
+     */
+    private val announcedReadyReplies = mutableSetOf<String>()
 
     private var pollingJob: Job? = null
 
@@ -226,6 +263,39 @@ class AlertsViewModel(
     fun requestDigest(group: InboxConversationGroup) {
         if (group.conversationKey in _requestingDigests.value) return
         viewModelScope.launch { requestDigestNow(group) }
+    }
+
+    /**
+     * Requests the one promotions summary (alerts-flow A2). Unlike a chat, it
+     * never runs automatically: the owner asks for it with "Resumir".
+     */
+    fun requestPromotionsDigest() {
+        val key = InboxConversationGroups.PROMOTIONS_KEY
+        if (key in _requestingDigests.value) return
+        viewModelScope.launch { requestPromotionsDigestNow() }
+    }
+
+    /**
+     * Closes every open promotion in one call (alerts-flow A2). The card
+     * leaves immediately and comes back only if the call fails.
+     */
+    fun markPromotionsHandled(group: InboxConversationGroup) {
+        val ids = group.items.mapTo(mutableSetOf()) { it.id }
+        val previous = _items.value
+        publish(previous.filterNot { it.id in ids })
+        removeDigest(InboxConversationGroups.PROMOTIONS_KEY)
+        viewModelScope.launch {
+            try {
+                client.setInboxPromotionsState(InboxItemState.HANDLED)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to close promotions", e)
+                publish(previous)
+                _errorMessage.value =
+                    "No se pudo marcar las promociones como revisadas: ${e.localizedMessage}"
+            }
+        }
     }
 
     /**
@@ -363,6 +433,86 @@ class AlertsViewModel(
         }
     }
 
+    // --- Interactuar (alerts-flow A3) --------------------------------------
+
+    /**
+     * Hands one owner instruction to the PC agent (alerts-flow A3). The card
+     * switches to `running` immediately; the server's answered item replaces
+     * that optimistic block, and polling carries the finished answer.
+     */
+    fun interact(itemId: String, instruction: String, projectId: String?) {
+        val trimmed = instruction.trim()
+        if (trimmed.isEmpty()) {
+            _errorMessage.value = "Escribe una instrucción antes de enviar"
+            return
+        }
+        val item = _items.value.firstOrNull { it.id == itemId } ?: return
+        startInteraction(item, trimmed, projectId)
+    }
+
+    /** Re-sends a failed interaction with the same instruction and project. */
+    fun retryInteraction(item: InboxItem) {
+        val interaction = item.interaction ?: return
+        val instruction = interaction.instruction.trim()
+        if (instruction.isEmpty()) {
+            _errorMessage.value = "Escribe una instrucción antes de enviar"
+            return
+        }
+        val current = _items.value.firstOrNull { it.id == item.id } ?: item
+        startInteraction(current, instruction, interaction.projectId)
+    }
+
+    /**
+     * Loads the linked PC projects for the sheet's "Proyecto (opcional)"
+     * picker. Failures stay silent: the sheet still works with "Ninguno".
+     */
+    fun refreshProjects() {
+        viewModelScope.launch {
+            try {
+                _projects.value = client.getProjects()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to load projects for Interactuar", e)
+            }
+        }
+    }
+
+    private fun startInteraction(item: InboxItem, instruction: String, projectId: String?) {
+        val previous = item.interaction
+        val optimistic = InboxInteraction(
+            status = InboxInteractionStatus.RUNNING,
+            instruction = instruction,
+            projectId = projectId,
+            projectName = projectNameOf(projectId)
+        )
+        updateInteraction(item.id, optimistic)
+        viewModelScope.launch {
+            try {
+                val updated = client.interactWithInboxItem(item.id, instruction, projectId)
+                updated.interaction?.let { updateInteraction(item.id, it) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to start interaction for ${item.id}", e)
+                updateInteraction(item.id, previous)
+                _errorMessage.value =
+                    "No se pudo iniciar la interacción: ${e.localizedMessage}"
+            }
+        }
+    }
+
+    private fun updateInteraction(itemId: String, interaction: InboxInteraction?) {
+        publish(
+            _items.value.map {
+                if (it.id == itemId) it.copy(interaction = interaction) else it
+            }
+        )
+    }
+
+    private fun projectNameOf(projectId: String?): String? =
+        projectId?.let { id -> _projects.value.firstOrNull { it.id == id }?.name }
+
     private fun load(reportErrors: Boolean, showLoading: Boolean) {
         viewModelScope.launch {
             if (showLoading) _isLoading.value = true
@@ -399,6 +549,14 @@ class AlertsViewModel(
         _digests.update { current -> current.filterKeys { it in keys } }
 
         for (group in groups) {
+            if (group.conversationKey == InboxConversationGroups.PROMOTIONS_KEY) {
+                // The promotions digest only runs when the owner asks for it
+                // (alerts-flow A2); a run already in flight is just fetched.
+                if (_digests.value[group.conversationKey]?.status == InboxDigestStatus.ANALYZING) {
+                    fetchPromotionsDigest()
+                }
+                continue
+            }
             val existing = _digests.value[group.conversationKey]
             when {
                 existing?.status == InboxDigestStatus.ANALYZING -> fetchDigest(group)
@@ -456,6 +614,46 @@ class AlertsViewModel(
         _digests.update { it - conversationKey }
     }
 
+    /** Fetches the promotions digest while the server still reports analyzing. */
+    private suspend fun fetchPromotionsDigest() {
+        try {
+            val digest = client.getInboxPromotionsDigest()
+            _digests.update { it + (InboxConversationGroups.PROMOTIONS_KEY to digest) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // The PC may be off; the next poll tries again.
+            Log.w(TAG, "Failed to fetch the promotions digest", e)
+        }
+    }
+
+    private suspend fun requestPromotionsDigestNow() {
+        val key = InboxConversationGroups.PROMOTIONS_KEY
+        if (key in _requestingDigests.value) return
+        _requestingDigests.update { it + key }
+        val count = InboxConversationGroups.promotionItems(_items.value).size
+        try {
+            val digest = client.requestInboxPromotionsDigest()
+            _digests.update { it + (key to digest) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to request the promotions digest", e)
+            _digests.update {
+                it + (key to InboxDigest(
+                    app = "scope",
+                    conversation = InboxDigestScope.PROMOTIONS,
+                    scope = InboxDigestScope.PROMOTIONS,
+                    itemCount = count,
+                    status = InboxDigestStatus.FAILED,
+                    error = "No se pudo resumir las promociones: ${e.localizedMessage}"
+                ))
+            }
+        } finally {
+            _requestingDigests.update { it - key }
+        }
+    }
+
     private fun changeState(item: InboxItem, state: String, failureMessage: String) {
         val index = removeOptimistically(item)
         viewModelScope.launch {
@@ -495,11 +693,61 @@ class AlertsViewModel(
         )
     }
 
+    /**
+     * One-shot "Respuesta del agente lista" ping (alerts-flow A3). Only a
+     * running -> done transition while Alertas is observing it counts as
+     * news: an answer that was already done when the list first loaded would
+     * otherwise re-ping on every app start, and a failed job stays silent
+     * because its error is shown on the card.
+     */
+    private fun announceFinishedInteractions(
+        previous: List<InboxItem>,
+        next: List<InboxItem>
+    ) {
+        val previousById = previous.associateBy { it.id }
+        val presentIds = next.mapTo(mutableSetOf()) { it.id }
+        interactionStatuses.keys.retainAll(presentIds)
+        for (item in next) {
+            val status = item.interaction?.status ?: continue
+            val before = interactionStatuses[item.id]
+                ?: previousById[item.id]?.interaction?.status
+            interactionStatuses[item.id] = status
+            if (status == InboxInteractionStatus.DONE &&
+                before == InboxInteractionStatus.RUNNING
+            ) {
+                notifyAgentAnswer(item)
+            }
+        }
+    }
+
+    /**
+     * One-shot "Respuesta lista para revisar" ping per item (alerts-flow A4).
+     * The first poll that sees an item qualifying pings it and remembers the
+     * id, so a repeated poll never pings twice -- not even if the card leaves
+     * the list and comes back after a failed state change. The set is capped
+     * at [MAX_ANNOUNCED_READY_REPLIES] by dropping the oldest ids.
+     */
+    private fun announceReadyReplies(items: List<InboxItem>) {
+        for (item in items) {
+            if (item.id in announcedReadyReplies) continue
+            if (!InboxReadyReply.qualifies(item, hasReplyAction(conversationKeyFor(item)))) continue
+            announcedReadyReplies += item.id
+            if (announcedReadyReplies.size > MAX_ANNOUNCED_READY_REPLIES) {
+                announcedReadyReplies.remove(announcedReadyReplies.first())
+            }
+            notifyReadyReply(item)
+        }
+    }
+
     /** Closed items leave Alertas; they are never part of the working list. */
     private fun publish(items: List<InboxItem>) {
+        announceFinishedInteractions(_items.value, items)
         _items.value = items.filter { it.state == InboxItemState.OPEN }
+        announceReadyReplies(_items.value)
         _unreadCount.value = _items.value.count {
-            it.state == InboxItemState.OPEN && it.importance == InboxImportance.HIGH
+            it.state == InboxItemState.OPEN &&
+                it.importance == InboxImportance.HIGH &&
+                !it.promotion
         }
         val keys = InboxConversationGroups.group(_items.value)
             .mapTo(mutableSetOf()) { it.conversationKey }
@@ -515,6 +763,12 @@ class AlertsViewModel(
         /** From this many open messages a shown card requests its digest. */
         const val AUTO_DIGEST_MIN_MESSAGES = 3
 
+        /**
+         * How many announced ready replies the one-shot set remembers before
+         * dropping the oldest id (alerts-flow A4).
+         */
+        private const val MAX_ANNOUNCED_READY_REPLIES = 200
+
         private const val POLL_INTERVAL_MS = 10_000L
 
         fun conversationKeyFor(item: InboxItem): String =
@@ -523,7 +777,13 @@ class AlertsViewModel(
         fun filterItems(items: List<InboxItem>, filter: InboxFilter): List<InboxItem> =
             items.filter { item ->
                 item.state == InboxItemState.OPEN &&
-                    (filter == InboxFilter.PENDING || item.importance == InboxImportance.HIGH)
+                    when (filter) {
+                        // Promotions are never important, even if an older
+                        // server marked one high (alerts-flow A2).
+                        InboxFilter.IMPORTANT ->
+                            item.importance == InboxImportance.HIGH && !item.promotion
+                        InboxFilter.PENDING -> true
+                    }
             }
     }
 }

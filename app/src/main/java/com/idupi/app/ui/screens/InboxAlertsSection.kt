@@ -162,6 +162,11 @@ fun InboxAlertsSection(viewModel: InboxSettingsViewModel) {
             }
         )
 
+        ShadeClearingCard(
+            enabled = settings.clearCapturedFromShade,
+            onToggle = viewModel::setClearCapturedFromShade
+        )
+
         FollowedAppsCard(
             settings = settings,
             state = installedApps,
@@ -195,6 +200,7 @@ fun InboxAlertsSection(viewModel: InboxSettingsViewModel) {
             onAgentSelect = viewModel::setAgent,
             onModelChange = viewModel::setModel,
             onEffortSelect = viewModel::setEffort,
+            onProactiveChange = viewModel::setProactive,
             onSave = viewModel::saveConfig
         )
     }
@@ -368,6 +374,56 @@ private fun CaptureStatusCard(
                     color = StatusWorking
                 )
             }
+        }
+    }
+}
+
+/**
+ * alerts-flow A1: what happens to a notification once IDUPI captured it. Off
+ * keeps every capture in the shade; on leaves only IDUPI's silent summary.
+ */
+@Composable
+private fun ShadeClearingCard(enabled: Boolean, onToggle: (Boolean) -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SlateCard),
+        shape = AppShapes.card
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(AppSpacing.cardPadding)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+            ) {
+                Text(
+                    text = "Quitar de la bandeja lo que IDUPI ya capturó",
+                    style = AppTypography.bodyLarge,
+                    color = TextPrimary,
+                    modifier = Modifier.weight(1f)
+                )
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = onToggle,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = PrimaryIndigo,
+                        uncheckedThumbColor = TextSecondary,
+                        uncheckedTrackColor = SlateBg,
+                        uncheckedBorderColor = SlateBorder
+                    )
+                )
+            }
+            Text(
+                text = "Las notificaciones pasan a Alertas y la bandeja queda limpia. " +
+                    "Si la PC no responde, se quedan en la bandeja.",
+                style = AppTypography.bodySmall,
+                color = TextSecondary
+            )
         }
     }
 }
@@ -789,6 +845,7 @@ private fun AgentConfigCard(
     onAgentSelect: (String) -> Unit,
     onModelChange: (String) -> Unit,
     onEffortSelect: (String) -> Unit,
+    onProactiveChange: (Boolean) -> Unit,
     onSave: () -> Unit
 ) {
     Card(
@@ -860,6 +917,39 @@ private fun AgentConfigCard(
                 optionLabel = { effortLabel(it) },
                 onSelect = onEffortSelect
             )
+
+            // alerts-flow A4: lets the PC start the work by itself. Saved with
+            // the same button because it changes what runs on the owner's PC.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Alertas proactivas",
+                        style = AppTypography.bodyLarge,
+                        color = TextPrimary
+                    )
+                    Text(
+                        text = "Si llega algo importante, IDUPI deja lista la respuesta o la " +
+                            "investigación del problema. Nunca envía nada por ti.",
+                        style = AppTypography.bodySmall,
+                        color = TextSecondary
+                    )
+                }
+                Switch(
+                    checked = config.proactive,
+                    onCheckedChange = onProactiveChange,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = PrimaryIndigo,
+                        uncheckedThumbColor = TextSecondary,
+                        uncheckedTrackColor = SlateBg,
+                        uncheckedBorderColor = SlateBorder
+                    )
+                )
+            }
 
             Row(
                 modifier = Modifier.fillMaxWidth(),

@@ -13,7 +13,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { AGENTS, EFFORTS } from "./inbox-agent.mjs";
+import { AGENTS, EFFORTS, MAX_INTERACTION_ANSWER_CHARS, MAX_INTERACTION_INSTRUCTION_CHARS, MAX_PROJECT_HINT_CHARS } from "./inbox-agent.mjs";
 
 export const ITEM_ID_PATTERN = /^inb-[0-9a-f]{12}$/;
 
@@ -37,6 +37,9 @@ export const INBOX_STATUSES = ["analyzing", "ready", "failed"];
 export const INBOX_IMPORTANCES = ["high", "medium", "low"];
 export const INBOX_STATES = ["open", "handled", "replied", "auto_replied", "dismissed"];
 
+/** Interactuar job state persisted with the item (alerts-flow A3). */
+export const INTERACTION_STATUSES = ["running", "done", "failed"];
+
 /** States that make an item closed for the owner's working list. */
 export const CLOSED_STATES = ["handled", "replied", "auto_replied", "dismissed"];
 
@@ -59,6 +62,9 @@ export const DEFAULT_EFFORT = "max";
 // non-flash opencode-go/deepseek-v4.1* model, so the flash variant is the
 // verified default.
 export const DEFAULT_MODEL = "opencode-go/deepseek-v4.1-flash";
+// Proactive work (alerts-flow A4): on by default, because IDUPI's whole point
+// is to land work ready to review. Nothing is ever sent to a third party.
+export const DEFAULT_PROACTIVE = true;
 
 const ITEMS_FILE = "inbox.json";
 const CONFIG_FILE = "inbox-config.json";
@@ -136,6 +142,32 @@ function sanitizeEventConflicts(value) {
 }
 
 /**
+ * The Interactuar result revalidated on load and on every write (alerts-flow
+ * A3). A missing or malformed block becomes null: an item from before A3, or
+ * one written by a newer server this build cannot trust, still decodes.
+ */
+function sanitizeStoredInteraction(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const status = INTERACTION_STATUSES.includes(value.status) ? value.status : null;
+    if (!status) return null;
+    const instruction = clip(value.instruction, MAX_INTERACTION_INSTRUCTION_CHARS).trim();
+    if (instruction.length === 0) return null;
+    return {
+        status,
+        instruction,
+        projectId: singleLine(value.projectId, MAX_FIELD_CHARS) || null,
+        projectName: singleLine(value.projectName, MAX_FIELD_CHARS) || null,
+        answer: clip(value.answer, MAX_INTERACTION_ANSWER_CHARS),
+        startedAt: toIso(value.startedAt, null),
+        finishedAt: toIso(value.finishedAt, null),
+        error: value.error ? clip(String(value.error), MAX_ERROR_CHARS) : null,
+        // Proactive jobs (alerts-flow A4) are marked so the app can say IDUPI
+        // did the work itself. Missing on items from before A4: false.
+        auto: value.auto === true,
+    };
+}
+
+/**
  * @param {{
  *   dataDir: string,
  *   now?: (() => Date | number | string) | Date | number | string,
@@ -170,8 +202,13 @@ export function createInboxStore({
 
     /** @type {object[]} insertion order: oldest first */
     const items = [];
-    /** @type {{ agent: string, model: string, effort: string }} */
-    let config = { agent: DEFAULT_AGENT, model: DEFAULT_MODEL, effort: DEFAULT_EFFORT };
+    /** @type {{ agent: string, model: string, effort: string, proactive: boolean }} */
+    let config = {
+        agent: DEFAULT_AGENT,
+        model: DEFAULT_MODEL,
+        effort: DEFAULT_EFFORT,
+        proactive: DEFAULT_PROACTIVE,
+    };
 
     let tempCounter = 0;
 
@@ -274,6 +311,13 @@ export function createInboxStore({
                 category: singleLine(candidate.category, MAX_CATEGORY_CHARS),
                 summary: clip(candidate.summary, 600),
                 suggestedReply: clip(candidate.suggestedReply, 1200),
+                // Items written before alerts-flow A2 have no flag: false.
+                promotion: candidate.promotion === true,
+                // Proactive classification (alerts-flow A4); old items: false/empty.
+                technical: candidate.technical === true,
+                projectHint: singleLine(candidate.projectHint, MAX_PROJECT_HINT_CHARS),
+                // Items written before alerts-flow A3 have no interaction: null.
+                interaction: sanitizeStoredInteraction(candidate.interaction),
                 event: sanitizeStoredEvent(candidate.event),
                 eventConflicts: sanitizeEventConflicts(candidate.eventConflicts),
                 error: candidate.error ? clip(candidate.error, MAX_ERROR_CHARS) : null,
@@ -325,6 +369,10 @@ export function createInboxStore({
             agent: candidate.agent,
             model: clip(candidate.model.trim(), MAX_CONFIG_MODEL_CHARS),
             effort: candidate.effort,
+            // A file written before alerts-flow A4 has no flag: keep it on.
+            proactive: typeof parsed?.proactive === "boolean"
+                ? parsed.proactive
+                : DEFAULT_PROACTIVE,
         };
     }
 
@@ -375,6 +423,12 @@ export function createInboxStore({
             category: digestOnly ? DIGEST_ONLY_CATEGORY : "",
             summary: "",
             suggestedReply: "",
+            promotion: false,
+            // Filled by the analysis (alerts-flow A4).
+            technical: false,
+            projectHint: "",
+            // Interactuar (alerts-flow A3): filled by the route, not the capture.
+            interaction: null,
             event: null,
             eventConflicts: [],
             error: null,
@@ -475,6 +529,35 @@ export function createInboxStore({
         return closed;
     }
 
+    /**
+     * Open promotion items of every app, oldest first (the newest [limit] are
+     * kept). Alerts-flow A2: one promotions digest summarizes them together,
+     * across apps and conversations.
+     */
+    function openPromotions(limit = 200) {
+        const safeLimit = Number.isInteger(limit) && limit > 0 ? limit : 200;
+        return items
+            .filter((item) => item.state === "open" && item.promotion === true)
+            .sort((a, b) => Date.parse(a.receivedAt) - Date.parse(b.receivedAt))
+            .slice(-safeLimit)
+            .map((item) => clone(item));
+    }
+
+    /** Closes every open promotion item in one write (alerts-flow A2). */
+    function closePromotions(state, updatedAt) {
+        if (!CLOSED_STATES.includes(state)) throw new Error("invalid state");
+        const stamp = toIso(updatedAt, clock());
+        const closed = [];
+        for (const item of items) {
+            if (item.state !== "open" || item.promotion !== true) continue;
+            item.state = state;
+            item.updatedAt = stamp;
+            closed.push(clone(item));
+        }
+        if (closed.length > 0) persistItems();
+        return closed;
+    }
+
     /** Digest keys (`app\u0000conversation`) that still have an open item. */
     function openConversationKeys() {
         const keys = new Set();
@@ -510,6 +593,20 @@ export function createInboxStore({
         if ("category" in patch) item.category = singleLine(patch.category, MAX_CATEGORY_CHARS);
         if ("summary" in patch) item.summary = clip(patch.summary, 600);
         if ("suggestedReply" in patch) item.suggestedReply = clip(patch.suggestedReply, 1200);
+        if ("promotion" in patch) {
+            if (typeof patch.promotion !== "boolean") throw new Error("invalid promotion");
+            item.promotion = patch.promotion;
+        }
+        if ("technical" in patch) {
+            if (typeof patch.technical !== "boolean") throw new Error("invalid technical");
+            item.technical = patch.technical;
+        }
+        if ("projectHint" in patch) {
+            item.projectHint = singleLine(patch.projectHint, MAX_PROJECT_HINT_CHARS);
+        }
+        if ("interaction" in patch) {
+            item.interaction = sanitizeStoredInteraction(patch.interaction);
+        }
         if ("event" in patch) item.event = sanitizeStoredEvent(patch.event);
         if ("eventConflicts" in patch) {
             item.eventConflicts = sanitizeEventConflicts(patch.eventConflicts);
@@ -526,8 +623,9 @@ export function createInboxStore({
     }
 
     /**
-     * Validates and persists { agent, model, effort }. Throws on invalid input;
-     * the route maps that to 400.
+     * Validates and persists { agent, model, effort, proactive }. Throws on
+     * invalid input; the route maps that to 400. `proactive` is optional: an
+     * older app that does not send it keeps the stored value (alerts-flow A4).
      */
     function setConfig(next = {}) {
         const agent = String(next.agent ?? "");
@@ -537,8 +635,10 @@ export function createInboxStore({
         if (!EFFORTS.includes(effort)) throw new Error("unknown effort");
         if (model.length === 0) throw new Error("model is required");
         if (model.length > MAX_CONFIG_MODEL_CHARS) throw new Error("model is too long");
+        const proactive = next.proactive === undefined ? config.proactive : next.proactive;
+        if (typeof proactive !== "boolean") throw new Error("invalid proactive");
 
-        config = { agent, model, effort };
+        config = { agent, model, effort, proactive };
         persistConfig();
         return getConfig();
     }
@@ -553,6 +653,8 @@ export function createInboxStore({
         related,
         openByConversation,
         closeConversation,
+        openPromotions,
+        closePromotions,
         openConversationKeys,
         update,
         getConfig,

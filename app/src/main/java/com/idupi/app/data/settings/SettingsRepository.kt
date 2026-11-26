@@ -85,6 +85,12 @@ interface SettingsRepository {
      */
     suspend fun setInboxSilencedConversations(conversations: Set<String>)
 
+    /**
+     * "Remove what IDUPI already captured from the shade" (alerts-flow A1).
+     * Missing value means ON.
+     */
+    suspend fun setInboxClearCapturedFromShade(enabled: Boolean)
+
     suspend fun setPhoneStatusEnabled(enabled: Boolean)
 
     suspend fun setPhoneControlEnabled(enabled: Boolean)
@@ -169,6 +175,10 @@ class InMemorySettingsRepository(
 
     override suspend fun setInboxSilencedConversations(conversations: Set<String>) {
         _inboxSettings.update { it.copy(silencedConversations = conversations.toSet()) }
+    }
+
+    override suspend fun setInboxClearCapturedFromShade(enabled: Boolean) {
+        _inboxSettings.update { it.copy(clearCapturedFromShade = enabled) }
     }
 
     override suspend fun setPhoneStatusEnabled(enabled: Boolean) {

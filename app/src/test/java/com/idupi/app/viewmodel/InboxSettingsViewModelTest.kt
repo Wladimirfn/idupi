@@ -194,6 +194,37 @@ class InboxSettingsViewModelTest {
         assertNull(viewModel.agentConfig.value.successMessage)
     }
 
+    // --- Proactive alerts (alerts-flow A4) ---------------------------------
+
+    @Test
+    fun `loadConfig reads proactive and defaults it on`() = runTest {
+        fake.inboxConfigToReturn = config()
+        val viewModel = viewModel()
+        viewModel.loadConfig()
+        advanceUntilIdle()
+        assertTrue(viewModel.agentConfig.value.proactive)
+
+        fake.inboxConfigToReturn = config().copy(proactive = false)
+        viewModel.loadConfig(force = true)
+        advanceUntilIdle()
+        assertFalse(viewModel.agentConfig.value.proactive)
+    }
+
+    @Test
+    fun `saveConfig sends the proactive toggle`() = runTest {
+        val viewModel = viewModel()
+        viewModel.setAgent("claude")
+        viewModel.setModel("sonnet")
+        viewModel.setEffort("high")
+
+        viewModel.setProactive(false)
+        viewModel.saveConfig()
+        advanceUntilIdle()
+
+        assertEquals(false, fake.lastInboxConfigProactive)
+        assertFalse(viewModel.agentConfig.value.proactive)
+    }
+
     @Test
     fun `app toggles persist in the repository`() = runTest {
         val viewModel = viewModel()

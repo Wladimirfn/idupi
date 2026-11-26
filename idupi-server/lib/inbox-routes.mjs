@@ -7,9 +7,15 @@
 // process at a time works through the queue, so a burst of notifications never
 // spawns a burst of CLIs.
 
+import { statSync } from "node:fs";
+
 import {
     AGENTS,
+    AUTO_INTERACTION_INSTRUCTION,
     EFFORTS,
+    INTERACTION_UNSUPPORTED_MESSAGE,
+    MAX_INTERACTION_INSTRUCTION_CHARS,
+    supportsReadOnlyInteraction,
 } from "./inbox-agent.mjs";
 import {
     DEFAULT_MAX_TEXT_CHARS,
@@ -19,11 +25,17 @@ import {
     isValidAppId,
 } from "./inbox-store.mjs";
 import {
+    PROMOTIONS_APP,
+    PROMOTIONS_CONVERSATION,
+    PROMOTIONS_SCOPE,
     buildDigestPrompt,
+    buildPromotionsDigestPrompt,
     digestInputHash,
     digestKey,
     emptyDigest,
     parseDigestResult,
+    parsePromotionsDigestResult,
+    promotionsDigestKey,
     selectDigestItems,
 } from "./inbox-digest.mjs";
 import { conflictsWith } from "./phone-calendar-store.mjs";
@@ -37,6 +49,9 @@ const MAX_LIMIT = 200;
 const MAX_ERROR_CHARS = 300;
 const MAX_CONVERSATION_CHARS = 200;
 const RELATED_CONTEXT_LIMIT = 5;
+// Proactive matching (alerts-flow A4): a shared substring shorter than this
+// never selects a project, so "api" and "web" cannot claim every repo.
+const PROACTIVE_MIN_TOKEN_CHARS = 4;
 // App-facing counts: the first argument of str.slice is a JS index.
 const MAX_TEXT_CHARS = DEFAULT_MAX_TEXT_CHARS;
 
@@ -155,6 +170,7 @@ function publicDigest(record) {
     return {
         app: record.app,
         conversation: record.conversation,
+        scope: record.scope ?? null,
         itemCount: record.itemCount,
         summary: record.summary,
         pendingForOwner: record.pendingForOwner,
@@ -174,6 +190,8 @@ function isoFrom(value) {
  * @param {{
  *   store: ReturnType<import("./inbox-store.mjs").createInboxStore>,
  *   runner: { run: Function },
+ *   interactionRunner?: { runInteraction: Function, supports?: Function },
+ *   projects?: () => Array<{ id: string, name?: string, path: string }>,
  *   now?: () => Date | number | string,
  *   openCodeModels?: () => string[] | Promise<string[]>,
  *   maxJsonBytes?: number,
@@ -185,6 +203,8 @@ export function createInboxRoutes({
     runner,
     digestStore = null,
     calendarStore = null,
+    interactionRunner = null,
+    projects = () => [],
     now = () => new Date(),
     openCodeModels = () => [],
     maxJsonBytes = DEFAULT_MAX_JSON_BYTES,
@@ -239,17 +259,30 @@ export function createInboxRoutes({
             try {
                 const result = await runner.run(config, item, related);
                 const event = result?.event ?? null;
-                store.update(id, {
+                const ready = store.update(id, {
                     status: "ready",
                     importance: result?.importance ?? null,
                     category: result?.category ?? "",
                     summary: result?.summary ?? "",
                     suggestedReply: result?.suggestedReply ?? "",
+                    promotion: result?.promotion === true,
+                    technical: result?.technical === true,
+                    projectHint: result?.projectHint ?? "",
                     event,
                     eventConflicts: calendarEventConflicts(event),
                     error: null,
                     updatedAt: stamp(),
                 });
+                // alerts-flow A4: a ready high technical alert with no work on
+                // it yet may get its investigation started by itself. Failures
+                // here must never mark the classification as failed.
+                if (ready) {
+                    try {
+                        maybeStartProactiveInteraction(ready, config);
+                    } catch {
+                        // Proactive work is a bonus; the analysis already landed.
+                    }
+                }
             } catch (err) {
                 try {
                     store.update(id, {
@@ -383,18 +416,32 @@ export function createInboxRoutes({
         }
     }
 
-    async function runDigest(app, conversation, inputHash, items) {
-        const key = digestKey(app, conversation);
+    /**
+     * Runs one digest job and stores its result. Shared by the per-conversation
+     * digest and the promotions digest (alerts-flow A2); [parse] receives the
+     * agent id and stdout so the promotions parser can force an empty reply.
+     */
+    async function runDigestJob({
+        app,
+        conversation,
+        scope = null,
+        key,
+        buildPrompt,
+        items,
+        parse,
+        inputHash,
+    }) {
         try {
             const config = store.getConfig();
-            const prompt = buildDigestPrompt({ app, conversation, items });
             try {
                 if (typeof runner?.runPrompt !== "function") {
                     throw new Error("agent runner cannot run digests");
                 }
+                const prompt = buildPrompt();
                 const stdout = await runner.runPrompt(config, prompt);
-                const parsed = parseDigestResult(config.agent, stdout);
+                const parsed = parse(config.agent, stdout);
                 digestStore.set(app, conversation, {
+                    scope,
                     itemCount: items.length,
                     summary: parsed.summary,
                     pendingForOwner: parsed.pendingForOwner,
@@ -406,6 +453,7 @@ export function createInboxRoutes({
                 });
             } catch (err) {
                 digestStore.set(app, conversation, {
+                    scope,
                     itemCount: items.length,
                     summary: "",
                     pendingForOwner: [],
@@ -423,34 +471,49 @@ export function createInboxRoutes({
         }
     }
 
-    function enqueueDigest(app, conversation, inputHash, items) {
+    function enqueueDigestJob(run) {
         queueTail = queueTail
-            .then(
-                () => runDigest(app, conversation, inputHash, items),
-                () => runDigest(app, conversation, inputHash, items),
-            )
+            .then(run, run)
             .catch(() => {});
     }
 
-    async function postDigest(req, res) {
-        if (!digestStore) {
-            sendError(res, 503, "digest is not configured", "DIGEST_UNAVAILABLE");
-            return;
-        }
-        const body = await readDigestBody(req, res);
-        if (!body) return;
+    function enqueueDigest(app, conversation, inputHash, items) {
+        enqueueDigestJob(() => runDigestJob({
+            app,
+            conversation,
+            key: digestKey(app, conversation),
+            buildPrompt: () => buildDigestPrompt({ app, conversation, items }),
+            items,
+            parse: parseDigestResult,
+            inputHash,
+        }));
+    }
 
-        let app;
-        let conversation;
-        try {
-            app = requiredApp(body);
-            conversation = requiredConversation(body);
-        } catch (err) {
-            sendError(res, 400, err.message, err.code || "INVALID_MESSAGE");
-            return;
-        }
+    /**
+     * One digest over all open promotions, regardless of app (alerts-flow A2).
+     * It shares the serial queue, the caps and the hash cache with the
+     * conversation digest; only the prompt and the forced empty reply differ.
+     */
+    function enqueuePromotionsDigest(inputHash, items) {
+        enqueueDigestJob(() => runDigestJob({
+            app: PROMOTIONS_APP,
+            conversation: PROMOTIONS_CONVERSATION,
+            scope: PROMOTIONS_SCOPE,
+            key: promotionsDigestKey(),
+            buildPrompt: () => buildPromotionsDigestPrompt({ items }),
+            items,
+            parse: parsePromotionsDigestResult,
+            inputHash,
+        }));
+    }
 
-        const items = store.openByConversation(app, conversation);
+    /**
+     * Shared cache/queue contract of both digest scopes: no items means the
+     * cached record is dropped and the empty digest answers; the same input
+     * hash answers the cache (200 ready, 202 analyzing/queued); otherwise the
+     * request stores "analyzing" and enqueues one run.
+     */
+    function answerDigest(res, { app, conversation, scope = null, key, items, enqueue, empty }) {
         if (items.length === 0) {
             try {
                 digestStore.remove(app, conversation);
@@ -458,13 +521,12 @@ export function createInboxRoutes({
                 sendError(res, 500, shortError(err), "INTERNAL");
                 return;
             }
-            sendJson(res, 200, { digest: emptyDigest(app, conversation) });
+            sendJson(res, 200, { digest: empty });
             return;
         }
 
         const selected = selectDigestItems(items);
         const inputHash = digestInputHash(selected);
-        const key = digestKey(app, conversation);
 
         let cached = null;
         try {
@@ -476,13 +538,13 @@ export function createInboxRoutes({
             sendJson(res, 200, { digest: publicDigest(cached) });
             return;
         }
-        if (cached && cached.inputHash === inputHash && cached.status === "analyzing") {
-            sendJson(res, 202, { digest: publicDigest(cached) });
-            return;
-        }
-        // A job for this exact snapshot is already queued behind the analysis
-        // queue: report analyzing instead of stacking a second run.
-        if (cached && cached.inputHash === inputHash && digestJobs.has(key)) {
+        // Analyzing, or a job for this exact snapshot already queued behind
+        // the analysis queue: report that state instead of stacking a run.
+        if (
+            cached &&
+            cached.inputHash === inputHash &&
+            (cached.status === "analyzing" || digestJobs.has(key))
+        ) {
             sendJson(res, 202, { digest: publicDigest(cached) });
             return;
         }
@@ -490,6 +552,7 @@ export function createInboxRoutes({
         const analyzing = {
             app,
             conversation,
+            scope,
             itemCount: selected.length,
             summary: "",
             pendingForOwner: [],
@@ -506,13 +569,76 @@ export function createInboxRoutes({
             return;
         }
         digestJobs.add(key);
-        enqueueDigest(app, conversation, inputHash, selected);
+        enqueue(inputHash, selected);
         sendJson(res, 202, { digest: publicDigest(analyzing) });
+    }
+
+    async function postDigest(req, res) {
+        if (!digestStore) {
+            sendError(res, 503, "digest is not configured", "DIGEST_UNAVAILABLE");
+            return;
+        }
+        const body = await readDigestBody(req, res);
+        if (!body) return;
+
+        const scope = body.scope;
+        if (scope !== undefined && scope !== null) {
+            if (scope !== PROMOTIONS_SCOPE) {
+                sendError(res, 400, "scope must be promotions", "INVALID_SCOPE");
+                return;
+            }
+            postPromotionsDigest(res);
+            return;
+        }
+
+        let app;
+        let conversation;
+        try {
+            app = requiredApp(body);
+            conversation = requiredConversation(body);
+        } catch (err) {
+            sendError(res, 400, err.message, err.code || "INVALID_MESSAGE");
+            return;
+        }
+
+        answerDigest(res, {
+            app,
+            conversation,
+            key: digestKey(app, conversation),
+            items: store.openByConversation(app, conversation),
+            enqueue: (inputHash, items) => enqueueDigest(app, conversation, inputHash, items),
+            empty: emptyDigest(app, conversation),
+        });
+    }
+
+    /**
+     * Promotions digest request (alerts-flow A2): one summary over every open
+     * promotion in every app. Same cache contract as a conversation digest.
+     */
+    function postPromotionsDigest(res) {
+        answerDigest(res, {
+            app: PROMOTIONS_APP,
+            conversation: PROMOTIONS_CONVERSATION,
+            scope: PROMOTIONS_SCOPE,
+            key: promotionsDigestKey(),
+            items: store.openPromotions(),
+            enqueue: enqueuePromotionsDigest,
+            empty: emptyDigest(PROMOTIONS_APP, PROMOTIONS_CONVERSATION, 0, PROMOTIONS_SCOPE),
+        });
     }
 
     function getDigest(req, res) {
         if (!digestStore) {
             sendError(res, 503, "digest is not configured", "DIGEST_UNAVAILABLE");
+            return;
+        }
+        const rawScope = queryValue(req, "scope");
+        if (rawScope !== null) {
+            if (rawScope !== PROMOTIONS_SCOPE) {
+                sendError(res, 400, "scope must be promotions", "INVALID_SCOPE");
+                return;
+            }
+            getPromotionsDigest(res);
             return;
         }
         const rawApp = queryValue(req, "app") ?? "";
@@ -539,6 +665,28 @@ export function createInboxRoutes({
         }
         const openCount = store.openByConversation(rawApp, conversation).length;
         sendJson(res, 200, { digest: emptyDigest(rawApp, conversation, openCount) });
+    }
+
+    function getPromotionsDigest(res) {
+        let stored = null;
+        try {
+            stored = digestStore.get(PROMOTIONS_APP, PROMOTIONS_CONVERSATION);
+        } catch {
+            stored = null;
+        }
+        if (stored) {
+            sendJson(res, 200, { digest: publicDigest(stored) });
+            return;
+        }
+        const openCount = store.openPromotions().length;
+        sendJson(res, 200, {
+            digest: emptyDigest(
+                PROMOTIONS_APP,
+                PROMOTIONS_CONVERSATION,
+                openCount,
+                PROMOTIONS_SCOPE,
+            ),
+        });
     }
 
     async function postConversationState(req, res) {
@@ -572,6 +720,38 @@ export function createInboxRoutes({
         if (digestStore) {
             try {
                 digestStore.remove(app, conversation);
+            } catch {
+                // The state change already happened; a stale digest is pruned
+                // on the next request or restart.
+            }
+        }
+        sendJson(res, 200, { closed: closed.length, items: closed });
+    }
+
+    /**
+     * Closes every open promotion item in one write (alerts-flow A2) and drops
+     * the cached promotions digest: nothing is left to summarize.
+     */
+    async function postPromotionsState(req, res) {
+        const body = await readDigestBody(req, res);
+        if (!body) return;
+
+        const state = body.state;
+        if (state !== "handled" && state !== "dismissed") {
+            sendError(res, 400, "state must be handled or dismissed", "INVALID_STATE");
+            return;
+        }
+
+        let closed;
+        try {
+            closed = store.closePromotions(state, stamp());
+        } catch (err) {
+            sendError(res, 400, (err && err.message) || "invalid state", "INVALID_STATE");
+            return;
+        }
+        if (digestStore) {
+            try {
+                digestStore.remove(PROMOTIONS_APP, PROMOTIONS_CONVERSATION);
             } catch {
                 // The state change already happened; a stale digest is pruned
                 // on the next request or restart.
@@ -650,12 +830,365 @@ export function createInboxRoutes({
         sendJson(res, 202, { item });
     }
 
+    // --- Interactuar (alerts-flow A3) ------------------------------------
+
+    // One investigation at a time, on its own chain: a job that may last five
+    // minutes must not block incoming notification analysis. The chain never
+    // rejects; runInteractionJob owns its failures and stores them on the item.
+    let interactionTail = Promise.resolve();
+
+    // Per-item generation. A new interaction replaces the previous one, and a
+    // superseded job's late answer is discarded instead of overwriting it.
+    const interactionTokens = new Map();
+
+    function interactionShape({
+        status,
+        instruction,
+        project = null,
+        answer = "",
+        startedAt = null,
+        finishedAt = null,
+        error = null,
+        auto = false,
+    }) {
+        return {
+            status,
+            instruction,
+            projectId: project?.id ?? null,
+            projectName: project?.name ?? null,
+            answer,
+            startedAt,
+            finishedAt,
+            error,
+            auto: auto === true,
+        };
+    }
+
+    /** One investigation. Failures become short safe text on the item. */
+    async function runInteractionJob({ id, token, instruction, project, startedAt, auto = false }) {
+        try {
+            // A newer interaction replaced this one while it waited in the
+            // queue: do not read the item and do not spawn a process for it.
+            if (interactionTokens.get(id) !== token) return;
+            const item = store.get(id);
+            if (!item) return;
+            const config = store.getConfig();
+            try {
+                const answer = await interactionRunner.runInteraction(config, {
+                    item,
+                    instruction,
+                    project,
+                });
+                if (interactionTokens.get(id) !== token) return;
+                store.update(id, {
+                    interaction: interactionShape({
+                        status: "done",
+                        instruction,
+                        project,
+                        answer: String(answer ?? ""),
+                        startedAt,
+                        finishedAt: stamp(),
+                        auto,
+                    }),
+                    updatedAt: stamp(),
+                });
+            } catch (err) {
+                if (interactionTokens.get(id) !== token) return;
+                try {
+                    store.update(id, {
+                        interaction: interactionShape({
+                            status: "failed",
+                            instruction,
+                            project,
+                            startedAt,
+                            finishedAt: stamp(),
+                            error: shortError(err),
+                            auto,
+                        }),
+                        updatedAt: stamp(),
+                    });
+                } catch {
+                    // The JSON file could not be written; the in-memory
+                    // interaction still shows "running" and can be retried.
+                }
+            }
+        } catch {
+            // Fire-and-forget: one broken item must never stall the queue.
+        }
+    }
+
+    function enqueueInteraction(job) {
+        interactionTail = interactionTail
+            .then(() => runInteractionJob(job), () => runInteractionJob(job))
+            .catch(() => {});
+    }
+
+    // --- Proactive investigations (alerts-flow A4) -------------------------
+
+    /**
+     * Normalizes `name` and paths to the tokens the hint is matched against.
+     * Both sides go through the same lowering so a hint typed by the model in
+     * any case still meets "IDUPI-server".
+     */
+    function matchTokens(...values) {
+        const tokens = new Set();
+        for (const value of values) {
+            const text = String(value ?? "").toLowerCase().trim();
+            if (text.length > 0) tokens.add(text);
+        }
+        return tokens;
+    }
+
+    /**
+     * Whether `hint` names `token`: equality, or a substring covering at least
+     * four characters (`api` never matches, `idupi` matches `idupi-server`).
+     * The short floor keeps a two-letter token from matching every project.
+     */
+    function hintMatches(hint, token) {
+        if (hint.length === 0 || token.length === 0) return false;
+        if (hint === token) return true;
+        const shorter = hint.length <= token.length ? hint : token;
+        if (shorter.length < PROACTIVE_MIN_TOKEN_CHARS) return false;
+        return token.includes(hint) || hint.includes(token);
+    }
+
+    /**
+     * Picks the one linked project an alert is about, or null. The hint wins;
+     * the item text is the fallback for an analysis that named no project.
+     * Two matches are ambiguous and skipped: a wrong project would send the
+     * agent reading the wrong repository.
+     */
+    function matchProactiveProject(item) {
+        const listed = typeof projects === "function" ? projects() : [];
+        if (!Array.isArray(listed) || listed.length === 0) return null;
+
+        const candidates = [
+            String(item?.projectHint ?? "").toLowerCase().trim(),
+            String(item?.text ?? "").toLowerCase(),
+        ].filter((hint) => hint.length > 0);
+
+        const usable = listed.filter((entry) => entry && typeof entry.path === "string");
+        for (const hint of candidates) {
+            const matches = usable.filter((entry) => {
+                const lastSegment = entry.path.split(/[\\/]/).filter(Boolean).pop() ?? "";
+                const tokens = matchTokens(entry.name, entry.id, lastSegment);
+                for (const token of tokens) {
+                    if (hintMatches(hint, token.toLowerCase())) return true;
+                }
+                return false;
+            });
+            if (matches.length === 1) {
+                const match = matches[0];
+                return {
+                    id: String(match.id),
+                    name: String(match.name ?? match.id),
+                    path: String(match.path ?? ""),
+                };
+            }
+            if (matches.length > 1) return null;
+        }
+        return null;
+    }
+
+    /** The registry project as the interaction needs it, or null. */
+    function proactiveProjectTarget(entry) {
+        if (!entry || entry.path.length === 0) return null;
+        let stats = null;
+        try {
+            stats = statSync(entry.path);
+        } catch {
+            return null;
+        }
+        return stats && stats.isDirectory() ? entry : null;
+    }
+
+    /**
+     * Starts the A4 investigation for a freshly ready item when every gate
+     * holds: proactive on, high importance, technical, nothing interactive on
+     * the item yet, exactly one linked project and an agent with the read-only
+     * profile. Otherwise it does nothing, which is the common case.
+     */
+    function maybeStartProactiveInteraction(item, config) {
+        if (!item || config?.proactive !== true) return;
+        if (item.importance !== "high" || item.technical !== true) return;
+        if (item.promotion === true) return;
+        if (item.interaction) return;
+        if (!interactionRunner || typeof interactionRunner.runInteraction !== "function") return;
+        const supported = typeof interactionRunner.supports === "function"
+            ? interactionRunner.supports(config.agent) === true
+            : supportsReadOnlyInteraction(config.agent);
+        if (!supported) return;
+
+        const project = proactiveProjectTarget(matchProactiveProject(item));
+        if (!project) return;
+
+        const startedAt = stamp();
+        const token = (interactionTokens.get(item.id) ?? 0) + 1;
+        interactionTokens.set(item.id, token);
+        const updated = store.update(item.id, {
+            interaction: interactionShape({
+                status: "running",
+                instruction: AUTO_INTERACTION_INSTRUCTION,
+                project,
+                startedAt,
+                auto: true,
+            }),
+            updatedAt: startedAt,
+        });
+        if (!updated) return;
+        enqueueInteraction({
+            id: item.id,
+            token,
+            instruction: AUTO_INTERACTION_INSTRUCTION,
+            project,
+            startedAt,
+            auto: true,
+        });
+    }
+
+    /** Trimmed owner instruction, 1..MAX characters. */
+    function requiredInstruction(body) {
+        const value = body?.instruction;
+        if (value !== undefined && value !== null && typeof value !== "string") {
+            throw typedError("INVALID_INSTRUCTION", "instruction must be a string");
+        }
+        const raw = typeof value === "string" ? value.trim() : "";
+        if (raw.length === 0) {
+            throw typedError("INVALID_INSTRUCTION", "instruction is required");
+        }
+        if (raw.length > MAX_INTERACTION_INSTRUCTION_CHARS) {
+            throw typedError(
+                "INVALID_INSTRUCTION",
+                `instruction exceeds ${MAX_INTERACTION_INSTRUCTION_CHARS} characters`,
+            );
+        }
+        return raw;
+    }
+
+    /**
+     * Optional linked project, resolved by id against the registry the
+     * `/api/v1/projects` route serves. The agent's cwd needs a real directory;
+     * an unknown id or a missing path is a 400, never a silent fallback.
+     */
+    function resolveInteractionProject(rawId) {
+        if (rawId === undefined || rawId === null || rawId === "") return null;
+        if (typeof rawId !== "string") {
+            throw typedError("INVALID_PROJECT", "projectId must be a string");
+        }
+        const id = rawId.trim();
+        if (id.length === 0) return null;
+
+        const listed = typeof projects === "function" ? projects() : [];
+        const match = Array.isArray(listed)
+            ? listed.find((entry) => entry && entry.id === id)
+            : null;
+        if (!match) {
+            throw typedError("INVALID_PROJECT", "project not found");
+        }
+        const project = {
+            id: String(match.id),
+            name: String(match.name ?? match.id),
+            path: String(match.path ?? ""),
+        };
+        let stats = null;
+        try {
+            stats = statSync(project.path);
+        } catch {
+            stats = null;
+        }
+        if (!stats) {
+            throw typedError("INVALID_PROJECT", "project path is not available");
+        }
+        if (!stats.isDirectory()) {
+            throw typedError("INVALID_PROJECT", "project path is not a directory");
+        }
+        return project;
+    }
+
+    async function interact(req, res, id) {
+        if (!ITEM_ID_PATTERN.test(id)) {
+            sendError(res, 404, "inbox item not found", "NOT_FOUND");
+            return;
+        }
+        if (!store.get(id)) {
+            sendError(res, 404, "inbox item not found", "NOT_FOUND");
+            return;
+        }
+        if (!interactionRunner || typeof interactionRunner.runInteraction !== "function") {
+            sendError(res, 503, "interaction is not configured", "INTERACTION_UNAVAILABLE");
+            return;
+        }
+
+        let body;
+        try {
+            body = await readJsonBody(req, maxJsonBytes);
+        } catch (err) {
+            if (err && err.code === "TOO_LARGE") {
+                sendError(res, 413, err.message, "TOO_LARGE");
+            } else {
+                sendError(res, 400, (err && err.message) || "invalid body", "BAD_REQUEST");
+            }
+            return;
+        }
+        if (!body || typeof body !== "object" || Array.isArray(body)) {
+            sendError(res, 400, "body must be a JSON object", "INVALID_MESSAGE");
+            return;
+        }
+
+        let instruction;
+        let project;
+        try {
+            instruction = requiredInstruction(body);
+            project = resolveInteractionProject(body.projectId);
+        } catch (err) {
+            sendError(res, 400, err.message, err.code || "INVALID_MESSAGE");
+            return;
+        }
+
+        const config = store.getConfig();
+        const supported = typeof interactionRunner.supports === "function"
+            ? interactionRunner.supports(config.agent) === true
+            : supportsReadOnlyInteraction(config.agent);
+        if (!supported) {
+            sendError(res, 400, INTERACTION_UNSUPPORTED_MESSAGE, "INTERACTION_UNSUPPORTED");
+            return;
+        }
+
+        const startedAt = stamp();
+        const token = (interactionTokens.get(id) ?? 0) + 1;
+        interactionTokens.set(id, token);
+
+        let item;
+        try {
+            item = store.update(id, {
+                interaction: interactionShape({
+                    status: "running",
+                    instruction,
+                    project,
+                    startedAt,
+                }),
+                updatedAt: startedAt,
+            });
+        } catch (err) {
+            sendError(res, 500, shortError(err), "INTERNAL");
+            return;
+        }
+        if (!item) {
+            sendError(res, 404, "inbox item not found", "NOT_FOUND");
+            return;
+        }
+
+        enqueueInteraction({ id, token, instruction, project, startedAt });
+        sendJson(res, 202, { interaction: item.interaction });
+    }
+
     function getConfig(res) {
         const config = store.getConfig();
         sendJson(res, 200, {
             agent: config.agent,
             model: config.model,
             effort: config.effort,
+            proactive: config.proactive !== false,
             agents: AGENTS,
             efforts: EFFORTS,
         });
@@ -688,6 +1221,7 @@ export function createInboxRoutes({
             agent: config.agent,
             model: config.model,
             effort: config.effort,
+            proactive: config.proactive !== false,
             agents: AGENTS,
             efforts: EFFORTS,
         });
@@ -721,7 +1255,11 @@ export function createInboxRoutes({
     // have an open conversation.
     if (digestStore) {
         try {
-            digestStore.pruneExcept(store.openConversationKeys());
+            const keep = store.openConversationKeys();
+            // The promotions record has no conversation of its own: keep it
+            // while any open promotion remains (alerts-flow A2).
+            if (store.openPromotions(1).length > 0) keep.add(promotionsDigestKey());
+            digestStore.pruneExcept(keep);
         } catch {
             // A corrupt digest file is already ignored by the store.
         }
@@ -800,6 +1338,16 @@ export function createInboxRoutes({
             return true;
         }
 
+        // POST /inbox/promotions/state: close every open promotion (alerts-flow A2).
+        if (parts.length === 2 && parts[0] === "promotions" && parts[1] === "state") {
+            if (req.method !== "POST") {
+                methodNotAllowed(res, "POST");
+                return true;
+            }
+            await postPromotionsState(req, res);
+            return true;
+        }
+
         // POST /inbox/{id}/state and /inbox/{id}/retry
         if (parts.length === 2) {
             const [id, action] = parts;
@@ -817,6 +1365,14 @@ export function createInboxRoutes({
                     return true;
                 }
                 retryAnalysis(req, res, id);
+                return true;
+            }
+            if (action === "interact") {
+                if (req.method !== "POST") {
+                    methodNotAllowed(res, "POST");
+                    return true;
+                }
+                await interact(req, res, id);
                 return true;
             }
         }

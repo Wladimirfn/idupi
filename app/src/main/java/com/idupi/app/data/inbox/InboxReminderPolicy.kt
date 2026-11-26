@@ -49,6 +49,8 @@ object InboxReminderPolicy {
      *
      * Rules, in order for every server item:
      * - Only `open` items of an app the owner still follows qualify.
+     * - Promotions (alerts-flow A2) never qualify: no reminder and no
+     *   auto-reply, whatever their importance or the settings say.
      * - Importance: an item whose analysis failed or is still running counts
      *   as `medium`; a ready item without a level counts as `low` so an
      *   inconclusive analysis never makes the phone buzz.
@@ -98,6 +100,9 @@ object InboxReminderPolicy {
 
         for (item in items) {
             if (!isEligible(item, settings)) continue
+            // Promotions are read when the owner wants (alerts-flow A2): they
+            // never buzz and are never auto-answered.
+            if (item.promotion) continue
             val receivedAt = receivedAtMillis(item) ?: continue
             val state = stateFor(item.id)
             val importance = effectiveImportance(item)

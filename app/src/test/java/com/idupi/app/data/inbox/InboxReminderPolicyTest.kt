@@ -35,6 +35,7 @@ class InboxReminderPolicyTest {
         conversation: String = "Ana",
         suggestedReply: String = "AI generated reply",
         updatedAt: String = "",
+        promotion: Boolean = false,
     ) = InboxItem(
         id = id,
         app = app,
@@ -47,7 +48,8 @@ class InboxReminderPolicyTest {
         importance = importance,
         suggestedReply = suggestedReply,
         state = state,
-        updatedAt = updatedAt
+        updatedAt = updatedAt,
+        promotion = promotion
     )
 
     private fun settings(
@@ -532,5 +534,42 @@ class InboxReminderPolicyTest {
         )
 
         assertEquals(1, actions.count { it is InboxReminderPolicy.Action.AutoReply })
+    }
+
+    // --- promotions (alerts-flow A2) ---------------------------------------
+
+    @Test
+    fun `a promotion never triggers a reminder`() {
+        val actions = decide(
+            items = listOf(item(promotion = true, importance = "low")),
+            settings = settings(minImportance = "low")
+        )
+
+        assertTrue(actions.isEmpty())
+    }
+
+    @Test
+    fun `a promotion never triggers the template auto-reply`() {
+        val actions = decide(
+            items = listOf(item(promotion = true, receivedAt = minutesAgo(60))),
+            settings = settings(autoReply = true),
+            liveActions = setOf(conversationKey()),
+            silenced = setOf(conversationKey())
+        )
+
+        assertTrue(actions.isEmpty())
+    }
+
+    @Test
+    fun `a promotion does not hide the reminder of a real message in the same chat`() {
+        val promo = item(id = "promo", promotion = true, importance = "low")
+        val real = item(id = "real", receivedAt = minutesAgo(60))
+
+        val actions = decide(
+            items = listOf(promo, real),
+            settings = settings(minImportance = "high")
+        )
+
+        assertEquals(listOf(InboxReminderPolicy.Action.Remind("real")), actions)
     }
 }

@@ -1,5 +1,6 @@
 package com.idupi.app.ui.screens
 
+import com.idupi.app.domain.model.InboxInteraction
 import com.idupi.app.domain.model.InboxItem
 import com.idupi.app.domain.model.InboxItemState
 import com.idupi.app.domain.model.InboxItemStatus
@@ -126,5 +127,53 @@ class InboxFormatTest {
         // A malformed key renders as-is instead of crashing the settings list.
         assertEquals("sin-separador", silencedConversationLabel("sin-separador"))
         assertEquals("WhatsApp", silencedConversationLabel("whatsapp|"))
+    }
+}
+
+/** Promotions card count line (alerts-flow A2). */
+class InboxPromotionsFormatTest {
+
+    @Test
+    fun `promotions count line names the promotions and the apps`() {
+        assertEquals("12 promociones de 4 apps", promotionsCountLabel(12, 4))
+        assertEquals("1 promoción de 1 app", promotionsCountLabel(1, 1))
+        assertEquals("2 promociones de 1 app", promotionsCountLabel(2, 1))
+        assertEquals("1 promoción de 3 apps", promotionsCountLabel(1, 3))
+    }
+}
+
+/** Header of the agent answer block (alerts-flow A3 + A4). */
+class InboxInteractionHeaderTest {
+
+    private fun interaction(
+        auto: Boolean = false,
+        projectName: String? = null
+    ) = InboxInteraction(
+        status = "done",
+        instruction = "revisa esto",
+        projectName = projectName,
+        answer = "ok",
+        auto = auto
+    )
+
+    @Test
+    fun `an owner-run investigation keeps the agent header`() {
+        assertEquals("Respuesta del agente", interactionHeader(interaction()))
+        assertEquals(
+            "Respuesta del agente · IDUPI",
+            interactionHeader(interaction(projectName = "IDUPI"))
+        )
+    }
+
+    @Test
+    fun `an automatic investigation says IDUPI did it`() {
+        assertEquals(
+            "IDUPI revisó esto por ti",
+            interactionHeader(interaction(auto = true))
+        )
+        assertEquals(
+            "IDUPI revisó esto por ti · IDUPI",
+            interactionHeader(interaction(auto = true, projectName = "IDUPI"))
+        )
     }
 }

@@ -173,4 +173,16 @@ class InboxSettingsDataStoreTest {
             reopen().inboxSettings.first().silencedConversations
         )
     }
+
+    @Test
+    fun `clearing captured notifications from the shade is on by default`() = runTest {
+        assertTrue(repo.inboxSettings.first().clearCapturedFromShade)
+    }
+
+    @Test
+    fun `turning the shade clearing off survives a restart`() = runTest {
+        repo.setInboxClearCapturedFromShade(false)
+
+        assertFalse(reopen().inboxSettings.first().clearCapturedFromShade)
+    }
 }

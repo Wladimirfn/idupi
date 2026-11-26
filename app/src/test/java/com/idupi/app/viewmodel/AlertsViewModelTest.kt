@@ -3,9 +3,12 @@ package com.idupi.app.viewmodel
 import com.idupi.app.FakeClientSource
 import com.idupi.app.FakeIduPiClient
 import com.idupi.app.MainDispatcherRule
+import com.idupi.app.data.inbox.InboxConversationGroups
 import com.idupi.app.data.settings.InMemorySettingsRepository
 import com.idupi.app.data.settings.SettingsRepository
 import com.idupi.app.domain.model.InboxDigest
+import com.idupi.app.domain.model.InboxInteraction
+import com.idupi.app.domain.model.InboxInteractionStatus
 import com.idupi.app.domain.model.InboxItem
 import com.idupi.app.domain.model.InboxItemState
 import com.idupi.app.domain.model.InboxItemStatus
@@ -46,6 +49,7 @@ class AlertsViewModelTest {
         importance: String? = "high",
         suggestedReply: String = "Ahí lo veo",
         status: String = InboxItemStatus.READY,
+        promotion: Boolean = false,
     ) = InboxItem(
         id = id,
         app = app,
@@ -60,14 +64,24 @@ class AlertsViewModelTest {
         category = "Trabajo",
         summary = "resumen",
         suggestedReply = suggestedReply,
-        state = state
+        state = state,
+        promotion = promotion
     )
 
     private fun viewModel(
         hasReplyAction: (String) -> Boolean = { true },
         sendReply: (String, String) -> Boolean = { _, _ -> true },
         settings: SettingsRepository = InMemorySettingsRepository(),
-    ) = AlertsViewModel(FakeClientSource(fake), hasReplyAction, sendReply, settings)
+        notifyAgentAnswer: (InboxItem) -> Unit = {},
+        notifyReadyReply: (InboxItem) -> Unit = {},
+    ) = AlertsViewModel(
+        FakeClientSource(fake),
+        hasReplyAction,
+        sendReply,
+        settings,
+        notifyAgentAnswer,
+        notifyReadyReply
+    )
 
     @Test
     fun `init loads the inbox and requests the page size`() = runTest {
@@ -547,5 +561,339 @@ class AlertsViewModelTest {
         advanceUntilIdle()
 
         assertFalse(viewModel.isSilenced("whatsapp|Ana"))
+    }
+
+    // --- promotions (alerts-flow A2) ---------------------------------------
+
+    @Test
+    fun `promotions are not summarized automatically`() = runTest {
+        fake.inboxItemsToReturn = listOf(
+            sampleItem(id = "p1", promotion = true, importance = "low"),
+            sampleItem(id = "p2", promotion = true, importance = "low"),
+            sampleItem(id = "p3", promotion = true, importance = "low")
+        )
+
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        assertEquals(0, fake.promotionsDigestRequests)
+        val promotions = viewModel.visibleGroups.single()
+        assertEquals(InboxConversationGroups.PROMOTIONS_KEY, promotions.conversationKey)
+    }
+
+    @Test
+    fun `requestPromotionsDigest stores the summary under the promotions key`() = runTest {
+        fake.inboxItemsToReturn = listOf(
+            sampleItem(id = "p1", app = "gmail", promotion = true, importance = "low"),
+            sampleItem(id = "p2", app = "telegram", promotion = true, importance = "low")
+        )
+        fake.inboxPromotionsDigestToReturn = InboxDigest(
+            app = "scope",
+            conversation = "promotions",
+            scope = "promotions",
+            itemCount = 2,
+            summary = "• Tienda: 50% hasta el domingo.",
+            status = "ready"
+        )
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        viewModel.requestPromotionsDigest()
+        advanceUntilIdle()
+
+        assertEquals(1, fake.promotionsDigestRequests)
+        val digest = viewModel.digests.value[InboxConversationGroups.PROMOTIONS_KEY]
+        assertEquals("• Tienda: 50% hasta el domingo.", digest?.summary)
+        assertTrue(viewModel.requestingDigests.value.isEmpty())
+    }
+
+    @Test
+    fun `the important filter never shows promotions`() = runTest {
+        fake.inboxItemsToReturn = listOf(
+            sampleItem(
+                id = "promo",
+                conversation = "Ofertas",
+                promotion = true,
+                importance = "high"
+            ),
+            sampleItem(id = "real", importance = "high")
+        )
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        viewModel.setFilter(InboxFilter.IMPORTANT)
+
+        assertEquals(listOf("real"), viewModel.visibleItems.map { it.id })
+        assertEquals(listOf("whatsapp|Ana"), viewModel.visibleGroups.map { it.conversationKey })
+    }
+
+    @Test
+    fun `markPromotionsHandled closes every promotion in one bulk call`() = runTest {
+        fake.inboxItemsToReturn = listOf(
+            sampleItem(id = "p1", app = "gmail", promotion = true, importance = "low"),
+            sampleItem(id = "p2", app = "telegram", promotion = true, importance = "low"),
+            sampleItem(id = "normal", importance = "high")
+        )
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        val promotions = viewModel.visibleGroups.last()
+        viewModel.markPromotionsHandled(promotions)
+        advanceUntilIdle()
+
+        assertEquals(listOf(InboxItemState.HANDLED), fake.inboxPromotionsStates)
+        assertEquals(listOf("normal"), viewModel.items.value.map { it.id })
+        assertNull(viewModel.digests.value[InboxConversationGroups.PROMOTIONS_KEY])
+    }
+
+    @Test
+    fun `a failed bulk close puts the promotions back`() = runTest {
+        fake.inboxItemsToReturn = listOf(
+            sampleItem(id = "p1", promotion = true, importance = "low")
+        )
+        fake.failInboxPromotionsStateWith = RuntimeException("server off")
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        viewModel.markPromotionsHandled(viewModel.visibleGroups.single())
+        advanceUntilIdle()
+
+        assertEquals(listOf("p1"), viewModel.items.value.map { it.id })
+        assertNotNull(viewModel.errorMessage.value)
+    }
+
+    // --- Interactuar (alerts-flow A3) --------------------------------------
+
+    private fun runningInteraction(instruction: String = "revisa esto") = InboxInteraction(
+        status = InboxInteractionStatus.RUNNING,
+        instruction = instruction,
+        startedAt = "2026-11-24T10:00:00.000Z"
+    )
+
+    private fun doneInteraction(
+        instruction: String = "revisa esto",
+        answer: String = "No te afecta: revisé package.json."
+    ) = InboxInteraction(
+        status = InboxInteractionStatus.DONE,
+        instruction = instruction,
+        projectId = "idupi",
+        projectName = "IDUPI",
+        answer = answer,
+        startedAt = "2026-11-24T10:00:00.000Z",
+        finishedAt = "2026-11-24T10:02:00.000Z"
+    )
+
+    @Test
+    fun `interacting posts the instruction and project and shows the running state`() = runTest {
+        fake.inboxItemsToReturn = listOf(sampleItem())
+        fake.interactionResult = sampleItem().copy(interaction = runningInteraction())
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        viewModel.interact("i1", "revisa esto", "idupi")
+        advanceUntilIdle()
+
+        val request = fake.interactionRequests.single()
+        assertEquals("i1", request.id)
+        assertEquals("revisa esto", request.instruction)
+        assertEquals("idupi", request.projectId)
+        assertEquals(
+            InboxInteractionStatus.RUNNING,
+            viewModel.items.value.single().interaction?.status
+        )
+    }
+
+    @Test
+    fun `a running to done transition posts the answer notification once`() = runTest {
+        val notified = mutableListOf<InboxItem>()
+        fake.inboxItemsToReturn = listOf(sampleItem().copy(interaction = runningInteraction()))
+        val viewModel = viewModel(notifyAgentAnswer = { notified += it })
+        advanceUntilIdle()
+        assertTrue(notified.isEmpty())
+
+        fake.inboxItemsToReturn = listOf(
+            sampleItem().copy(interaction = doneInteraction())
+        )
+        viewModel.refresh()
+        advanceUntilIdle()
+
+        assertEquals(1, notified.size)
+        assertEquals("i1", notified.single().id)
+        assertEquals("revisa esto", notified.single().interaction?.instruction)
+
+        // The next poll sees the same done item: no second ping.
+        viewModel.refresh()
+        advanceUntilIdle()
+        assertEquals(1, notified.size)
+    }
+
+    @Test
+    fun `an interaction already done on the first load does not notify`() = runTest {
+        val notified = mutableListOf<InboxItem>()
+        fake.inboxItemsToReturn = listOf(sampleItem().copy(interaction = doneInteraction()))
+
+        val viewModel = viewModel(notifyAgentAnswer = { notified += it })
+        advanceUntilIdle()
+
+        assertTrue(notified.isEmpty())
+    }
+
+    @Test
+    fun `a running to done automatic interaction also posts the answer ping`() = runTest {
+        val notified = mutableListOf<InboxItem>()
+        fake.inboxItemsToReturn = listOf(
+            sampleItem().copy(interaction = runningInteraction().copy(auto = true))
+        )
+        val viewModel = viewModel(notifyAgentAnswer = { notified += it })
+        advanceUntilIdle()
+        assertTrue(notified.isEmpty())
+
+        fake.inboxItemsToReturn = listOf(
+            sampleItem().copy(interaction = doneInteraction().copy(auto = true))
+        )
+        viewModel.refresh()
+        advanceUntilIdle()
+
+        assertEquals(1, notified.size)
+        assertEquals(true, notified.single().interaction?.auto)
+    }
+
+    @Test
+    fun `a failed interaction request keeps the item and shows an inline error`() = runTest {
+        fake.inboxItemsToReturn = listOf(sampleItem())
+        fake.failInteractionWith = RuntimeException("server off")
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        viewModel.interact("i1", "revisa esto", null)
+        advanceUntilIdle()
+
+        assertEquals("i1", viewModel.items.value.single().id)
+        assertEquals(
+            "No se pudo iniciar la interacción: server off",
+            viewModel.errorMessage.value
+        )
+    }
+
+    @Test
+    fun `retrying a failed interaction reuses its instruction and project`() = runTest {
+        val failed = sampleItem().copy(
+            interaction = InboxInteraction(
+                status = InboxInteractionStatus.FAILED,
+                instruction = "revisa si esto afecta al proyecto",
+                projectId = "idupi",
+                projectName = "IDUPI",
+                error = "agent failed"
+            )
+        )
+        fake.inboxItemsToReturn = listOf(failed)
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        viewModel.retryInteraction(failed)
+        advanceUntilIdle()
+
+        val request = fake.interactionRequests.single()
+        assertEquals("i1", request.id)
+        assertEquals("revisa si esto afecta al proyecto", request.instruction)
+        assertEquals("idupi", request.projectId)
+    }
+
+    @Test
+    fun `refreshProjects exposes the linked projects for the picker`() = runTest {
+        fake.projectsToReturn = listOf(
+            com.idupi.app.domain.model.Project(
+                id = "idupi",
+                name = "IDUPI",
+                path = "C:\\dev\\idupi",
+                isActive = false
+            )
+        )
+        val viewModel = viewModel()
+
+        viewModel.refreshProjects()
+        advanceUntilIdle()
+
+        assertEquals(listOf("idupi"), viewModel.projects.value.map { it.id })
+    }
+
+    // --- Respuesta lista (alerts-flow A4) ----------------------------------
+
+    @Test
+    fun `a high ready item with a draft notifies once and never again`() = runTest {
+        val notified = mutableListOf<InboxItem>()
+        fake.inboxItemsToReturn = listOf(sampleItem(id = "i1"))
+        val viewModel = viewModel(notifyReadyReply = { notified += it })
+        advanceUntilIdle()
+
+        assertEquals(listOf("i1"), notified.map { it.id })
+
+        // The next poll sees the same ready item: no second ping.
+        viewModel.refresh()
+        advanceUntilIdle()
+        assertEquals(1, notified.size)
+    }
+
+    @Test
+    fun `the ready notification waits for the first ready poll`() = runTest {
+        val notified = mutableListOf<InboxItem>()
+        fake.inboxItemsToReturn = listOf(sampleItem(id = "i1", status = InboxItemStatus.ANALYZING))
+        val viewModel = viewModel(notifyReadyReply = { notified += it })
+        advanceUntilIdle()
+        assertTrue(notified.isEmpty())
+
+        fake.inboxItemsToReturn = listOf(sampleItem(id = "i1", status = InboxItemStatus.READY))
+        viewModel.refresh()
+        advanceUntilIdle()
+
+        assertEquals(1, notified.size)
+    }
+
+    @Test
+    fun `medium and low items never notify a ready reply`() = runTest {
+        val notified = mutableListOf<InboxItem>()
+        fake.inboxItemsToReturn = listOf(
+            sampleItem(id = "medium", importance = "medium"),
+            sampleItem(id = "low", importance = "low")
+        )
+        val viewModel = viewModel(notifyReadyReply = { notified += it })
+        advanceUntilIdle()
+
+        assertTrue(notified.isEmpty())
+    }
+
+    @Test
+    fun `promotions never notify a ready reply`() = runTest {
+        val notified = mutableListOf<InboxItem>()
+        fake.inboxItemsToReturn = listOf(
+            sampleItem(id = "promo", promotion = true, importance = "high")
+        )
+        val viewModel = viewModel(notifyReadyReply = { notified += it })
+        advanceUntilIdle()
+
+        assertTrue(notified.isEmpty())
+    }
+
+    @Test
+    fun `an item without a live reply action never notifies`() = runTest {
+        val notified = mutableListOf<InboxItem>()
+        fake.inboxItemsToReturn = listOf(sampleItem(id = "i1"))
+        val viewModel = viewModel(
+            hasReplyAction = { false },
+            notifyReadyReply = { notified += it }
+        )
+        advanceUntilIdle()
+
+        assertTrue(notified.isEmpty())
+    }
+
+    @Test
+    fun `an item without a draft never notifies`() = runTest {
+        val notified = mutableListOf<InboxItem>()
+        fake.inboxItemsToReturn = listOf(sampleItem(id = "i1", suggestedReply = "   "))
+        val viewModel = viewModel(notifyReadyReply = { notified += it })
+        advanceUntilIdle()
+
+        assertTrue(notified.isEmpty())
     }
 }

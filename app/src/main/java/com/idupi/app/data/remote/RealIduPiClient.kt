@@ -895,13 +895,39 @@ class RealIduPiClient : IduPiClient {
         send(HttpMethod.Post, "/api/v1/inbox/$id/retry")
             .body<InboxItemEnvelope>().item
 
+    override suspend fun interactWithInboxItem(
+        id: String,
+        instruction: String,
+        projectId: String?
+    ): InboxItem {
+        // The 202 body carries only the interaction; the rest of the item is
+        // unchanged on the server, so the caller merges this block in.
+        val envelope = send(HttpMethod.Post, "/api/v1/inbox/$id/interact") {
+            contentType(ContentType.Application.Json)
+            setBody(InboxInteractionRequest(instruction = instruction, projectId = projectId))
+        }.body<InboxInteractionEnvelope>()
+        return InboxItem(id = id, interaction = envelope.interaction)
+    }
+
     override suspend fun getInboxConfig(): InboxConfig =
         send(HttpMethod.Get, "/api/v1/inbox/config").body()
 
-    override suspend fun updateInboxConfig(agent: String, model: String, effort: String): InboxConfig =
+    override suspend fun updateInboxConfig(
+        agent: String,
+        model: String,
+        effort: String,
+        proactive: Boolean?
+    ): InboxConfig =
         send(HttpMethod.Put, "/api/v1/inbox/config") {
             contentType(ContentType.Application.Json)
-            setBody(InboxConfigPayload(agent = agent, model = model, effort = effort))
+            // Built by hand so a null proactive is omitted instead of encoded
+            // as an explicit null the server rejects (alerts-flow A4).
+            setBody(buildJsonObject {
+                put("agent", agent)
+                put("model", model)
+                put("effort", effort)
+                if (proactive != null) put("proactive", proactive)
+            })
         }.body()
 
     override suspend fun getInboxModels(agent: String): List<String> =
@@ -937,6 +963,25 @@ class RealIduPiClient : IduPiClient {
                     state = state
                 )
             )
+        }.body<InboxConversationStateResult>().closed
+
+    // --- Promotions digest and bulk close (alerts-flow A2) ---
+
+    override suspend fun requestInboxPromotionsDigest(): InboxDigest =
+        send(HttpMethod.Post, "/api/v1/inbox/digest") {
+            contentType(ContentType.Application.Json)
+            setBody(InboxScopeDigestRequest(scope = InboxDigestScope.PROMOTIONS))
+        }.body<InboxDigestEnvelope>().digest
+
+    override suspend fun getInboxPromotionsDigest(): InboxDigest =
+        send(HttpMethod.Get, "/api/v1/inbox/digest") {
+            parameter("scope", InboxDigestScope.PROMOTIONS)
+        }.body<InboxDigestEnvelope>().digest
+
+    override suspend fun setInboxPromotionsState(state: String): Int =
+        send(HttpMethod.Post, "/api/v1/inbox/promotions/state") {
+            contentType(ContentType.Application.Json)
+            setBody(InboxStatePayload(state))
         }.body<InboxConversationStateResult>().closed
 
     // --- Phone status reporting (phone-agent T2) ---
@@ -1100,13 +1145,17 @@ private data class InboxModelsEnvelope(val models: List<String> = emptyList())
 @Serializable
 private data class InboxStatePayload(val state: String)
 
-/** `PUT /inbox/config` body; the server keeps `agents`/`efforts` server-side. */
-@Serializable
-private data class InboxConfigPayload(val agent: String, val model: String, val effort: String)
-
 /** `POST|GET /inbox/digest` wraps the conversation digest. */
 @Serializable
 private data class InboxDigestEnvelope(val digest: InboxDigest)
+
+/** `POST /inbox/{id}/interact` wraps the item's `interaction` (alerts-flow A3). */
+@Serializable
+private data class InboxInteractionEnvelope(val interaction: InboxInteraction = InboxInteraction())
+
+/** `POST /inbox/digest` body when the digest spans a scope (alerts-flow A2). */
+@Serializable
+private data class InboxScopeDigestRequest(val scope: String)
 
 
 /**

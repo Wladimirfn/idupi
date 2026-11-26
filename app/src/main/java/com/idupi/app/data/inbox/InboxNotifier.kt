@@ -51,6 +51,37 @@ class InboxNotifier(private val context: Context) {
         )
     }
 
+    /**
+     * alerts-flow A3: the Interactuar investigation finished. The body is the
+     * owner's own instruction, never the alert text or the answer, and the tap
+     * opens Alertas where the answer is shown in full.
+     */
+    fun showAgentAnswer(item: InboxItem) {
+        val instruction = item.interaction?.instruction.orEmpty()
+        post(
+            notificationId = notificationId(ANSWER_TAG, item.id),
+            channelId = SupervisorNotificationManager.CHANNEL_ID,
+            title = InboxAgentAnswer.TITLE,
+            text = InboxAgentAnswer.notificationText(instruction),
+            appLabel = InboxApp.displayLabel(item.appLabel, item.app)
+        )
+    }
+
+    /**
+     * alerts-flow A4: a high-importance message already has a draft waiting.
+     * The body is the card's summary, never the draft itself, and the tap
+     * opens Alertas where the owner reviews and sends.
+     */
+    fun showReadyReply(item: InboxItem) {
+        post(
+            notificationId = notificationId(READY_REPLY_TAG, item.id),
+            channelId = SupervisorNotificationManager.CHANNEL_ID,
+            title = InboxReadyReply.TITLE,
+            text = InboxReadyReply.notificationText(item),
+            appLabel = InboxApp.displayLabel(item.appLabel, item.app)
+        )
+    }
+
     private fun summaryOf(item: InboxItem): String =
         item.summary.ifBlank { item.text }.ifBlank { "Sin contenido para mostrar" }
 
@@ -77,20 +108,8 @@ class InboxNotifier(private val context: Context) {
         runCatching { notifications.notify(notificationId, notification) }
     }
 
-    private fun openAlertsIntent(requestCode: Int): PendingIntent {
-        val intent = Intent(context, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                Intent.FLAG_ACTIVITY_SINGLE_TOP
-            putExtra(EXTRA_OPEN_ALERTS, true)
-        }
-        return PendingIntent.getActivity(
-            context,
-            requestCode,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-    }
+    private fun openAlertsIntent(requestCode: Int): PendingIntent =
+        alertsIntent(context, requestCode)
 
     private fun createChannels() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -130,10 +149,91 @@ class InboxNotifier(private val context: Context) {
         const val REMINDER_CHANNEL_ID = "idupi_inbox_reminders"
         const val REMINDER_CHANNEL_NAME = "Recordatorios IDUPI"
 
+        /**
+         * alerts-flow A1: the single silent summary that replaces the pile of
+         * captured notifications the owner no longer needs in the shade.
+         */
+        const val SUMMARY_CHANNEL_ID = "idupi_inbox_capture_summary"
+        const val SUMMARY_CHANNEL_NAME = "Resumen de Alertas"
+
         /** Extra that makes [MainActivity] open Alertas on a notification tap. */
         const val EXTRA_OPEN_ALERTS = "com.idupi.app.extra.OPEN_ALERTS"
 
         private const val REMINDER_TAG = "inbox_reminder"
         private const val READY_TAG = "inbox_ready"
+        private const val ANSWER_TAG = "inbox_answer"
+        private const val READY_REPLY_TAG = "inbox_ready_reply"
+
+        /** Fixed id: the summary updates in place instead of stacking. */
+        private const val SUMMARY_NOTIFICATION_ID = 24_001
+
+        /**
+         * Posts/updates IDUPI's one-line summary of what it captured and
+         * cleared from the shade since the owner last opened Alertas. Silent
+         * by construction: low-importance channel, no sound or vibration, and
+         * [NotificationCompat.Builder.setOnlyAlertOnce] so an update never
+         * re-alerts.
+         */
+        fun showCaptureSummary(context: Context, total: Int, important: Int) {
+            ensureSummaryChannel(context)
+            val notification = NotificationCompat.Builder(context, SUMMARY_CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle(SUMMARY_CHANNEL_NAME)
+                .setContentText(InboxCaptureSummary.text(total, important))
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setOnlyAlertOnce(true)
+                .setSilent(true)
+                .setAutoCancel(true)
+                .setContentIntent(alertsIntent(context, SUMMARY_NOTIFICATION_ID))
+                .build()
+
+            // Same rule as the other posts: without POST_NOTIFICATIONS the
+            // system ignores it and that is not a reason to stop capturing.
+            runCatching {
+                NotificationManagerCompat.from(context)
+                    .notify(SUMMARY_NOTIFICATION_ID, notification)
+            }
+        }
+
+        /** Removes the summary once the owner is looking at Alertas. */
+        fun clearCaptureSummary(context: Context) {
+            runCatching {
+                NotificationManagerCompat.from(context).cancel(SUMMARY_NOTIFICATION_ID)
+            }
+        }
+
+        private fun ensureSummaryChannel(context: Context) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+            val manager =
+                context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    SUMMARY_CHANNEL_ID,
+                    SUMMARY_CHANNEL_NAME,
+                    NotificationManager.IMPORTANCE_LOW
+                ).apply {
+                    description =
+                        "Una sola notificación con lo que IDUPI capturó y ya está en Alertas"
+                    setSound(null, null)
+                    enableVibration(false)
+                    setShowBadge(false)
+                }
+            )
+        }
+
+        private fun alertsIntent(context: Context, requestCode: Int): PendingIntent {
+            val intent = Intent(context, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+                putExtra(EXTRA_OPEN_ALERTS, true)
+            }
+            return PendingIntent.getActivity(
+                context,
+                requestCode,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+        }
     }
 }

@@ -96,6 +96,23 @@ class InboxModelsTest {
     }
 
     @Test
+    fun `promotion defaults to false and decodes true when the server sends it`() {
+        val withoutField = json.decodeFromString<InboxItem>(
+            """
+            {"id": "old", "app": "gmail", "text": "x", "notificationKey": "k"}
+            """.trimIndent()
+        )
+        assertEquals(false, withoutField.promotion)
+
+        val promotion = json.decodeFromString<InboxItem>(
+            """
+            {"id": "promo", "app": "gmail", "text": "50% hoy", "notificationKey": "k2", "promotion": true}
+            """.trimIndent()
+        )
+        assertEquals(true, promotion.promotion)
+    }
+
+    @Test
     fun `decodes the items envelope as returned by the server`() {
         val payload = """
             {"items": [
@@ -183,8 +200,108 @@ class InboxModelsTest {
         assertEquals("archived", item.state)
         assertEquals("critical", item.importance)
     }
+
+    @Test
+    fun `an item from before A3 decodes with a null interaction`() {
+        val item = json.decodeFromString<InboxItem>(
+            """{"id":"old","app":"gmail","text":"x","notificationKey":"k"}"""
+        )
+
+        assertNull(item.interaction)
+    }
+
+    @Test
+    fun `decodes the interaction block persisted by the server`() {
+        val payload = """
+            {
+              "id": "inb-2f1a9c",
+              "app": "gmail",
+              "text": "Build failed",
+              "notificationKey": "k3",
+              "interaction": {
+                "status": "done",
+                "instruction": "revisa si este error afecta mis proyectos",
+                "projectId": "idupi",
+                "projectName": "IDUPI",
+                "answer": "No te afecta: revisé package.json.",
+                "startedAt": "2026-11-24T10:00:00.000Z",
+                "finishedAt": "2026-11-24T10:02:00.000Z",
+                "error": null
+              }
+            }
+        """.trimIndent()
+
+        val interaction = json.decodeFromString<InboxItem>(payload).interaction
+
+        assertEquals(InboxInteractionStatus.DONE, interaction?.status)
+        assertEquals("revisa si este error afecta mis proyectos", interaction?.instruction)
+        assertEquals("idupi", interaction?.projectId)
+        assertEquals("IDUPI", interaction?.projectName)
+        assertEquals("No te afecta: revisé package.json.", interaction?.answer)
+        assertEquals("2026-11-24T10:00:00.000Z", interaction?.startedAt)
+        assertEquals("2026-11-24T10:02:00.000Z", interaction?.finishedAt)
+    }
+
+    @Test
+    fun `a partial interaction from a newer server still decodes with defaults`() {
+        val interaction = json.decodeFromString<InboxInteraction>(
+            """{"status":"running","instruction":"revisa esto","future":true}"""
+        )
+
+        assertEquals(InboxInteractionStatus.RUNNING, interaction.status)
+        assertEquals("revisa esto", interaction.instruction)
+        assertNull(interaction.projectId)
+        assertNull(interaction.projectName)
+        assertEquals("", interaction.answer)
+        assertNull(interaction.startedAt)
+        assertNull(interaction.finishedAt)
+        assertNull(interaction.error)
+        assertEquals(false, interaction.auto)
+    }
+
+    // --- Proactive alerts (alerts-flow A4) ---------------------------------
+
+    @Test
+    fun `technical and projectHint default and decode from the server`() {
+        val withoutFields = json.decodeFromString<InboxItem>(
+            """{"id":"old","app":"gmail","text":"x","notificationKey":"k"}"""
+        )
+        assertEquals(false, withoutFields.technical)
+        assertEquals("", withoutFields.projectHint)
+
+        val technical = json.decodeFromString<InboxItem>(
+            """
+            {"id":"t1","app":"gmail","text":"Deploy failed","notificationKey":"k2",
+             "technical":true,"projectHint":"idupi-server"}
+            """.trimIndent()
+        )
+        assertEquals(true, technical.technical)
+        assertEquals("idupi-server", technical.projectHint)
+    }
+
+    @Test
+    fun `an automatic interaction decodes its auto flag`() {
+        val auto = json.decodeFromString<InboxInteraction>(
+            """{"status":"done","instruction":"revisa esto","answer":"ok","auto":true}"""
+        )
+        assertEquals(true, auto.auto)
+    }
+
+    @Test
+    fun `the config defaults proactive to true and decodes an explicit false`() {
+        val fromOldServer = json.decodeFromString<InboxConfig>(
+            """{"agent":"opencode","model":"m","effort":"max"}"""
+        )
+        assertEquals(true, fromOldServer.proactive)
+
+        val off = json.decodeFromString<InboxConfig>(
+            """{"agent":"opencode","model":"m","effort":"max","proactive":false}"""
+        )
+        assertEquals(false, off.proactive)
+    }
 }
 
 /** Mirrors the private envelope in RealIduPiClient so the shape is pinned. */
 @Serializable
 private data class InboxItemsEnvelope(val items: List<InboxItem> = emptyList())
+

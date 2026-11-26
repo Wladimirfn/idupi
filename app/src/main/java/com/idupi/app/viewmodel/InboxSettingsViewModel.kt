@@ -33,6 +33,12 @@ data class InboxAgentConfigState(
     val agent: String = DEFAULT_AGENT,
     val model: String = "",
     val effort: String = DEFAULT_EFFORT,
+    /**
+     * alerts-flow A4: lets the PC start work by itself for important alerts
+     * (investigation of a technical failure, reply draft). Defaults on to
+     * match the server's `DEFAULT_PROACTIVE`.
+     */
+    val proactive: Boolean = true,
     val agents: List<String> = DEFAULT_AGENTS,
     val efforts: List<String> = DEFAULT_EFFORTS,
     /** Model ids cached from the server; only meaningful for opencode. */
@@ -146,6 +152,7 @@ class InboxSettingsViewModel(
                         agent = config.agent.ifBlank { state.agent },
                         model = config.model,
                         effort = config.effort.ifBlank { state.effort },
+                        proactive = config.proactive,
                         agents = config.agents.ifEmpty { InboxAgentConfigState.DEFAULT_AGENTS },
                         efforts = config.efforts.ifEmpty { InboxAgentConfigState.DEFAULT_EFFORTS },
                         isLoading = false
@@ -181,6 +188,15 @@ class InboxSettingsViewModel(
 
     fun setEffort(effort: String) {
         _agentConfig.update { it.copy(effort = effort) }
+    }
+
+    /**
+     * alerts-flow A4: the owner turned "Alertas proactivas" on/off. It is
+     * persisted with the same Save as agent/model/effort because it changes
+     * what the PC runs on its own.
+     */
+    fun setProactive(enabled: Boolean) {
+        _agentConfig.update { it.copy(proactive = enabled) }
     }
 
     fun clearFeedback() {
@@ -250,12 +266,13 @@ class InboxSettingsViewModel(
                 it.copy(isSaving = true, errorMessage = null, successMessage = null)
             }
             try {
-                val config = client.updateInboxConfig(agent, model, effort)
+                val config = client.updateInboxConfig(agent, model, effort, state.proactive)
                 _agentConfig.update {
                     it.copy(
                         agent = config.agent.ifBlank { agent },
                         model = config.model.ifBlank { model },
                         effort = config.effort.ifBlank { effort },
+                        proactive = config.proactive,
                         agents = config.agents.ifEmpty { it.agents },
                         efforts = config.efforts.ifEmpty { it.efforts },
                         isSaving = false,
@@ -338,6 +355,16 @@ class InboxSettingsViewModel(
     fun setReminderInterval(minutes: Int) {
         viewModelScope.launch {
             settingsRepository.setInboxReminderIntervalMinutes(minutes)
+        }
+    }
+
+    /**
+     * alerts-flow A1: captured notifications leave the shade once the PC
+     * accepted them. Turning this off keeps every capture visible.
+     */
+    fun setClearCapturedFromShade(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.setInboxClearCapturedFromShade(enabled)
         }
     }
 

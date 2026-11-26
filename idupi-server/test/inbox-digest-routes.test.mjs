@@ -413,3 +413,154 @@ test("a digest request with no open items answers the empty ready record", async
     assert.equal(digest.summary, "");
     assert.deepEqual(digest.pendingForOwner, []);
 });
+
+// --- promotions scope and bulk close (alerts-flow A2) ----------------------
+
+function addPromotion(store, overrides = {}) {
+    const { item } = store.add(message(overrides));
+    store.update(item.id, {
+        promotion: true,
+        importance: "low",
+        category: "Promociones",
+        status: "ready",
+    });
+    return store.get(item.id);
+}
+
+async function getPromotionsDigest(base) {
+    const res = await fetch(`${base}/api/v1/inbox/digest?scope=promotions`);
+    return { res, body: await res.json() };
+}
+
+async function waitPromotionsDigest(base) {
+    return waitFor(async () => {
+        const { res, body } = await getPromotionsDigest(base);
+        if (res.status !== 200) return null;
+        return body.digest && body.digest.status !== "analyzing" ? body.digest : null;
+    });
+}
+
+test("the promotions digest covers every open promotion across apps and caches by hash", async (t) => {
+    let calls = 0;
+    let prompt = "";
+    const runner = {
+        run: async () => ({ ...RESULT }),
+        runPrompt: async (_config, text) => {
+            calls += 1;
+            prompt = text;
+            return JSON.stringify(DIGEST_RESULT);
+        },
+    };
+    const { base, store } = await startHarness(t, { runner });
+
+    const gmailPromo = addPromotion(store, {
+        app: "gmail",
+        appLabel: "Gmail",
+        conversation: "Ofertas",
+        sender: "Tienda",
+        text: "50% en zapatillas",
+        notificationKey: "p1",
+    });
+    const telegramPromo = addPromotion(store, {
+        app: "telegram",
+        appLabel: "Telegram",
+        conversation: "Canal",
+        sender: "Marca",
+        text: "Sorteo de fin de mes",
+        notificationKey: "p2",
+    });
+    const normal = store.add(message({ notificationKey: "n1", text: "Hola, ¿llegaste?" })).item;
+
+    let res = await postJson(base, "/api/v1/inbox/digest", { scope: "promotions" });
+    assert.equal(res.status, 202);
+    const analyzing = (await res.json()).digest;
+    assert.equal(analyzing.status, "analyzing");
+    assert.equal(analyzing.scope, "promotions");
+    assert.equal(analyzing.itemCount, 2);
+
+    const digest = await waitPromotionsDigest(base);
+    assert.equal(digest.status, "ready");
+    assert.equal(digest.scope, "promotions");
+    assert.equal(digest.itemCount, 2);
+    assert.equal(digest.summary, DIGEST_RESULT.summary);
+    assert.deepEqual(digest.pendingForOwner, DIGEST_RESULT.pendingForOwner);
+    assert.equal(digest.suggestedReply, "");
+    assert.equal(calls, 1);
+    assert.ok(prompt.includes("50% en zapatillas"));
+    assert.ok(prompt.includes("Sorteo de fin de mes"));
+    assert.ok(prompt.includes("App: Gmail"));
+    assert.equal(prompt.includes("Hola, ¿llegaste?"), false);
+    assert.equal(prompt.includes(gmailPromo.id), false);
+
+    // Same open promotions: cached, no agent run.
+    res = await postJson(base, "/api/v1/inbox/digest", { scope: "promotions" });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).digest.summary, DIGEST_RESULT.summary);
+    assert.equal(calls, 1);
+
+    addPromotion(store, {
+        app: "outlook",
+        appLabel: "Outlook",
+        conversation: "Newsletter",
+        sender: "Marca",
+        text: "Novedades de marzo",
+        notificationKey: "p3",
+    });
+
+    res = await postJson(base, "/api/v1/inbox/digest", { scope: "promotions" });
+    assert.equal(res.status, 202);
+    await waitPromotionsDigest(base);
+    assert.equal(calls, 2);
+    assert.equal(store.get(normal.id).state, "open");
+    assert.equal(telegramPromo.promotion, true);
+});
+
+test("promotions scope and bulk close validate input and clear the digest", async (t) => {
+    const { base, store } = await startHarness(t);
+
+    const a = addPromotion(store, { notificationKey: "b1", text: "oferta uno" });
+    const b = addPromotion(store, {
+        app: "gmail",
+        conversation: "Ofertas",
+        notificationKey: "b2",
+        text: "oferta dos",
+    });
+    const normal = store.add(message({ notificationKey: "b3", text: "normal" })).item;
+
+    await postJson(base, "/api/v1/inbox/digest", { scope: "promotions" });
+    await waitPromotionsDigest(base);
+
+    let res = await postJson(base, "/api/v1/inbox/promotions/state", { state: "handled" });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.closed, 2);
+    assert.deepEqual(body.items.map((item) => item.id).sort(), [a.id, b.id].sort());
+    assert.equal(store.get(a.id).state, "handled");
+    assert.equal(store.get(b.id).state, "handled");
+    assert.equal(store.get(normal.id).state, "open");
+    assert.deepEqual(store.openPromotions(), []);
+
+    const { body: emptied } = await getPromotionsDigest(base);
+    assert.equal(emptied.digest.itemCount, 0);
+    assert.equal(emptied.digest.summary, "");
+    assert.equal(emptied.digest.status, "ready");
+    assert.equal(emptied.digest.scope, "promotions");
+
+    res = await postJson(base, "/api/v1/inbox/promotions/state", { state: "handled" });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).closed, 0);
+
+    for (const state of ["open", "replied", "auto_replied", "done"]) {
+        res = await postJson(base, "/api/v1/inbox/promotions/state", { state });
+        assert.equal(res.status, 400, `state=${state}`);
+        assert.equal((await res.json()).code, "INVALID_STATE");
+    }
+
+    res = await postJson(base, "/api/v1/inbox/digest", { scope: "all" });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).code, "INVALID_SCOPE");
+
+    res = await fetch(base + "/api/v1/inbox/digest?scope=all");
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).code, "INVALID_SCOPE");
+});

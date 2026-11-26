@@ -1,0 +1,165 @@
+# Alerts that flow (phase 2, block A)
+
+Locator: `odd/tasks/alerts-flow.md` · Engram mirror: `odd/alerts-flow/tasks`
+Branch: `feat/alerts-flow` (from main 5afcd82)
+
+## Objective
+
+Alertas must reduce load, not add it. Captured notifications leave the phone
+shade, promotions collapse into one reviewable digest, the owner can hand any
+alert to an agent with an instruction ("revisa esto en mis proyectos"), and
+important alerts arrive with the work already done (investigation or reply
+draft) ready to review.
+
+## Product rules (owner, 2026-11-25)
+
+- IDUPI is proactive and flows on its own. Everything aimed at the owner happens
+  automatically and lands ready to review.
+- Only outbound-to-others or irreversible actions need approval (sending a reply
+  to a third party, paying, deleting). Replies are never sent without the owner.
+- Neutral Latin American Spanish in UI copy and agent output.
+
+## Current state (exploration 2026-11-25)
+
+- App: only silenced chats are cancelled from the shade
+  (`InboxNotificationListener.kt` `cancelSilencedNotification`); every other
+  captured notification stays. `REASON_LISTENER_CANCEL` is already ignored as a
+  user dismissal (`InboxRemovalRules.kt`), and reply actions survive a listener
+  cancel (proven by the silence path).
+- Server: inbox agent runs with tools disabled in an empty temp cwd
+  (`inbox-agent.mjs`); category is free text; digests are per app+conversation;
+  no route takes an owner instruction; projects live in `projects.json` with
+  read-only file routes guarded by `project-files.mjs`.
+
+## Tasks
+
+- [x] A1 Clear captured notifications from the shade. New setting "Quitar de la
+      bandeja lo que IDUPI ya capturó" (default on). Cancel only after the PC
+      accepted the upload (offline -> stays visible). Reply action stays usable.
+      One silent IDUPI summary notification ("N alertas: X importantes") replaces
+      the pile and opens Alertas. App only. Tests.
+- [x] A2 Promotions bucket. Agent contract gets a fixed category enum (adds
+      `promocion`); promotions/newsletters skip per-item noise, group into one
+      "Promociones" card with one digest (server digest scope by category) and
+      "Marcar todo revisado". Server + app. Tests.
+- [x] A3 Interactuar. Card button opens a sheet: instruction text + optional
+      linked project. `POST /api/v1/inbox/{id}/interact` runs an agent with
+      READ-ONLY tools in the project cwd (alert content stays an untrusted block,
+      the instruction is trusted); answer stored on the item and shown on the
+      card; local notification when ready. Server + app. Tests incl. tool
+      allowlist and untrusted wrapping.
+- [x] A4 Proactive. For high-importance alerts: technical alerts (deploy/CI/
+      error mails) auto-run the A3 investigation against the matching project;
+      messages/mails with a reply action get a "Respuesta lista" notification.
+      Setting to turn it off. Nothing is ever sent automatically.
+- [x] A5 Release: version bump, build, auto-push the APK to the phone, server
+      restart (check `idupi-term ls` first), PRs.
+
+## Acceptance criteria
+
+- After capture, the shade only shows IDUPI's single summary notification
+  (when the setting is on and the PC is reachable).
+- Promotions never appear as individual pending cards.
+- Interactuar returns an answer that cites what it checked in the project; the
+  agent cannot write files or run commands.
+- An important email arrives in Alertas with a ready draft and, for technical
+  alerts, an investigation result, without the owner pressing anything.
+
+## Checks
+
+- Server: `node --test idupi-server/test/*.test.mjs`
+- App: `./gradlew testDebugUnitTest` (JDK from Android Studio), `assembleRelease`
+- Manual on the phone (hidden display captures only with owner consent).
+
+TDD: on (source: project practice in phases 1–2; runners: node:test, JUnit via Gradle).
+
+Delivery: about 900–1200 authored lines forecast; stacked PRs to main per task
+(A1, A2, A3+A4), same strategy as phase 1.
+
+## Progress
+
+- 2026-11-25: exploration done (explore-1 app map, explore-2 server map). Branch created.
+- 2026-11-25: A1 done (work-1) 419f36c. 879 app tests pass (11 new). Review fix: summary omits "· 0 importantes" (importance arrives later from the PC).
+  `clearCapturedFromShade` setting (default on, DataStore key
+  `inbox_clear_captured_from_shade`), shade rule in `InboxShadePolicy`
+  (ACCEPTED + setting, or silenced), generic safe `cancelCapturedNotification`,
+  silent summary in `InboxNotifier` + process-wide `InboxCaptureSummary`
+  (reset when Alertas opens). RED: new tests failed to compile on the missing
+  APIs; GREEN: 879 app unit tests, 0 failures (11 new); `assembleDebug` green.
+- 2026-11-25: A2 done. Agent contract uses a boolean `promotion` (explicit A2
+  instruction) instead of a category enum; the parser forces promotion ->
+  importance low + empty suggestedReply, missing/invalid -> false. Store
+  persists the flag (old files decode false) and owns `openPromotions` /
+  `closePromotions`. Digest scope `scope\0promotions` reuses the conversation
+  caps, untrusted blocks and hash cache; prompt asks for offer bullets and flags
+  possible non-promotions, never a reply. `POST /api/v1/inbox/digest
+  {scope:"promotions"}` (and `GET ?scope=promotions`), `POST
+  /api/v1/inbox/promotions/state {state:"handled"}` closes all and drops the
+  digest. App: `InboxItem.promotion`, grouping pulls promotions into one last
+  group (`PROMOTIONS_KEY`), one "Promociones" card (count line, app chips,
+  Resumir, Ver todas, Marcar todo revisado, no reply buttons), reminder/
+  auto-reply policy skips promotions. RED: app compile failed on the missing
+  promotion APIs; GREEN: server 870/870 (13 new), app 892/892 (13 new),
+  `assembleDebug` green.
+- 2026-11-25: A3 done (server earlier by work-2; app now). App:
+  `InboxItem.interaction` + `InboxInteraction`/`InboxInteractionStatus`
+  (all fields defaulted) and `InboxInteractionRequest`;
+  `IduPiClient.interactWithInboxItem(id, instruction, projectId?)` posting to
+  `/api/v1/inbox/{id}/interact` (202 -> `{interaction}`, projects reused from
+  `getProjects`); `AlertsViewModel.interact`/`retryInteraction` start an
+  optimistic `running` block and let the existing 10 s poll finish it; a
+  running -> done transition posts `InboxAgentAnswer` ("Respuesta del agente
+  lista", first instruction line, tap opens Alertas) once per answer (a done
+  item on first load never pings, failures stay silent); "Interactuar" button
+  in the actions FlowRow of the single-item and conversation cards (never on
+  Promociones) opens an `AgentInteractionSheet` (instruction field, optional
+  project dropdown, "Enviar al agente"); running/done/failed render inline
+  (progress, "Respuesta del agente · proyecto" + SelectionContainer + Copiar,
+  short error + Reintentar). RED: app compile failed on the missing APIs;
+  GREEN: app 905/905 with `testDebugUnitTest assembleDebug` (13 new: 4
+  `InboxAgentAnswerTest`, 3 model, 6 ViewModel cases), 0 failures.
+- 2026-11-25: A3 server verified. `POST /api/v1/inbox/{id}/interact` (202
+  `running`; 404 unknown item; 400 invalid instruction/project/unsupported
+  agent) resolves the project against the live registry and requires a real
+  directory, enqueues on its own serial chain (analysis keeps flowing), and a new
+  interaction supersedes a late answer. `inbox-store` persists/revalidates
+  `interaction` (old files decode null, caps enforced). Read-only profiles:
+  opencode `OPENCODE_CONFIG_CONTENT` (read/glob/grep only; `external_directory`
+  and `*.env*` denied), claude `--allowedTools "Read Grep Glob"` +
+  `--permission-mode dontAsk` + `--disallowedTools` Bash/Edit/Write/NotebookEdit/
+  WebFetch/WebSearch/Task, codex `--sandbox read-only` + `approval_policy=never`,
+  pi `--tools read,grep,find,ls --no-mcp --no-extensions --no-context-files`
+  (checked against `pi --help`). 5 min timeout, 6000-char answer cap, safe error
+  text; the prompt keeps the alert in a sanitized `<untrusted_message>` and the
+  owner instruction outside it. GREEN: server 895/895 (25 new), app 905/905,
+  `assembleDebug` green.
+
+- 2026-11-25: A3 b2f2043 (server work-1, app work-2 after work-1 stalled). Independent audit (audit-1) found 6 candidates; fixes 6587955 (work-2): delimiter forgery, no project -> no tools, secret paths denied + IDUPI token stripped from env, codex/pi refused, superseded jobs skipped. Server 903 pass, app 905 pass. INCIDENT: the read-only auditor ran `git reset HEAD~1` at 18:01 (reflog); no code lost, history rebuilt as b2f2043 + 6587955. Check `git reflog` after every delegated audit.
+
+- 2026-11-25: A4 app done (server already in 62f3b8a). Models: `InboxItem.technical`
+  / `projectHint`, `InboxInteraction.auto`, `InboxConfig.proactive` (all defaulted,
+  old docs decode; `encodeDefaults=false` keeps them off the wire). `updateInboxConfig`
+  takes an optional `proactive` (null = keep), sent as a hand-built JSON body so a
+  null is omitted, not encoded as `null` the server rejects. Ajustes > ALERTAS has
+  "Alertas proactivas" + helper under the effort dropdown, saved with the same
+  Guardar. `InboxReadyReply` (pure) qualifies open + non-promotion + high + ready +
+  non-blank draft + live reply action, clips the summary to 120 chars; `AlertsViewModel`
+  pings once per id via `InboxNotifier.showReadyReply` with a bounded (200) set and
+  prunes nothing, so a card that leaves and returns never re-pings. The A3
+  running->done answer ping now covers `auto` interactions too (new test). Card header:
+  `interactionHeader` moved to `InboxFormat.kt`, "IDUPI revisó esto por ti" for auto
+  (+ " · proyecto"). RED: `RealIduPiClient` did not implement the new signature;
+  GREEN: app 929/929 (24 new incl. a pre-existing missing import in
+  `InboxFormatTest`), `testDebugUnitTest assembleDebug` green. Not committed (A5).
+
+- 2026-11-25: A4 server 62f3b8a + app 38e11ef (work-2; first run crashed exit 8 after server GREEN). A5: 1.50-alertas (versionCode 51) built, same signing cert, auto-pushed to the phone (dlv-ff0a32e2c3bc). Server 918 pass, app 929 pass. Server restart pending (this Claude session lives in an IDUPI PTY).
+
+- 2026-11-25: live check. acb8539 points the agent PWD at its working dir. Server
+  restarted; 1.50 delivered off-LAN through the server (dlv-a183f1bb0835, phone on
+  Tailscale) and installed. Owner tried Promociones and Interactuar on the phone.
+  Project review verified from the PC: interact with project `idupi` answered in
+  38 s, citing `idupi-server/lib/inbox-routes.mjs` and the read-only tool profile.
+
+## Next step
+
+Merge PR #27, publish release v1.50, then start block B (phone agent with an approval queue).

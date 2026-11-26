@@ -28,7 +28,14 @@ data class InboxSettings(
      * reminders, so the owner can read a busy group without the notifications.
      * The source app's own mute must be OFF: a muted chat posts nothing.
      */
-    val silencedConversations: Set<String> = emptySet()
+    val silencedConversations: Set<String> = emptySet(),
+    /**
+     * Remove captured notifications from the phone shade (alerts-flow A1).
+     * A capture leaves the shade only after the PC accepted the upload, so an
+     * offline phone keeps it visible. Default ON: IDUPI's single silent
+     * summary replaces the pile.
+     */
+    val clearCapturedFromShade: Boolean = true
 ) {
 
     companion object {

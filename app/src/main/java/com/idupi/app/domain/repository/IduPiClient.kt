@@ -134,7 +134,16 @@ interface IduPiClient {
     suspend fun setInboxItemState(id: String, state: String): InboxItem
     suspend fun retryInboxItem(id: String): InboxItem
     suspend fun getInboxConfig(): InboxConfig
-    suspend fun updateInboxConfig(agent: String, model: String, effort: String): InboxConfig
+    /**
+     * [proactive] (alerts-flow A4) is optional: null keeps whatever the PC has,
+     * so a caller that only changes the agent never turns the feature off.
+     */
+    suspend fun updateInboxConfig(
+        agent: String,
+        model: String,
+        effort: String,
+        proactive: Boolean? = null
+    ): InboxConfig
     /** Empty list for agents whose catalog the server does not cache yet. */
     suspend fun getInboxModels(agent: String): List<String>
 
@@ -144,8 +153,34 @@ interface IduPiClient {
     suspend fun requestInboxDigest(app: String, conversation: String): InboxDigest
     suspend fun getInboxDigest(app: String, conversation: String): InboxDigest
 
+    /**
+     * Promotions digest (alerts-flow A2): one summary over every open
+     * promotion in every app, cached by the server until the promotions
+     * change. It never suggests a reply.
+     */
+    suspend fun requestInboxPromotionsDigest(): InboxDigest
+    suspend fun getInboxPromotionsDigest(): InboxDigest
+
     /** Closes every open item of one chat as `handled` or `dismissed`. */
     suspend fun setInboxConversationState(app: String, conversation: String, state: String): Int
+
+    /**
+     * Interactuar (alerts-flow A3): hands one owner instruction to the PC agent,
+     * which works in [projectId] (or in no project when null) with read-only
+     * tools. The server answers 202 with the item's `running` interaction; the
+     * answer arrives later on the item and polling picks it up.
+     */
+    suspend fun interactWithInboxItem(
+        id: String,
+        instruction: String,
+        projectId: String? = null
+    ): InboxItem
+
+    /**
+     * Closes every open promotion in one call (`handled`); returns how many
+     * items left the list.
+     */
+    suspend fun setInboxPromotionsState(state: String): Int
 
     // Phone status reporting (phone-agent T2). The server stores the snapshot
     // as the phone's latest state and its history; the body field names are the

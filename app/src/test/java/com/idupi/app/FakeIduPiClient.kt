@@ -5,6 +5,7 @@ import com.idupi.app.domain.model.FileNode
 import com.idupi.app.domain.model.InboxConfig
 import com.idupi.app.domain.model.InboxConversationStateResult
 import com.idupi.app.domain.model.InboxDigest
+import com.idupi.app.domain.model.InboxDigestScope
 import com.idupi.app.domain.model.InboxItem
 import com.idupi.app.domain.model.InboxItemState
 import com.idupi.app.domain.model.InboxMessageRequest
@@ -544,6 +545,7 @@ class FakeIduPiClient : IduPiClient {
     val retriedInboxIds = mutableListOf<String>()
     var lastRequestedInboxLimit: Int? = null
     var lastInboxConfigUpdate: Triple<String, String, String>? = null
+    var lastInboxConfigProactive: Boolean? = null
     var lastRequestedInboxModelsAgent: String? = null
 
     override suspend fun postInboxMessage(message: InboxMessageRequest): InboxItem {
@@ -581,15 +583,57 @@ class FakeIduPiClient : IduPiClient {
         return inboxRetryResult ?: InboxItem(id = id, status = "analyzing")
     }
 
+    // --- Interactuar (alerts-flow A3) --------------------------------------
+
+    /** One owner instruction sent to POST /inbox/{id}/interact. */
+    data class InteractionRequest(
+        val id: String,
+        val instruction: String,
+        val projectId: String?
+    )
+
+    var interactionResult: InboxItem? = null
+    var failInteractionWith: Throwable? = null
+    val interactionRequests = mutableListOf<InteractionRequest>()
+
+    override suspend fun interactWithInboxItem(
+        id: String,
+        instruction: String,
+        projectId: String?
+    ): InboxItem {
+        failInteractionWith?.let { throw it }
+        maybeFail()
+        interactionRequests += InteractionRequest(id, instruction, projectId)
+        return interactionResult ?: InboxItem(
+            id = id,
+            interaction = com.idupi.app.domain.model.InboxInteraction(
+                status = com.idupi.app.domain.model.InboxInteractionStatus.RUNNING,
+                instruction = instruction,
+                projectId = projectId
+            )
+        )
+    }
+
     override suspend fun getInboxConfig(): InboxConfig {
         maybeFail()
         return inboxConfigToReturn
     }
 
-    override suspend fun updateInboxConfig(agent: String, model: String, effort: String): InboxConfig {
+    override suspend fun updateInboxConfig(
+        agent: String,
+        model: String,
+        effort: String,
+        proactive: Boolean?
+    ): InboxConfig {
         maybeFail()
         lastInboxConfigUpdate = Triple(agent, model, effort)
-        inboxConfigToReturn = inboxConfigToReturn.copy(agent = agent, model = model, effort = effort)
+        lastInboxConfigProactive = proactive
+        inboxConfigToReturn = inboxConfigToReturn.copy(
+            agent = agent,
+            model = model,
+            effort = effort,
+            proactive = proactive ?: inboxConfigToReturn.proactive
+        )
         return inboxConfigToReturn
     }
 
@@ -640,6 +684,52 @@ class FakeIduPiClient : IduPiClient {
         maybeFail()
         inboxConversationStates += Triple(app, conversation, state)
         return inboxConversationStateResult.closed
+    }
+
+    // --- Promotions digest and bulk close (alerts-flow A2) ---
+
+    /** When set, promotions digest requests/fetches return it. */
+    var inboxPromotionsDigestToReturn: InboxDigest? = null
+    var inboxPromotionsStateResult: InboxConversationStateResult =
+        InboxConversationStateResult()
+
+    /** When set, only the promotions bulk close throws it. */
+    var failInboxPromotionsStateWith: Throwable? = null
+
+    var promotionsDigestRequests: Int = 0
+    var promotionsDigestFetches: Int = 0
+
+    /** States sent to POST /inbox/promotions/state. */
+    val inboxPromotionsStates = mutableListOf<String>()
+
+    override suspend fun requestInboxPromotionsDigest(): InboxDigest {
+        failInboxDigestWith?.let { throw it }
+        maybeFail()
+        promotionsDigestRequests += 1
+        return inboxPromotionsDigestToReturn ?: InboxDigest(
+            app = "scope",
+            conversation = InboxDigestScope.PROMOTIONS,
+            scope = InboxDigestScope.PROMOTIONS,
+            status = "analyzing"
+        )
+    }
+
+    override suspend fun getInboxPromotionsDigest(): InboxDigest {
+        failInboxDigestWith?.let { throw it }
+        maybeFail()
+        promotionsDigestFetches += 1
+        return inboxPromotionsDigestToReturn ?: InboxDigest(
+            app = "scope",
+            conversation = InboxDigestScope.PROMOTIONS,
+            scope = InboxDigestScope.PROMOTIONS
+        )
+    }
+
+    override suspend fun setInboxPromotionsState(state: String): Int {
+        failInboxPromotionsStateWith?.let { throw it }
+        maybeFail()
+        inboxPromotionsStates += state
+        return inboxPromotionsStateResult.closed
     }
 
     // --- Phone status reporting (phone-agent T2) ---

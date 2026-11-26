@@ -86,6 +86,47 @@ object InboxImportance {
     const val LOW = "low"
 }
 
+/** Interactuar job states the server persists with the item (`INTERACTION_STATUSES`). */
+object InboxInteractionStatus {
+    const val RUNNING = "running"
+    const val DONE = "done"
+    const val FAILED = "failed"
+
+    val ALL = listOf(RUNNING, DONE, FAILED)
+}
+
+/**
+ * alerts-flow A3: one owner instruction handed to the PC agent, with the
+ * answer it produced. The server keeps it on the item (`interaction`), so the
+ * card can show progress and the result across polls and app restarts.
+ *
+ * Every field has a default: an item written by an older server has no block
+ * at all, and one written by a newer server may carry fields this build does
+ * not know. Nothing here is sent back to the server.
+ */
+@Serializable
+data class InboxInteraction(
+    /** One of [InboxInteractionStatus]; empty when the server sent no status. */
+    val status: String = "",
+    /** The owner's own instruction, trimmed by the server. */
+    val instruction: String = "",
+    /** Linked project the agent worked in; null when the owner picked none. */
+    val projectId: String? = null,
+    val projectName: String? = null,
+    /** The agent's answer; empty while running and after a failure. */
+    val answer: String = "",
+    val startedAt: String? = null,
+    val finishedAt: String? = null,
+    val error: String? = null,
+    /**
+     * alerts-flow A4: IDUPI started this investigation by itself because a
+     * high technical alert matched a project. The card says so and the owner
+     * reviews the result like any other answer. Missing on jobs from an older
+     * server, which decode as false.
+     */
+    val auto: Boolean = false
+)
+
 /**
  * One captured notification plus the agent's analysis of it.
  *
@@ -124,6 +165,43 @@ data class InboxItem(
     val event: InboxEvent? = null,
     /** Existing events that overlap [event]; the card shows them as a warning. */
     val eventConflicts: List<InboxEventConflict> = emptyList(),
+    /**
+     * alerts-flow A2: the agent classified this as marketing, an offer, a
+     * newsletter or a bulk notification. Promotions never render as an
+     * individual pending card and never trigger reminders. Missing on items
+     * from an older server, which decode as false.
+     */
+    val promotion: Boolean = false,
+    /**
+     * alerts-flow A4: the agent read a build/deploy/CI failure, an app or
+     * server error, or a security/infrastructure notice. Only technical
+     * alerts can start an investigation by themselves. Missing on items from
+     * an older server, which decode as false.
+     */
+    val technical: Boolean = false,
+    /**
+     * alerts-flow A4: the repo, service or project name the alert mentions,
+     * one line and at most 80 characters; empty when none is named. The PC
+     * matches it against the linked projects.
+     */
+    val projectHint: String = "",
+    /**
+     * alerts-flow A3: the latest owner instruction and the agent's answer.
+     * Null on items that were never handed to the agent (and on items from an
+     * older server, which decode as null).
+     */
+    val interaction: InboxInteraction? = null,
+)
+
+/**
+ * `POST /api/v1/inbox/{id}/interact` body (alerts-flow A3). The instruction is
+ * the owner's trusted text; [projectId] names a linked project the read-only
+ * agent works in, or is omitted when the owner picked "Ninguno".
+ */
+@Serializable
+data class InboxInteractionRequest(
+    val instruction: String,
+    val projectId: String? = null
 )
 
 /**
@@ -155,12 +233,17 @@ data class InboxMessageRequest(
 /**
  * `GET|PUT /api/v1/inbox/config`: the agent/model/effort the PC uses for
  * analysis. `agents` and `efforts` are only populated by the server.
+ *
+ * [proactive] (alerts-flow A4) lets the PC start work by itself for important
+ * alerts; it defaults to true so a server that does not send it (or an older
+ * app that never sends the field) keeps the feature on.
  */
 @Serializable
 data class InboxConfig(
     val agent: String = "",
     val model: String = "",
     val effort: String = "",
+    val proactive: Boolean = true,
     val agents: List<String> = emptyList(),
     val efforts: List<String> = emptyList()
 )
