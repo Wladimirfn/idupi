@@ -50,11 +50,11 @@ every outbound or irreversible step goes through the approval queue (B1).
 
 ## Tasks
 
-- [ ] T1 Server: turn store + routes (POST 202, GET long-poll, list), auth,
+- [x] T1 Server: turn store + routes (POST 202, GET long-poll, list), auth,
       validation (text <= 2000 chars), serialized chain + supersede. Tests.
-- [ ] T2 Server: phone agent profile in the runner (CLI-only allowlist), prompt
+- [x] T2 Server: phone agent profile in the runner (CLI-only allowlist), prompt
       with trusted/untrusted split, step budget, answer cap, injection tests.
-- [ ] T3 Server: safety rails (budget exhaustion, redacted logs: ids only),
+- [x] T3 Server: safety rails (budget exhaustion, redacted logs: ids only),
       docs `idupi-server/docs/phone.md` "Bubble agent turns". Tests.
 - [ ] T4 App: bubble overlay in the accessibility service (pill, drag + snap,
       expanded panel, text input), setting "Burbuja de IDUPI" (default off).
@@ -90,7 +90,25 @@ stacked on #28 with `size:exception`, same as #27/#28.
 ## Progress
 
 - 2026-11-26: exploration done (explore-1). Branch created on feat/phone-approvals.
+- 2026-11-26: T1 green. RED: the new store and route tests failed with
+  `ERR_MODULE_NOT_FOUND` (modules absent). GREEN: 19 targeted tests (9 store +
+  10 routes). `phone-agent-turns.json`, `pat-` ids, last 20 turns, text 1..2000;
+  POST 202 / 400 / 503, long poll `wait=0..30`, list 1..20; a new turn cancels
+  the previous queued/running one and aborts its signal.
+  Commit `4290674`.
+- 2026-11-26: T2 green. RED: `phone-agent.test.mjs` failed with
+  `ERR_MODULE_NOT_FOUND`. GREEN: 14 tests. Claude-only profile:
+  `Bash(node <abs>/idupi-phone.mjs:*)`, `dontAsk`, strict MCP with an empty
+  config, empty temp cwd, `IDUPI_*TOKEN*` scrubbed (the CLI reads
+  `.idupi-token` itself), stream-json frames become `cli` steps.
+  Commit `b5169e1`.
+- 2026-11-26: T3 green. RED: the 16th-call test hung until the 5 min turn
+  timeout because nothing enforced the budget. GREEN: 27 targeted tests (11
+  routes + 16 agent) and `node --test idupi-server/test/*.test.mjs` = 988 pass,
+  0 fail. The 16th CLI call kills the child and fails the turn; route logs carry
+  ids and statuses only; docs section "Bubble agent turns".
+  Commit `ffddd2a`.
 
 ## Next step
 
-T1 server: turn store and routes.
+T4 app: bubble overlay.
