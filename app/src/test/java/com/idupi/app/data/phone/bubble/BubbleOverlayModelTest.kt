@@ -213,4 +213,42 @@ class BubbleOverlayModelTest {
         assertTrue(collapsed.flags and BubbleWindowSpecs.FLAG_LAYOUT_NO_LIMITS != 0)
         assertEquals(0, expanded.flags and BubbleWindowSpecs.FLAG_LAYOUT_NO_LIMITS)
     }
+
+    // --- keyboard and navigation (T16) ------------------------------------
+
+    @Test
+    fun `the expanded panel watches outside touches`() {
+        val collapsed = BubbleWindowSpecs.forMode(BubbleMode.COLLAPSED, 0, 1080, 1920, 2f)
+        val expanded = BubbleWindowSpecs.forMode(BubbleMode.EXPANDED, 0, 1080, 1920, 2f)
+
+        assertTrue(
+            expanded.flags and BubbleWindowSpecs.FLAG_WATCH_OUTSIDE_TOUCH != 0,
+        )
+        assertEquals(
+            0,
+            collapsed.flags and BubbleWindowSpecs.FLAG_WATCH_OUTSIDE_TOUCH,
+        )
+    }
+
+    @Test
+    fun `releasing focus makes the expanded window non focusable`() {
+        val expanded = BubbleWindowSpecs.forMode(BubbleMode.EXPANDED, 0, 1080, 1920, 2f)
+        val released = BubbleWindowSpecs.withFocus(expanded, focusable = false)
+
+        assertFalse(released.focusable)
+        assertTrue(released.flags and notFocusable != 0)
+    }
+
+    @Test
+    fun `taking focus back restores the expanded flags`() {
+        val expanded = BubbleWindowSpecs.forMode(BubbleMode.EXPANDED, 0, 1080, 1920, 2f)
+        val restored = BubbleWindowSpecs.withFocus(
+            BubbleWindowSpecs.withFocus(expanded, focusable = false),
+            focusable = true,
+        )
+
+        assertTrue(restored.focusable)
+        assertEquals(0, restored.flags and notFocusable)
+        assertEquals(expanded, restored)
+    }
 }

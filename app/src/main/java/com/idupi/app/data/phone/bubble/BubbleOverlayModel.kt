@@ -65,6 +65,15 @@ object BubbleWindowSpecs {
      */
     const val FLAG_LAYOUT_NO_LIMITS = 0x00000200
 
+    /**
+     * `WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH` (0x00040000).
+     *
+     * Only the expanded panel asks for it: a touch outside the card must reach
+     * the bubble so it can hide the keyboard and release window focus (T16).
+     * The collapsed pill has nothing to release.
+     */
+    const val FLAG_WATCH_OUTSIDE_TOUCH = 0x00040000
+
     fun forMode(
         mode: BubbleMode,
         baseFlags: Int,
@@ -86,11 +95,31 @@ object BubbleWindowSpecs {
             BubbleWindowSpec(
                 width = minOf(dp(PANEL_WIDTH_DP, density), (screenWidthPx - margin).coerceAtLeast(1)),
                 height = minOf(dp(PANEL_HEIGHT_DP, density), (screenHeightPx - margin).coerceAtLeast(1)),
-                flags = (baseFlags and FLAG_LAYOUT_NO_LIMITS.inv()) and FLAG_NOT_FOCUSABLE.inv(),
+                flags = ((baseFlags and FLAG_LAYOUT_NO_LIMITS.inv()) and
+                    FLAG_NOT_FOCUSABLE.inv()) or FLAG_WATCH_OUTSIDE_TOUCH,
                 focusable = true,
             )
         }
     }
+
+    /**
+     * Applies the owner's focus choice to an expanded spec (T16): dropping
+     * `FLAG_NOT_FOCUSABLE` lets the field take the IME; re-adding it gives
+     * BACK and system navigation back to the app behind. Pure so the toggle is
+     * tested instead of only felt on the phone.
+     */
+    fun withFocus(spec: BubbleWindowSpec, focusable: Boolean): BubbleWindowSpec =
+        if (focusable) {
+            spec.copy(
+                flags = spec.flags and FLAG_NOT_FOCUSABLE.inv(),
+                focusable = true,
+            )
+        } else {
+            spec.copy(
+                flags = spec.flags or FLAG_NOT_FOCUSABLE,
+                focusable = false,
+            )
+        }
 
     private fun dp(value: Int, density: Float): Int =
         (value * density).roundToInt().coerceAtLeast(1)

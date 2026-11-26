@@ -14,6 +14,7 @@ import android.text.InputType
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -112,6 +113,9 @@ class PhoneBubbleOverlay(
      * until the first expansion, which centers the panel horizontally.
      */
     private var panelPosition: Pair<Int, Int>? = null
+
+    /** Keyboard and window-focus state of the expanded panel (T16). */
+    private var focusState = BubbleFocusState()
 
     /** Whether the window is currently tucked half off its edge (T10). */
     private var docked = false
@@ -233,7 +237,10 @@ class PhoneBubbleOverlay(
             screen.second,
         )
         collapsedPosition = position
-        val view = FrameLayout(service)
+        val view = BubbleRootLayout(service).apply {
+            onBack = { handleFocusEvent(BubbleFocusEvent.BACK_PRESSED) }
+            onOutsideTouch = { handleFocusEvent(BubbleFocusEvent.OUTSIDE_TOUCH) }
+        }
         val layoutParams = WindowManager.LayoutParams(
             spec.width,
             spec.height,
@@ -278,6 +285,7 @@ class PhoneBubbleOverlay(
         dockAnimator?.cancel()
         dockAnimator = null
         controller.close()
+        focusState = BubbleFocusState()
         val view = root ?: return
         root = null
         params = null
@@ -651,9 +659,23 @@ class PhoneBubbleOverlay(
                     false
                 }
             }
+            // A tap is the owner asking for the keyboard again after an outside
+            // touch released the window focus (T16). Returning false lets the
+            // EditText process the same gesture normally.
+            setOnTouchListener { _, event ->
+                if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                    handleFocusEvent(BubbleFocusEvent.FIELD_TAPPED)
+                }
+                false
+            }
         }
         val send = filledButton("Enviar") { sendDraft() }
         val dictate = glassButton("Dictar") { launchDictation() }
+        val hideKeyboard = glassButton(HIDE_KEYBOARD_GLYPH) {
+            handleFocusEvent(BubbleFocusEvent.HIDE_KEYBOARD)
+        }.apply {
+            contentDescription = BubbleFocusReducer.HIDE_KEYBOARD_DESCRIPTION
+        }
         val buttons = LinearLayout(service).apply {
             orientation = LinearLayout.HORIZONTAL
             layoutParams = LinearLayout.LayoutParams(
@@ -663,6 +685,13 @@ class PhoneBubbleOverlay(
             addView(send)
             addView(
                 dictate,
+                LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                ).apply { leftMargin = dp(8) },
+            )
+            addView(
+                hideKeyboard,
                 LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT,
                     ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -876,6 +905,7 @@ class PhoneBubbleOverlay(
         )
         panelPosition = position
         mode = BubbleMode.EXPANDED
+        focusState = BubbleFocusState(expanded = true)
         cancelIdleAnimation()
         applyWindow(spec)
         buildPanel()
@@ -885,7 +915,9 @@ class PhoneBubbleOverlay(
 
     private fun collapse() {
         hideKeyboard()
+        input?.clearFocus()
         controller.close()
+        focusState = BubbleFocusState()
         val screen = screenSize()
         val spec = BubbleWindowSpecs.forMode(
             BubbleMode.COLLAPSED,
@@ -922,6 +954,67 @@ class PhoneBubbleOverlay(
     private fun hideKeyboard() {
         val manager = service.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
         input?.let { manager?.hideSoftInputFromWindow(it.windowToken, 0) }
+    }
+
+    // --- keyboard and navigation (T16) ------------------------------------
+
+    /**
+     * Runs the pure [BubbleFocusReducer] and applies its actions. Called from
+     * the root view's key/touch dispatch and from the panel controls, all on the
+     * main thread, so every [WindowManager] call below stays there.
+     *
+     * @return true when the bubble consumed the event (BACK must not reach the
+     *   system then).
+     */
+    private fun handleFocusEvent(event: BubbleFocusEvent): Boolean {
+        val decision = BubbleFocusReducer.reduce(focusState, event)
+        if (!decision.handled) return false
+        focusState = decision.state
+        decision.actions.forEach(::applyFocusAction)
+        return true
+    }
+
+    private fun applyFocusAction(action: BubbleFocusAction) {
+        when (action) {
+            BubbleFocusAction.HideKeyboard -> hideKeyboard()
+            BubbleFocusAction.ClearFieldFocus -> input?.clearFocus()
+            BubbleFocusAction.ReleaseWindowFocus -> setWindowFocusable(false)
+            BubbleFocusAction.AcquireWindowFocus -> setWindowFocusable(true)
+            BubbleFocusAction.RequestFieldFocus -> input?.requestFocus()
+            BubbleFocusAction.ShowKeyboard -> showKeyboard()
+            BubbleFocusAction.CollapsePanel -> collapse()
+        }
+    }
+
+    /**
+     * Toggles `FLAG_NOT_FOCUSABLE` on the live expanded window. Releasing focus
+     * gives BACK and system navigation back to the app behind; taking it back
+     * lets the IME reach the field again.
+     */
+    private fun setWindowFocusable(focusable: Boolean) {
+        if (mode != BubbleMode.EXPANDED) return
+        val layoutParams = params ?: return
+        val view = root ?: return
+        val effective = BubbleWindowSpecs.withFocus(currentSpec(screenSize()), focusable)
+        layoutParams.flags = effective.flags
+        applyBlur(layoutParams)
+        try {
+            windowManager.updateViewLayout(view, layoutParams)
+        } catch (error: Exception) {
+            Log.w(TAG, "could not toggle bubble focus: ${error.javaClass.simpleName}")
+        }
+    }
+
+    /** Posted so it runs after the window has accepted the focus flag change. */
+    private fun showKeyboard() {
+        val field = input ?: return
+        field.post {
+            // An outside touch may have released focus before this ran.
+            if (!focusState.windowFocusable) return@post
+            val manager =
+                service.getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
+            manager?.showSoftInput(field, InputMethodManager.SHOW_IMPLICIT)
+        }
     }
 
     // --- edge docking (T10) -----------------------------------------------
@@ -1114,11 +1207,18 @@ class PhoneBubbleOverlay(
 
     private fun applyWindow(spec: BubbleWindowSpec) {
         val layoutParams = params ?: return
-        layoutParams.width = spec.width
-        layoutParams.height = spec.height
-        layoutParams.flags = spec.flags
+        val effective = if (mode == BubbleMode.EXPANDED) {
+            // A released window keeps FLAG_NOT_FOCUSABLE across drags, rotations
+            // and theme rebuilds until the owner taps the field again (T16).
+            BubbleWindowSpecs.withFocus(spec, focusState.windowFocusable)
+        } else {
+            spec
+        }
+        layoutParams.width = effective.width
+        layoutParams.height = effective.height
+        layoutParams.flags = effective.flags
         applyBlur(layoutParams)
-        layoutParams.x = windowX(spec)
+        layoutParams.x = windowX(effective)
         layoutParams.y = position.second
         val view = root ?: return
         try {
@@ -1252,7 +1352,42 @@ class PhoneBubbleOverlay(
         /** Fill of the semantic approval banner; the stroke carries the colour. */
         private const val WARNING_FILL_ALPHA = 0.22f
 
+        /** Compact keyboard glyph on the hide-keyboard glass button. */
+        private const val HIDE_KEYBOARD_GLYPH = "⌨"
+
         /** White "!" on the red approval dot. */
         private val COLOR_ON_ERROR = 0xFFFFFFFF.toInt()
+    }
+}
+
+/**
+ * Root view of the overlay window. A focusable accessibility overlay receives
+ * BACK itself instead of the app behind (T16), so the root intercepts it before
+ * any focused child and lets the bubble decide. An outside touch is delivered
+ * only because the expanded spec sets `FLAG_WATCH_OUTSIDE_TOUCH`.
+ */
+private class BubbleRootLayout(context: Context) : FrameLayout(context) {
+
+    var onBack: (() -> Boolean)? = null
+    var onOutsideTouch: (() -> Unit)? = null
+
+    private var backConsumed = false
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                backConsumed = onBack?.invoke() == true
+            }
+            return backConsumed
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        if (event.actionMasked == MotionEvent.ACTION_OUTSIDE) {
+            onOutsideTouch?.invoke()
+            return true
+        }
+        return super.dispatchTouchEvent(event)
     }
 }
