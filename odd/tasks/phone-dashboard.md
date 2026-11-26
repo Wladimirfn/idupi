@@ -1,0 +1,93 @@
+# Phone on the Dashboard + "optimiza mi teléfono"
+
+Locator: `odd/tasks/phone-dashboard.md` · Engram mirror: `odd/phone-dashboard/tasks`
+Branch: `feat/phone-dashboard` (stacked on `feat/assistant-key`, PR #31)
+
+## Objective
+
+The Dashboard shows the phone next to the PC (swipe sideways or chips at the
+top), and the owner can ask "optimiza mi teléfono" (by voice or text, from the
+bubble or a button on the phone page) so the agent frees storage and RAM,
+asking approval for anything it deletes.
+
+## Evidence (exploration 2026-11-26, explore-1)
+
+- `ui/screens/DashboardScreen.kt:83` shows PC metrics only (CPU, RAM, GPU,
+  disks via `/api/v1/system/metrics`, 2 s poll); no device pager or selector.
+- The phone already collects battery, signal, network, RAM (`MemoryInfo`),
+  storage (`StatFs`), foreground app and top apps today
+  (`data/phone/PhoneStatusCollectors.kt`), reported every 60 s to
+  `POST /api/v1/phone/status`; the app never displays it.
+- `StorageStatsManager` (per-app size and cache) is used nowhere; it needs
+  usage access, which the app already declares and the owner granted.
+- Bubble agent: Claude only, `idupi-phone` CLI (status, screen, tap, type,
+  scroll, global, open, wait), max 15 CLI calls per turn
+  (`idupi-server/lib/phone-agent.mjs:59`). "eliminar/borrar/delete" taps are
+  gated (destructive) and are not voice-approvable today (T23 = messaging only).
+
+## Owner decisions (2026-11-26)
+
+- Optimization mode: the agent acts and asks approval for anything it deletes
+  (option 1). Requests can be by voice or text.
+- Layout: PC · Teléfono chips at the top plus sideways swipe (owner described
+  both).
+
+## Design
+
+- Phone page reads locally on the phone (no server round trip): storage,
+  RAM, battery, network, largest apps (app + cache size), most used today.
+- "Optimizar" button starts a bubble turn with "Optimiza mi teléfono" (same as
+  asking the bubble), so progress and approvals show in the bubble.
+- Agent playbook (server prompt): read status incl. largest apps; Samsung
+  "Cuidado del dispositivo" -> "Optimizar ahora" (other OEMs: their cleaner or
+  Settings > Storage); clear cache of the largest caches via Settings > Apps >
+  <app> > Almacenamiento > "Borrar caché" (never "Borrar datos"); suggest
+  uninstalling unused apps and only do it with approval; finish with the space
+  freed (status before/after).
+- Approvals: during an owner bubble turn, destructive cache/uninstall steps
+  are asked in the bubble (voice + Aprobar/Rechazar buttons) naming the app and
+  size; money never by voice; anything else keeps the notification.
+
+## Tasks
+
+- [ ] T1 App: phone snapshot for the dashboard (reuse collectors) + per-app
+      storage via `StorageStatsManager` (largest apps with app/cache bytes,
+      pure mapping/sorting) + tests.
+- [ ] T2 App: Dashboard "PC · Teléfono" chips + `HorizontalPager`; phone page
+      cards (storage, RAM, battery, network, largest apps, most used today);
+      "Optimizar" button starting the bubble turn; pure state tests.
+- [ ] T3 Server: phone status gains largest apps; optimization playbook in the
+      phone agent prompt; CLI budget per turn raised for optimization; tests.
+- [ ] T4 App: bubble approval for owner-turn cache/uninstall steps (voice,
+      naming app and size) + Aprobar/Rechazar buttons on every bubble approval
+      prompt; money never voiced; tests.
+- [ ] T5 Release: version bump, assembleRelease, install, owner live check
+      ("optimiza mi teléfono" by voice and by text), PR.
+
+## Acceptance criteria
+
+- Swiping or tapping "Teléfono" on the Dashboard shows live phone metrics.
+- "Optimiza mi teléfono" (voice, text or button) runs the optimization; every
+  deletion is approved by the owner in the bubble; the answer says how much
+  space was freed.
+- Nothing is deleted without approval; "Borrar datos" is never tapped.
+
+## Checks
+
+- App: `./gradlew :app:testDebugUnitTest`, `:app:assembleDebug`.
+- Server: `node --test idupi-server/test/*.test.mjs`.
+- On-device check over adb.
+
+TDD: on (source: project practice; runners: JUnit via Gradle, node:test).
+
+Delivery: forecast ~1200 authored lines; strategy `exception-ok` (project
+precedent), one PR stacked on #31.
+
+## Progress
+
+- 2026-11-26: exploration done; owner chose "act and ask approval"; branch
+  created on `feat/assistant-key`.
+
+## Next step
+
+T1 + T2.
