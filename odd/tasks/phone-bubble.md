@@ -153,6 +153,16 @@ every outbound or irreversible step goes through the approval queue (B1).
       A dictated reply to an agent question (T17) that is only a yes/no answer
       is sent directly without the read-back. Typed text is unchanged. Pure
       reply classifier + loop reducer tested.
+- [x] T22 App: in-bubble dictation fails right after granting the microphone
+      (owner 2026-11-26 on 1.56: "No se pudo usar el dictado. Escribe tu
+      pedido."). No adb, so the cause is inferred: T11 prefers
+      `createOnDeviceSpeechRecognizer` on API 31+ and asks for es-CL, which
+      on-device models usually lack (ERROR_LANGUAGE_NOT_SUPPORTED/UNAVAILABLE ->
+      OtherError); a background-microphone refusal is the other candidate.
+      Fix: pure recovery decision tested; on-device failure -> retry once with
+      the standard recognizer (on-device disabled for the service's life);
+      standard-recognizer non-speech failure -> system dictation sheet
+      (`VoiceInputActivity`, works since 1.55); error codes logged.
 - [ ] T12 Release: version bump, assembleRelease (same cert), push, live check,
       PR.
 
@@ -406,6 +416,16 @@ stacked on #28 with `size:exception`, same as #27/#28.
   `880ea31`), assembleRelease, signer SHA-256 matches dlv-33a07717c839, pushed
   as dlv-064e0a4214e9. Includes T11/T17 for the first time on the phone (1.55
   was built before them). Pending: owner live check, PR.
+
+- 2026-11-26: T22 done. Cause confirmed over adb (SM-S928B, API 36): the
+  on-device recognizer (com.google.android.as AiAiSpeechRecognitionService)
+  logged "Speech recognition error type LANGUAGE_PACK_ERROR with error code 12"
+  for es-CL. Writer idu-pi work-1: pure `BubbleRecognizerRecovery` (6 tests),
+  on-device failure retries once with the standard recognizer, standard failure
+  opens the system sheet, codes logged. RED: compile failure on the missing
+  types. Orchestrator re-ran the suite: 127 suites, 1212 tests, 0 failures.
+  Commit `8d027af`; 1.57-burbuja-voz (versionCode 58, `c396b47`) installed
+  over adb. On-device check pending (owner).
 
 ## Next step
 
