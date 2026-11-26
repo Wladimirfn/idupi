@@ -140,6 +140,29 @@ object BubbleOverlayPosition {
         ((screenWidth - width) / 2).coerceAtLeast(0)
 
     /**
+     * Where the expanded panel opens (T15). The first expansion centers it
+     * horizontally at [fallbackY] (the circle's current height); afterwards the
+     * remembered spot wins. Either way the result is clamped to the screen, so
+     * a rotation while the bubble lives can never leave the panel off-screen.
+     */
+    fun panel(
+        rememberedX: Int?,
+        rememberedY: Int?,
+        width: Int,
+        height: Int,
+        screenWidth: Int,
+        screenHeight: Int,
+        fallbackY: Int,
+    ): Pair<Int, Int> = clamped(
+        rememberedX ?: centeredX(width, screenWidth),
+        rememberedY ?: fallbackY,
+        width,
+        height,
+        screenWidth,
+        screenHeight,
+    )
+
+    /**
      * Which vertical edge [x] belongs to. The single predicate behind snapping,
      * docking and undocking, so a dock always returns to the edge it left.
      */

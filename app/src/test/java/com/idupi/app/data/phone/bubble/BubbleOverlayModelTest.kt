@@ -118,6 +118,37 @@ class BubbleOverlayModelTest {
         assertEquals(0, BubbleOverlayPosition.centeredX(640, 400))
     }
 
+    // --- movable panel (T15) ----------------------------------------------
+
+    @Test
+    fun `the first expansion centers the panel and keeps the circle height`() {
+        assertEquals(
+            (1080 - 640) / 2 to 300,
+            BubbleOverlayPosition.panel(null, null, 640, 880, 1080, 1920, fallbackY = 300),
+        )
+    }
+
+    @Test
+    fun `the panel reopens where the owner left it`() {
+        assertEquals(
+            120 to 640,
+            BubbleOverlayPosition.panel(120, 640, 640, 880, 1080, 1920, fallbackY = 0),
+        )
+    }
+
+    @Test
+    fun `a remembered panel position is clamped after a rotation`() {
+        // The new display is narrower and shorter than the remembered spot.
+        assertEquals(
+            0 to 20,
+            BubbleOverlayPosition.panel(900, 900, 640, 880, 500, 900, fallbackY = 0),
+        )
+        assertEquals(
+            0 to 0,
+            BubbleOverlayPosition.panel(-80, -120, 640, 880, 500, 900, fallbackY = 0),
+        )
+    }
+
     // --- edge docking (T10) -----------------------------------------------
 
     @Test

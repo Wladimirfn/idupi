@@ -107,6 +107,12 @@ class PhoneBubbleOverlay(
     /** Last circle position, restored when the panel collapses. */
     private var collapsedPosition = 0 to 0
 
+    /**
+     * Last expanded-panel spot, remembered while the service lives (T15). Null
+     * until the first expansion, which centers the panel horizontally.
+     */
+    private var panelPosition: Pair<Int, Int>? = null
+
     /** Whether the window is currently tucked half off its edge (T10). */
     private var docked = false
 
@@ -162,15 +168,15 @@ class PhoneBubbleOverlay(
         undock(animate = false)
         val screen = screenSize()
         val spec = currentSpec(screen)
-        position = BubbleOverlayPosition.clamped(
-            position.first,
-            position.second,
-            spec.width,
-            spec.height,
-            screen.first,
-            screen.second,
-        )
         if (mode == BubbleMode.COLLAPSED) {
+            position = BubbleOverlayPosition.clamped(
+                position.first,
+                position.second,
+                spec.width,
+                spec.height,
+                screen.first,
+                screen.second,
+            )
             position = BubbleOverlayPosition.snapped(
                 position.first,
                 position.second,
@@ -180,6 +186,20 @@ class PhoneBubbleOverlay(
                 screen.second,
             )
             collapsedPosition = position
+        } else {
+            // The panel keeps the owner's chosen spot, re-clamped so a smaller
+            // display after a rotation does not leave it half off-screen.
+            val panel = BubbleOverlayPosition.panel(
+                rememberedX = panelPosition?.first,
+                rememberedY = panelPosition?.second,
+                width = spec.width,
+                height = spec.height,
+                screenWidth = screen.first,
+                screenHeight = screen.second,
+                fallbackY = position.second,
+            )
+            position = panel
+            panelPosition = panel
         }
         cancelIdleAnimation()
         rebuildContent()
@@ -521,6 +541,7 @@ class PhoneBubbleOverlay(
         row.addView(markView)
         row.addView(title)
         row.addView(glassButton("Minimizar") { collapse() })
+        installPanelDrag(row)
         return row
     }
 
@@ -703,6 +724,61 @@ class PhoneBubbleOverlay(
 
     // --- interaction ------------------------------------------------------
 
+    /**
+     * Moves the expanded window by its header (T15), clamped to the screen.
+     *
+     * The header is a plain row; the Minimizar button is a clickable child and
+     * consumes its own taps before this listener sees them, so dragging can
+     * only start on the title, the mark or the empty header space.
+     */
+    private fun installPanelDrag(header: View) {
+        val touchSlop = ViewConfiguration.get(service).scaledTouchSlop
+        var downRawX = 0f
+        var downRawY = 0f
+        var startX = 0
+        var startY = 0
+        var moving = false
+        header.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downRawX = event.rawX
+                    downRawY = event.rawY
+                    startX = position.first
+                    startY = position.second
+                    moving = false
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.rawX - downRawX
+                    val dy = event.rawY - downRawY
+                    if (!moving && (abs(dx) > touchSlop || abs(dy) > touchSlop)) {
+                        moving = true
+                    }
+                    if (moving) {
+                        val screen = screenSize()
+                        val spec = currentSpec(screen)
+                        position = BubbleOverlayPosition.clamped(
+                            startX + dx.roundToInt(),
+                            startY + dy.roundToInt(),
+                            spec.width,
+                            spec.height,
+                            screen.first,
+                            screen.second,
+                        )
+                        applyWindow(spec)
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (moving) panelPosition = position
+                    moving = false
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
     private fun installDrag(view: View) {
         val touchSlop = ViewConfiguration.get(service).scaledTouchSlop
         var downRawX = 0f
@@ -789,15 +865,16 @@ class PhoneBubbleOverlay(
             screen.second,
             density,
         )
-        position = BubbleOverlayPosition.centeredX(spec.width, screen.first) to
-            BubbleOverlayPosition.clamped(
-                0,
-                position.second,
-                spec.width,
-                spec.height,
-                screen.first,
-                screen.second,
-            ).second
+        position = BubbleOverlayPosition.panel(
+            rememberedX = panelPosition?.first,
+            rememberedY = panelPosition?.second,
+            width = spec.width,
+            height = spec.height,
+            screenWidth = screen.first,
+            screenHeight = screen.second,
+            fallbackY = position.second,
+        )
+        panelPosition = position
         mode = BubbleMode.EXPANDED
         cancelIdleAnimation()
         applyWindow(spec)
