@@ -712,7 +712,7 @@ test("manual approvals and free commands never claim an owner turn", async (t) =
     assert.equal(manualDelivered.args.approvalCategory, undefined);
 
     // A money step created inside an owner turn and approved by hand is a
-    // manual grant: the command must not claim the turn approximated it.
+    // manual grant: the command must not claim the turn auto-approved it.
     const gated = store.createCommand({
         type: "tap",
         args: { text: "Pagar" },
