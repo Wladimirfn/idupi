@@ -144,8 +144,16 @@ Delivery: about 900 authored lines forecast; one PR for the feature with
   of Alertas with "Ver detalle". Ledger semantics unchanged. GREEN (parent
   re-run): `testDebugUnitTest assembleDebug` 1057 tests, 0 failures (48 new).
 
+- 2026-11-26: T3 1.52-aprobaciones-alertas (versionCode 53) 02e960d, APK pushed
+  (dlv-72972274ac5a) and installed. Live: `apr-691659ed9bd0` showed in Alertas
+  "Aprobaciones pendientes" with detail; rejecting from Alertas removed the
+  notification too (owner confirmed); CLI printed "Rechazado en el teléfono.".
+  First attempt was not seen in Alertas (screen likely opened before the poll);
+  reopening Alertas showed it.
+
 ## Next step
 
-T3 release: bump 1.52, build, push APK, live check, PR (`size:exception`).
+Push the branch and open the PR (`size:exception`), then start the phone agent
+bubble (B2+E, exploration saved in Engram `odd/phone-bubble/exploration`).
 Follow-up: live ledger check with a real "Enviar" button on screen (unit tests
 already cover the ledger).
