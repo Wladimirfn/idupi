@@ -11,6 +11,10 @@ import com.idupi.app.data.inbox.InboxNotifier
 import com.idupi.app.data.inbox.InboxReadyReply
 import com.idupi.app.data.inbox.ReplyActionRegistry
 import com.idupi.app.data.inbox.inboxConversationKey
+import com.idupi.app.data.phone.approval.ApprovalCardText
+import com.idupi.app.data.phone.approval.ApprovalDecisionFlow
+import com.idupi.app.data.phone.approval.PendingApprovalsStore
+import com.idupi.app.data.phone.approval.PhoneApprovals
 import com.idupi.app.data.settings.SettingsProvider
 import com.idupi.app.data.settings.SettingsRepository
 import com.idupi.app.domain.model.InboxDigest
@@ -22,6 +26,8 @@ import com.idupi.app.domain.model.InboxInteractionStatus
 import com.idupi.app.domain.model.InboxItem
 import com.idupi.app.domain.model.InboxItemState
 import com.idupi.app.domain.model.InboxItemStatus
+import com.idupi.app.domain.model.PhoneApproval
+import com.idupi.app.domain.model.PhoneApprovalDecisionResult
 import com.idupi.app.domain.model.Project
 import com.idupi.app.domain.repository.IduPiClientSource
 import kotlinx.coroutines.CancellationException
@@ -83,9 +89,33 @@ class AlertsViewModel(
         runCatching { InboxNotifier(IduPiApp.instance).showReadyReply(item) }
             .onFailure { Log.w(TAG, "could not post the ready reply notification") }
     },
+    private val approvalsStore: PendingApprovalsStore = PhoneApprovals.pendingStore,
+    private val approvalDecision: () -> ApprovalDecisionFlow = {
+        PhoneApprovals.decisionFlow(IduPiApp.instance)
+    },
+    private val refreshPendingApprovals: suspend () -> Boolean = {
+        PhoneApprovals.refreshPending()
+    },
 ) : ViewModel() {
 
     private val client get() = clientSource.client
+
+    /**
+     * Pending phone approvals (phone-approvals T4): the section on top of the
+     * list reads the process-wide store, so a decision made from the
+     * notification or the Ajustes card removes the row here too.
+     */
+    val pendingApprovals: StateFlow<List<PhoneApproval>> = approvalsStore.pending
+
+    private val _decidingApprovals = MutableStateFlow<Set<String>>(emptySet())
+
+    /** Ids with a decision in flight; their buttons are disabled. */
+    val decidingApprovals: StateFlow<Set<String>> = _decidingApprovals.asStateFlow()
+
+    private val _approvalMessage = MutableStateFlow<String?>(null)
+
+    /** Short inline line after a decision ("Aprobado.", "Ya se decidió o venció."). */
+    val approvalMessage: StateFlow<String?> = _approvalMessage.asStateFlow()
 
     private val _items = MutableStateFlow<List<InboxItem>>(emptyList())
     val items: StateFlow<List<InboxItem>> = _items.asStateFlow()
@@ -180,6 +210,8 @@ class AlertsViewModel(
     fun startPolling() {
         if (pollingJob?.isActive == true) return
         pollingJob = viewModelScope.launch {
+            // Opening Alertas must not wait 10 s for the first approvals poll.
+            refreshApprovalsNow()
             load(reportErrors = false, showLoading = _items.value.isEmpty())
             while (isActive) {
                 delay(POLL_INTERVAL_MS)
@@ -191,6 +223,63 @@ class AlertsViewModel(
     fun stopPolling() {
         pollingJob?.cancel()
         pollingJob = null
+    }
+
+    // --- Pending approvals (phone-approvals T4) ---------------------------
+
+    /**
+     * One immediate pending-refresh outside the poll. Failures stay silent: the
+     * PC may be off and the last list is still the best information available.
+     */
+    fun refreshApprovals() {
+        viewModelScope.launch { refreshApprovalsNow() }
+    }
+
+    /** Swallows a refused refresh so the last list survives the PC being off. */
+    private suspend fun refreshApprovalsNow() {
+        try {
+            refreshPendingApprovals()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "pending approval refresh failed: ${e.javaClass.simpleName}")
+        }
+    }
+
+    /** Approves from the Alertas card through the shared decision path. */
+    fun approveApproval(approval: PhoneApproval) = decideApproval(approval, approve = true)
+
+    /** Rejects from the Alertas card through the shared decision path. */
+    fun rejectApproval(approval: PhoneApproval) = decideApproval(approval, approve = false)
+
+    fun clearApprovalMessage() {
+        _approvalMessage.value = null
+    }
+
+    private fun decideApproval(approval: PhoneApproval, approve: Boolean) {
+        val id = approval.id
+        if (id.isBlank() || id in _decidingApprovals.value) return
+        _decidingApprovals.update { it + id }
+        viewModelScope.launch {
+            try {
+                val result = approvalDecision().decide(approval, approve)
+                _approvalMessage.value = when (result) {
+                    is PhoneApprovalDecisionResult.Decided ->
+                        if (approve) ApprovalCardText.MESSAGE_APPROVED
+                        else ApprovalCardText.MESSAGE_REJECTED
+                    is PhoneApprovalDecisionResult.Conflict,
+                    PhoneApprovalDecisionResult.NotFound,
+                    -> ApprovalCardText.MESSAGE_NO_LONGER_VALID
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "approval decision failed: ${e.javaClass.simpleName}")
+                _approvalMessage.value = ApprovalCardText.MESSAGE_DECISION_FAILED
+            } finally {
+                _decidingApprovals.update { it - id }
+            }
+        }
     }
 
     fun canReply(item: InboxItem): Boolean = hasReplyAction(conversationKeyFor(item))

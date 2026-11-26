@@ -5,7 +5,9 @@ import com.idupi.app.FakeIduPiClient
 import com.idupi.app.MainDispatcherRule
 import com.idupi.app.data.phone.PhoneStatus
 import com.idupi.app.data.phone.PhoneStatusReporter
+import com.idupi.app.data.phone.approval.ApprovalDecisionFlow
 import com.idupi.app.data.phone.approval.FileApprovalLedger
+import com.idupi.app.data.phone.approval.PendingApprovalsStore
 import com.idupi.app.data.phone.approval.PhoneApprovalDecider
 import com.idupi.app.data.phone.control.PhoneCommandLogEntry
 import com.idupi.app.data.settings.InMemorySettingsRepository
@@ -220,7 +222,7 @@ class PhoneAgentSettingsViewModelTest {
         assertEquals(listOf(entry), viewModel.recentCommands.value)
     }
 
-    // --- Pending approvals (phone-approvals T2) --------------------------
+    // --- Pending approvals (phone-approvals T2/T4) ------------------------
 
     private val now = 1_766_000_000_000L
 
@@ -233,16 +235,26 @@ class PhoneAgentSettingsViewModelTest {
         expiresAt = "2026-12-16T22:30:00Z",
     )
 
-    private fun approvalViewModel(ledger: FileApprovalLedger): PhoneAgentSettingsViewModel {
+    private fun approvalViewModel(
+        ledger: FileApprovalLedger,
+        store: PendingApprovalsStore = PendingApprovalsStore(),
+        cancelled: MutableList<String> = mutableListOf(),
+    ): PhoneAgentSettingsViewModel {
         val decider = PhoneApprovalDecider(FakeClientSource(fake), ledger, clock = { now })
         return PhoneAgentSettingsViewModel(
             settingsRepository = repository,
-            pendingApprovals = {
-                fake.getPhoneApprovals().approvals.filter {
-                    it.state == PhoneApprovalState.PENDING
-                }
+            pendingStore = store,
+            approvalDecision = {
+                ApprovalDecisionFlow(decider, store) { cancelled += it }
             },
-            approvalDecider = { decider },
+            refreshPendingApprovals = {
+                store.replace(
+                    fake.getPhoneApprovals().approvals.filter {
+                        it.state == PhoneApprovalState.PENDING
+                    }
+                )
+                true
+            },
             reportNow = { true },
         )
     }
@@ -252,13 +264,13 @@ class PhoneAgentSettingsViewModelTest {
     private fun TestScope.loadOnce(viewModel: PhoneAgentSettingsViewModel) {
         viewModel.startApprovalPolling()
         runCurrent()
-        viewModel.stopApprovalPolling()
     }
 
     @Test
-    fun `polling exposes the pending approvals`() = runTest {
+    fun `the view model exposes the shared pending store`() = runTest {
         fake.approvalsToReturn = PhoneApprovalsResponse(listOf(approval()))
-        val viewModel = approvalViewModel(newLedger())
+        val store = PendingApprovalsStore()
+        val viewModel = approvalViewModel(newLedger(), store)
 
         loadOnce(viewModel)
 
@@ -270,7 +282,8 @@ class PhoneAgentSettingsViewModelTest {
     fun `approve posts the decision and removes the row`() = runTest {
         fake.approvalsToReturn = PhoneApprovalsResponse(listOf(approval()))
         val ledger = newLedger()
-        val viewModel = approvalViewModel(ledger)
+        val store = PendingApprovalsStore()
+        val viewModel = approvalViewModel(ledger, store)
         loadOnce(viewModel)
 
         viewModel.approveApproval(approval())
@@ -294,6 +307,21 @@ class PhoneAgentSettingsViewModelTest {
         assertEquals(listOf("apr-123456789abc" to false), fake.approvalDecisions)
         assertTrue(viewModel.approvals.value.pending.isEmpty())
         assertNull(ledger.consume("apr-123456789abc", now))
+    }
+
+    @Test
+    fun `a decision here removes the row from the shared store too`() = runTest {
+        fake.approvalsToReturn = PhoneApprovalsResponse(listOf(approval()))
+        val store = PendingApprovalsStore()
+        val cancelled = mutableListOf<String>()
+        val viewModel = approvalViewModel(newLedger(), store, cancelled)
+        loadOnce(viewModel)
+
+        viewModel.approveApproval(approval())
+        advanceUntilIdle()
+
+        assertTrue(store.pending.value.isEmpty())
+        assertEquals(listOf("apr-123456789abc"), cancelled)
     }
 
     @Test

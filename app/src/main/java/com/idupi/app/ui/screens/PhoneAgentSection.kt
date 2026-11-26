@@ -115,11 +115,9 @@ fun PhoneAgentSection(viewModel: PhoneAgentSettingsViewModel) {
     // service is connected in this process yet. The listener owns the lifecycle.
     LaunchedEffect(Unit) { PhoneStatusReporting.start(context) }
 
-    // Pending approvals are only needed while this section is visible.
+    // One immediate pending refresh while the section is visible. The 10 s poll
+    // lives in PhoneApprovals and feeds the same store Alertas reads.
     LaunchedEffect(Unit) { viewModel.startApprovalPolling() }
-    DisposableEffect(Unit) {
-        onDispose { viewModel.stopApprovalPolling() }
-    }
 
     val phoneStatePermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()

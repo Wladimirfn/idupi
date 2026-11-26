@@ -67,7 +67,7 @@ started from a floating IDUPI button) builds on this gate.
       an `approvalId` that the owner approved ON THIS PHONE (a PC process with
       the bearer token can call the decision route, so the server decision is
       not proof). Tests.
-- [ ] T4 App (owner request after the live check, 2026-11-26): approvals also
+- [x] T4 App (owner request after the live check, 2026-11-26): approvals also
       appear in Alertas with their detail (what, which app, why, who asked,
       time left, expandable exact target/typed text) and Aprobar/Rechazar.
       One process-wide pending StateFlow fed by the poller; any decision from
@@ -134,7 +134,18 @@ Delivery: about 900 authored lines forecast; one PR for the feature with
 - 2026-11-26: reject path live: `apr-2933223b51f2` rejected on the phone, CLI
   printed "Rechazado en el teléfono." and exited 1; nothing was tapped.
 
+- 2026-11-26: T4 done (work-2, crashed with exit 8 while finishing AlertsScreen;
+  parent verified and committed). `PendingApprovalsStore` (process-wide
+  StateFlow, settled ids so a poll cannot resurrect a decided row),
+  `ApprovalDecisionFlow` (one decide path for notification, Alertas and Ajustes:
+  Decided/Conflict/NotFound -> remove + cancel notification; transport failure
+  keeps both), poller `onPending`, `PhoneApprovals.refreshPending` on opening
+  Alertas, `ApprovalCardText` copy, "Aprobaciones pendientes" section at the top
+  of Alertas with "Ver detalle". Ledger semantics unchanged. GREEN (parent
+  re-run): `testDebugUnitTest assembleDebug` 1057 tests, 0 failures (48 new).
+
 ## Next step
 
-Open the PR (`size:exception`). Follow-up: live ledger check with a real
-"Enviar" button on screen (unit tests already cover the ledger).
+T3 release: bump 1.52, build, push APK, live check, PR (`size:exception`).
+Follow-up: live ledger check with a real "Enviar" button on screen (unit tests
+already cover the ledger).

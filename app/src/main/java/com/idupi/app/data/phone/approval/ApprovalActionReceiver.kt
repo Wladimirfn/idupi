@@ -18,9 +18,11 @@ import kotlinx.serialization.json.Json
  * (phone-approvals T2).
  *
  * The approval travels in the immutable [PendingIntent] payload, so approving
- * records the same data the owner saw, then posts the decision. A 409/404
- * leaves a "Ya no está vigente" notice; a transport failure keeps the original
- * notification so the owner can retry.
+ * records the same data the owner saw, then posts the decision. The decision
+ * goes through [PhoneApprovals.decisionFlow], the same path the Alertas and
+ * Ajustes cards use, so the row leaves every surface and this notification goes
+ * away. A 409/404 leaves a "Ya no está vigente" notice; a transport failure
+ * keeps the original notification so the owner can retry.
  */
 class ApprovalActionReceiver : BroadcastReceiver() {
 
@@ -41,10 +43,10 @@ class ApprovalActionReceiver : BroadcastReceiver() {
         CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
             try {
                 val notifier = ApprovalNotifier(appContext)
-                val decider = PhoneApprovals.decider(appContext)
-                val result = if (approve) decider.approve(approval) else decider.reject(approval)
+                val result = PhoneApprovals.decisionFlow(appContext)
+                    .decide(approval, approve)
                 when (result) {
-                    is PhoneApprovalDecisionResult.Decided -> notifier.cancel(approval.id)
+                    is PhoneApprovalDecisionResult.Decided -> Unit
                     is PhoneApprovalDecisionResult.Conflict,
                     PhoneApprovalDecisionResult.NotFound,
                     -> notifier.markNoLongerValid(approval)

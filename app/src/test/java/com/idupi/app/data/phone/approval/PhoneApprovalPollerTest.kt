@@ -22,12 +22,14 @@ class PhoneApprovalPollerTest {
     private lateinit var fake: FakeIduPiClient
     private val fresh = mutableListOf<PhoneApproval>()
     private val resolved = mutableSetOf<String>()
+    private val pending = mutableListOf<List<PhoneApproval>>()
 
     @Before
     fun setUp() {
         fake = FakeIduPiClient()
         fresh.clear()
         resolved.clear()
+        pending.clear()
     }
 
     private fun approval(id: String, state: String = PhoneApprovalState.PENDING) =
@@ -42,6 +44,7 @@ class PhoneApprovalPollerTest {
         canPoll = canPoll,
         onNewApprovals = { fresh += it },
         onResolved = { resolved += it },
+        onPending = { pending += it },
     )
 
     @Test
@@ -117,6 +120,44 @@ class PhoneApprovalPollerTest {
         poller().pollOnce()
 
         assertEquals(PhoneApprovalState.PENDING, fake.lastApprovalsState)
+    }
+
+    @Test
+    fun `every successful poll publishes the full pending list`() = runTest {
+        val poller = poller()
+        fake.approvalsToReturn =
+            PhoneApprovalsResponse(listOf(approval("apr-a"), approval("apr-b")))
+        poller.pollOnce()
+
+        fake.approvalsToReturn = PhoneApprovalsResponse(listOf(approval("apr-a")))
+        poller.pollOnce()
+
+        assertEquals(
+            listOf(listOf("apr-a", "apr-b"), listOf("apr-a")),
+            pending.map { list -> list.map { it.id } },
+        )
+    }
+
+    @Test
+    fun `a failed poll does not overwrite the published list`() = runTest {
+        val poller = poller()
+        poller.pollOnce()
+
+        fake.failApprovalsWith = IOException("offline")
+        poller.pollOnce()
+
+        assertEquals(1, pending.size)
+    }
+
+    @Test
+    fun `a non-pending approval never reaches the published list`() = runTest {
+        fake.approvalsToReturn = PhoneApprovalsResponse(
+            listOf(approval("apr-a"), approval("apr-b", state = PhoneApprovalState.APPROVED))
+        )
+
+        poller().pollOnce()
+
+        assertEquals(listOf(listOf("apr-a")), pending.map { list -> list.map { it.id } })
     }
 
     @Test

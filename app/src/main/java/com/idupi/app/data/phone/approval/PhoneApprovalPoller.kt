@@ -16,6 +16,10 @@ import kotlinx.coroutines.CancellationException
  * Afterwards a new pending id notifies once, and an id that leaves the pending
  * set cancels its notification.
  *
+ * Every successful poll also publishes the full pending list through
+ * [onPending], which feeds the shared [PendingApprovalsStore] the Alertas and
+ * Ajustes cards read.
+ *
  * Extraction from the Android host keeps the decision logic and the backoff
  * behavior unit-testable.
  */
@@ -25,6 +29,7 @@ class PhoneApprovalPoller(
     private val canPoll: () -> Boolean,
     private val onNewApprovals: (List<PhoneApproval>) -> Unit = {},
     private val onResolved: (Set<String>) -> Unit = {},
+    private val onPending: (List<PhoneApproval>) -> Unit = {},
     private val limit: Int = DEFAULT_LIMIT,
     private val backoff: PollBackoff = PollBackoff(),
     private val log: (String) -> Unit = { message -> Log.w(TAG, message) },
@@ -50,6 +55,8 @@ class PhoneApprovalPoller(
         val ids = pending.mapTo(mutableSetOf()) { it.id }
         val previous = knownIds
         knownIds = ids
+
+        onPending(pending.sortedByDescending { it.createdAt })
 
         if (previous != null) {
             val gone = previous - ids

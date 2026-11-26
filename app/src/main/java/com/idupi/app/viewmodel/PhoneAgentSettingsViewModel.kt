@@ -5,7 +5,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.idupi.app.IduPiApp
 import com.idupi.app.data.phone.PhoneStatusReporting
-import com.idupi.app.data.phone.approval.PhoneApprovalDecider
+import com.idupi.app.data.phone.approval.ApprovalCardText
+import com.idupi.app.data.phone.approval.ApprovalDecisionFlow
+import com.idupi.app.data.phone.approval.PendingApprovalsStore
 import com.idupi.app.data.phone.approval.PhoneApprovals
 import com.idupi.app.data.phone.control.PhoneCommandLog
 import com.idupi.app.data.phone.control.PhoneCommandLogEntry
@@ -14,15 +16,12 @@ import com.idupi.app.data.settings.SettingsRepository
 import com.idupi.app.domain.model.PhoneApproval
 import com.idupi.app.domain.model.PhoneApprovalDecisionResult
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /** Feedback for the manual "Enviar ahora" action. */
@@ -48,17 +47,24 @@ data class PhoneApprovalsState(
  * The accessibility and READ_PHONE_STATE grants are platform state, not durable
  * settings, so the screen re-reads them on resume instead of this ViewModel.
  *
- * [reportNow], [pendingApprovals] and [approvalDecider] are injectable so JVM
- * tests drive a real reporter/decider over [com.idupi.app.FakeIduPiClient]
- * instead of the Android collectors; [commandLog] is injectable for the same
- * reason.
+ * Pending approvals come from the process-wide [PendingApprovalsStore]
+ * (phone-approvals T4), the same list Alertas reads, so a decision made in
+ * either place removes the row from both. The poll that fills it lives in
+ * [PhoneApprovals] and is not duplicated here.
+ *
+ * [reportNow] and [approvalDecision] are injectable so JVM tests drive a real
+ * reporter/decider over [com.idupi.app.FakeIduPiClient] instead of the Android
+ * collectors; [commandLog] is injectable for the same reason.
  */
 class PhoneAgentSettingsViewModel(
     private val settingsRepository: SettingsRepository = SettingsProvider.repository,
     commandLog: StateFlow<List<PhoneCommandLogEntry>> = PhoneCommandLog.entries,
-    private val pendingApprovals: suspend () -> List<PhoneApproval> = { PhoneApprovals.pending() },
-    private val approvalDecider: () -> PhoneApprovalDecider = {
-        PhoneApprovals.decider(IduPiApp.instance)
+    private val pendingStore: PendingApprovalsStore = PhoneApprovals.pendingStore,
+    private val approvalDecision: () -> ApprovalDecisionFlow = {
+        PhoneApprovals.decisionFlow(IduPiApp.instance)
+    },
+    private val refreshPendingApprovals: suspend () -> Boolean = {
+        PhoneApprovals.refreshPending()
     },
     private val reportNow: suspend () -> Boolean = { PhoneStatusReporting.reportNow() },
 ) : ViewModel() {
@@ -78,13 +84,16 @@ class PhoneAgentSettingsViewModel(
     private val _approvals = MutableStateFlow(PhoneApprovalsState())
     val approvals: StateFlow<PhoneApprovalsState> = _approvals.asStateFlow()
 
-    private var approvalPollingJob: Job? = null
-
-    /**
-     * Approvals already decided here. A poll that still sees the server's
-     * pending copy must not bring the row back while the decision settles.
-     */
-    private val handledApprovalIds = mutableSetOf<String>()
+    init {
+        // The store is process-wide (phone-approvals T4): mirroring it here
+        // keeps the Ajustes card in step with a decision made in Alertas or in
+        // the notification, with no second poll.
+        viewModelScope.launch {
+            pendingStore.pending.collect { pending ->
+                _approvals.update { it.copy(pending = pending) }
+            }
+        }
+    }
 
     fun setPhoneStatusEnabled(enabled: Boolean) {
         viewModelScope.launch {
@@ -126,27 +135,29 @@ class PhoneAgentSettingsViewModel(
         _reportState.value = PhoneAgentReportState()
     }
 
-    // --- Pending approvals (phone-approvals T2) --------------------------
+    // --- Pending approvals (phone-approvals T2/T4) ------------------------
 
-    /** Starts the 10 s approval poll; idempotent while a poll loop lives. */
+    /**
+     * Refreshes the shared pending list once when the section becomes visible.
+     * The 10 s poll lives in [PhoneApprovals] while phone control is on, so this
+     * only shortens the wait for a card the owner is already looking at.
+     */
     fun startApprovalPolling() {
-        if (approvalPollingJob?.isActive == true) return
-        approvalPollingJob = viewModelScope.launch {
-            while (isActive) {
-                loadApprovals(reportErrors = false)
-                delay(APPROVAL_POLL_MS)
-            }
+        viewModelScope.launch { refreshApprovalsNow() }
+    }
+
+    /**
+     * Swallows a refused refresh: the PC may be off, and the card keeps the last
+     * list instead of dropping it.
+     */
+    private suspend fun refreshApprovalsNow() {
+        try {
+            refreshPendingApprovals()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "pending approval refresh failed: ${e.javaClass.simpleName}")
         }
-    }
-
-    fun stopApprovalPolling() {
-        approvalPollingJob?.cancel()
-        approvalPollingJob = null
-    }
-
-    /** Manual refresh; failures are surfaced this time. */
-    fun refreshApprovals() {
-        viewModelScope.launch { loadApprovals(reportErrors = true) }
     }
 
     fun approveApproval(approval: PhoneApproval) = decide(approval, approve = true)
@@ -157,63 +168,30 @@ class PhoneAgentSettingsViewModel(
         _approvals.update { it.copy(message = null) }
     }
 
-    private suspend fun loadApprovals(reportErrors: Boolean) {
-        val pending = try {
-            pendingApprovals()
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            // The PC may simply be off; the poll stays silent, a manual refresh
-            // surfaces the failure.
-            Log.w(TAG, "approval load failed: ${e.javaClass.simpleName}")
-            if (reportErrors) {
-                _approvals.update { it.copy(message = MESSAGE_LOAD_FAILED) }
-            }
-            return
-        }
-        _approvals.update { state ->
-            state.copy(pending = pending.filter { it.id !in handledApprovalIds })
-        }
-    }
-
     private fun decide(approval: PhoneApproval, approve: Boolean) {
         val id = approval.id
         if (id.isBlank() || id in _approvals.value.decidingIds) return
         _approvals.update { it.copy(decidingIds = it.decidingIds + id) }
         viewModelScope.launch {
             try {
-                val decider = approvalDecider()
-                val result = if (approve) decider.approve(approval) else decider.reject(approval)
-                when (result) {
-                    is PhoneApprovalDecisionResult.Decided -> {
-                        handledApprovalIds += id
-                        removeApproval(id)
-                        _approvals.update {
-                            it.copy(message = if (approve) MESSAGE_APPROVED else MESSAGE_REJECTED)
-                        }
-                    }
+                val result = approvalDecision().decide(approval, approve)
+                val message = when (result) {
+                    is PhoneApprovalDecisionResult.Decided ->
+                        if (approve) ApprovalCardText.MESSAGE_APPROVED
+                        else ApprovalCardText.MESSAGE_REJECTED
                     is PhoneApprovalDecisionResult.Conflict,
                     PhoneApprovalDecisionResult.NotFound,
-                    -> {
-                        handledApprovalIds += id
-                        removeApproval(id)
-                        _approvals.update { it.copy(message = MESSAGE_NO_LONGER_VALID) }
-                    }
+                    -> ApprovalCardText.MESSAGE_NO_LONGER_VALID
                 }
+                _approvals.update { it.copy(message = message) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 Log.w(TAG, "approval decision failed: ${e.javaClass.simpleName}")
-                _approvals.update { it.copy(message = MESSAGE_DECISION_FAILED) }
+                _approvals.update { it.copy(message = ApprovalCardText.MESSAGE_DECISION_FAILED) }
             } finally {
                 _approvals.update { it.copy(decidingIds = it.decidingIds - id) }
             }
-        }
-    }
-
-    private fun removeApproval(id: String) {
-        _approvals.update { state ->
-            state.copy(pending = state.pending.filterNot { it.id == id })
         }
     }
 
@@ -226,11 +204,10 @@ class PhoneAgentSettingsViewModel(
         /** Same cadence as the calendar proposal poll. */
         const val APPROVAL_POLL_MS = 10_000L
 
-        const val MESSAGE_NO_LONGER_VALID = "La aprobación ya no está vigente."
-        const val MESSAGE_DECISION_FAILED =
-            "No se pudo enviar la decisión. Revisa la conexión con la PC."
+        const val MESSAGE_NO_LONGER_VALID = ApprovalCardText.MESSAGE_NO_LONGER_VALID
+        const val MESSAGE_DECISION_FAILED = ApprovalCardText.MESSAGE_DECISION_FAILED
         const val MESSAGE_LOAD_FAILED = "No se pudieron cargar las aprobaciones."
-        const val MESSAGE_APPROVED = "Aprobado."
-        const val MESSAGE_REJECTED = "Rechazado."
+        const val MESSAGE_APPROVED = ApprovalCardText.MESSAGE_APPROVED
+        const val MESSAGE_REJECTED = ApprovalCardText.MESSAGE_REJECTED
     }
 }

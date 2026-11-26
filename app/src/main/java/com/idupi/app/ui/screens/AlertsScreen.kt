@@ -54,6 +54,7 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -76,6 +77,7 @@ import com.idupi.app.data.inbox.InboxConversationGroup
 import com.idupi.app.data.inbox.InboxConversationGroups
 import com.idupi.app.data.inbox.InboxNotifier
 import com.idupi.app.data.calendar.CalendarEventBuilder
+import com.idupi.app.data.phone.approval.ApprovalCardText
 import com.idupi.app.domain.model.InboxDigest
 import com.idupi.app.domain.model.InboxDigestStatus
 import com.idupi.app.domain.model.InboxEvent
@@ -85,6 +87,7 @@ import com.idupi.app.domain.model.InboxInteraction
 import com.idupi.app.domain.model.InboxInteractionStatus
 import com.idupi.app.domain.model.InboxItem
 import com.idupi.app.domain.model.InboxItemState
+import com.idupi.app.domain.model.PhoneApproval
 import com.idupi.app.domain.model.Project
 import com.idupi.app.ui.components.AddEventSheet
 import com.idupi.app.ui.theme.AppShapes
@@ -141,9 +144,22 @@ fun AlertsScreen(
     val scope = rememberCoroutineScope()
     val zone = remember { ZoneId.systemDefault() }
 
+    // Pending phone approvals (phone-approvals T4): read from the process-wide
+    // store, so a decision made in the notification or in Ajustes leaves this
+    // section at the same time.
+    val pendingApprovals by viewModel.pendingApprovals.collectAsState()
+    val decidingApprovals by viewModel.decidingApprovals.collectAsState()
+    val approvalMessage by viewModel.approvalMessage.collectAsState()
+    LaunchedEffect(approvalMessage) {
+        val message = approvalMessage ?: return@LaunchedEffect
+        viewModel.clearApprovalMessage()
+        snackbarHostState.showSnackbar(message)
+    }
+
     val visibleItems = remember(items, filter) { AlertsViewModel.filterItems(items, filter) }
     val groups = remember(visibleItems) { InboxConversationGroups.group(visibleItems) }
     val nowMillis = remember(items) { System.currentTimeMillis() }
+    val approvalNowMillis = remember(pendingApprovals) { System.currentTimeMillis() }
 
     DisposableEffect(viewModel) {
         // Opening Alertas consumes the capture summary (alerts-flow A1): the
@@ -203,12 +219,12 @@ fun AlertsScreen(
             FilterRow(selected = filter, onSelect = viewModel::setFilter)
 
             when {
-                isLoading && items.isEmpty() -> {
+                isLoading && items.isEmpty() && pendingApprovals.isEmpty() -> {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator(color = PrimaryIndigo)
                     }
                 }
-                groups.isEmpty() -> {
+                groups.isEmpty() && pendingApprovals.isEmpty() -> {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
                             text = emptyMessage(filter),
@@ -222,6 +238,23 @@ fun AlertsScreen(
                         verticalArrangement = Arrangement.spacedBy(AppSpacing.md),
                         contentPadding = PaddingValues(bottom = AppSpacing.xl)
                     ) {
+                        if (pendingApprovals.isNotEmpty()) {
+                            item(key = "pending-approvals-header") {
+                                PendingApprovalsHeader(count = pendingApprovals.size)
+                            }
+                            items(
+                                items = pendingApprovals,
+                                key = { approval -> "approval:${approval.id}" }
+                            ) { approval ->
+                                PendingApprovalCard(
+                                    approval = approval,
+                                    isDeciding = approval.id in decidingApprovals,
+                                    nowMillis = approvalNowMillis,
+                                    onApprove = { viewModel.approveApproval(approval) },
+                                    onReject = { viewModel.rejectApproval(approval) }
+                                )
+                            }
+                        }
                         items(groups, key = { it.conversationKey }) { group ->
                             val silenced = group.conversationKey in silencedConversations
                             val onToggleSilence = {
@@ -1487,6 +1520,191 @@ private fun ImportanceChip(importance: String?) {
 private fun emptyMessage(filter: InboxFilter): String = when (filter) {
     InboxFilter.PENDING -> "No hay alertas pendientes"
     InboxFilter.IMPORTANT -> "No hay alertas importantes"
+}
+
+/**
+ * Section header for the pending approvals (phone-approvals T4). It sits above
+ * every alert card so the owner sees what is waiting for a decision first.
+ */
+@Composable
+private fun PendingApprovalsHeader(count: Int) {
+    Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.xxs)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = ApprovalCardText.SECTION_TITLE,
+                style = AppTypography.bodyLarge.copy(fontWeight = FontWeight.Bold),
+                color = TextPrimary
+            )
+            Box(
+                modifier = Modifier
+                    .clip(AppShapes.pill)
+                    .background(StatusError.copy(alpha = 0.15f))
+                    .padding(horizontal = AppSpacing.sm, vertical = AppSpacing.xxs)
+            ) {
+                Text(
+                    text = if (count == 1) "1 espera" else "$count esperan",
+                    style = AppTypography.labelSmall,
+                    color = StatusError
+                )
+            }
+        }
+        Text(
+            text = ApprovalCardText.SECTION_SUBTITLE,
+            style = AppTypography.bodySmall,
+            color = TextSecondary
+        )
+    }
+}
+
+/**
+ * One pending approval with everything the owner needs to decide
+ * (phone-approvals T4): what the phone would do, in which app, why, who asked,
+ * how long is left, an expandable exact-command detail and Aprobar / Rechazar.
+ * The row leaves the list as soon as the shared store drops the id, so a
+ * decision taken anywhere removes it from here too.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun PendingApprovalCard(
+    approval: PhoneApproval,
+    isDeciding: Boolean,
+    nowMillis: Long,
+    onApprove: () -> Unit,
+    onReject: () -> Unit,
+) {
+    var expanded by rememberSaveable(approval.id) { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SlateCard),
+        shape = AppShapes.card,
+        border = BorderStroke(1.5.dp, StatusError)
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(AppSpacing.cardPadding)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Espera tu aprobación",
+                    style = AppTypography.labelSmall,
+                    color = StatusError
+                )
+                ApprovalCardText.timeLeftLine(approval.expiresAt, nowMillis)?.let { timeLeft ->
+                    Text(
+                        text = timeLeft,
+                        style = AppTypography.labelSmall,
+                        color = if (timeLeft == "vencida") StatusError else StatusWorking
+                    )
+                }
+            }
+
+            Text(
+                text = ApprovalCardText.actionLine(approval),
+                style = AppTypography.bodyLarge.copy(fontWeight = FontWeight.Bold),
+                color = TextPrimary
+            )
+
+            ApprovalCardText.appLine(approval)?.let { appLine ->
+                Text(appLine, style = AppTypography.bodySmall, color = PrimaryIndigo)
+            }
+
+            Text(
+                text = ApprovalCardText.reasonLabel(approval),
+                style = AppTypography.bodySmall,
+                color = TextSecondary
+            )
+            ApprovalCardText.requestedByLine(approval)?.let { requestedBy ->
+                Text(requestedBy, style = AppTypography.bodySmall, color = TextSecondary)
+            }
+
+            TextButton(
+                onClick = { expanded = !expanded },
+                contentPadding = PaddingValues(horizontal = AppSpacing.xs)
+            ) {
+                Text(
+                    text = if (expanded) ApprovalCardText.LABEL_HIDE_DETAIL
+                    else ApprovalCardText.LABEL_SHOW_DETAIL,
+                    style = AppTypography.labelSmall,
+                    color = PrimaryIndigo
+                )
+            }
+            if (expanded) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(AppShapes.small)
+                        .background(SlateBg)
+                        .border(1.dp, SlateBorder, AppShapes.small)
+                        .padding(AppSpacing.md),
+                    verticalArrangement = Arrangement.spacedBy(AppSpacing.xxs)
+                ) {
+                    SelectionContainer {
+                        Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.xxs)) {
+                            ApprovalCardText.detailLines(approval).forEach { line ->
+                                Text(
+                                    text = line,
+                                    style = AppTypography.labelSmall,
+                                    color = TextSecondary
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm),
+                verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
+            ) {
+                Button(
+                    onClick = onApprove,
+                    enabled = !isDeciding,
+                    shape = AppShapes.small,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = PrimaryIndigo,
+                        contentColor = Color.White
+                    ),
+                    contentPadding = PaddingValues(
+                        horizontal = AppSpacing.md,
+                        vertical = AppSpacing.xs
+                    )
+                ) {
+                    Text(ApprovalCardText.LABEL_APPROVE, style = AppTypography.labelSmall)
+                }
+                OutlinedButton(
+                    onClick = onReject,
+                    enabled = !isDeciding,
+                    shape = AppShapes.small,
+                    border = BorderStroke(1.dp, SlateBorder),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = StatusError),
+                    contentPadding = PaddingValues(
+                        horizontal = AppSpacing.md,
+                        vertical = AppSpacing.xs
+                    )
+                ) {
+                    Text(ApprovalCardText.LABEL_REJECT, style = AppTypography.labelSmall)
+                }
+                if (isDeciding) {
+                    CircularProgressIndicator(
+                        color = PrimaryIndigo,
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(16.dp)
+                    )
+                }
+            }
+        }
+    }
 }
 
 /** Beyond this many characters the original text gets "Ver más". */

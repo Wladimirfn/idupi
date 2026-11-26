@@ -29,6 +29,13 @@ object PhoneApprovals {
     @Volatile
     private var ledgerInstance: ApprovalLedger? = null
 
+    /**
+     * The one pending list the notification flow, Alertas and Ajustes share
+     * (phone-approvals T4). Fed by [PhoneApprovalReporting], cleared by
+     * [decisionFlow] on every decided / expired / gone approval.
+     */
+    val pendingStore: PendingApprovalsStore = PendingApprovalsStore()
+
     fun ledger(context: Context): ApprovalLedger =
         ledgerInstance ?: synchronized(this) {
             ledgerInstance ?: FileApprovalLedger(
@@ -42,11 +49,37 @@ object PhoneApprovals {
     fun decider(context: Context): PhoneApprovalDecider =
         PhoneApprovalDecider(IduPiClientProvider, ledger(context))
 
+    /** The shared approve / reject path: decides, then clears every surface. */
+    fun decisionFlow(context: Context): ApprovalDecisionFlow {
+        val appContext = context.applicationContext
+        val notifier = ApprovalNotifier(appContext)
+        return ApprovalDecisionFlow(
+            decider = decider(appContext),
+            store = pendingStore,
+            cancelNotification = notifier::cancel,
+        )
+    }
+
     /** Pending approvals, newest first. Failures propagate to the caller. */
     suspend fun pending(limit: Int = PhoneApprovalPoller.DEFAULT_LIMIT): List<PhoneApproval> =
         IduPiClientProvider.client.getPhoneApprovals(PhoneApprovalState.PENDING, limit)
             .approvals
             .filter { it.state == PhoneApprovalState.PENDING }
+
+    /**
+     * One immediate refresh outside the 10 s poll (opening Alertas, a manual
+     * pull). The store is updated on success; a failure leaves the last list in
+     * place and is swallowed because the PC may simply be off.
+     */
+    suspend fun refreshPending(limit: Int = PhoneApprovalPoller.DEFAULT_LIMIT): Boolean =
+        try {
+            pendingStore.replace(pending(limit))
+            true
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            false
+        }
 }
 
 /**
@@ -76,6 +109,7 @@ object PhoneApprovalReporting {
             canPoll = { IduPiClientProvider.configureFromStorage(appContext) },
             onNewApprovals = { approvals -> approvals.forEach(notifier::show) },
             onResolved = { ids -> ids.forEach(notifier::cancel) },
+            onPending = PhoneApprovals.pendingStore::replace,
         )
         job = scope.launch {
             while (isActive) {
