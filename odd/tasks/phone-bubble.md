@@ -52,8 +52,10 @@ every outbound or irreversible step goes through the approval queue (B1).
   action that did not happen.
 - App: bubble drawn by the accessibility service, gated by a new setting
   (default off) and the accessibility grant; collapsed pill <-> expanded panel;
-  keyboard input; voice through `RecognizerIntent` (no permission); answers by
-  long-poll of the turn; "esperando tu aprobación" state when a step is gated.
+  keyboard input; in-bubble dictation through a main-thread `SpeechRecognizer`
+  (T11, `RECORD_AUDIO` requested once) with `RecognizerIntent` as fallback;
+  answers by long-poll of the turn; "esperando tu aprobación" state when a step
+  is gated.
 
 ## Tasks
 
@@ -86,7 +88,7 @@ every outbound or irreversible step goes through the approval queue (B1).
 - [x] T10 App: edge docking. After a short idle the circle slides half off the
       nearest edge (liquid tuck), at reduced opacity; touch brings it back with
       a spring; drag still works. Pure dock-position maths tested.
-- [ ] T11 App: in-bubble dictation. Replace the Google recognizer sheet with
+- [x] T11 App: in-bubble dictation. Replace the Google recognizer sheet with
       `SpeechRecognizer` driven from the overlay: listening state inside the
       panel (animated level bars from `onRmsChanged`, live partial text into the
       field), never auto-sends. Needs `RECORD_AUDIO`: requested once from
@@ -114,7 +116,7 @@ every outbound or irreversible step goes through the approval queue (B1).
       back collapses the panel; a tap outside the panel releases focus via
       `FLAG_WATCH_OUTSIDE_TOUCH`), and system back/home keep working. Tests on
       the pure key/focus reducer.
-- [ ] T17 App: voice follow-up. When the last request was dictated and the
+- [x] T17 App: voice follow-up. When the last request was dictated and the
       agent answers with a question, the bubble opens, shows the answer and
       starts listening again (in-bubble dictation from T11), never auto-sends.
       Tests.
@@ -341,11 +343,42 @@ stacked on #28 with `size:exception`, same as #27/#28.
   registers again on `resume()`. Commits `5f776ca` (server) and `2b7c72d`
   (app).
 
+- 2026-11-26: T11 green. RED: `BubbleVoiceTest` failed to compile
+  (`Unresolved reference 'BubbleVoiceState'`, `'BubbleVoiceReducer'`); the
+  overlay pass then caught `Unresolved reference 'ERROR_BUSY'` (the platform
+  constant is `ERROR_RECOGNIZER_BUSY`). GREEN: 16 `BubbleVoiceTest` tests; full
+  suite 1171 tests, 0 failures (+16); `assembleRelease` success. The panel owns
+  a main-thread `SpeechRecognizer` (on-device on API 31+ when available,
+  `EXTRA_PARTIAL_RESULTS` on, es-CL on a Spanish phone); the Dictar button is a
+  Dictar/Detener toggle, partials stream into the field, `VoiceLevelView` paints
+  five glass bars from `onRmsChanged`, and the finished transcript stays
+  editable and is never sent. `RECORD_AUDIO` is in the manifest;
+  `MicPermissionActivity` (transparent, not exported, no recents) asks once and
+  answers on `MicPermissionChannel`; Ajustes requests it when the bubble is
+  turned on. A denial or no recognizer falls back to `VoiceInputActivity`. Errors
+  show "No te escuché, intenta de nuevo" / "Sin conexión para el dictado" / the
+  T5 failure copy; the recognizer is cancelled and destroyed on collapse, detach
+  and send. Listening never forces the IME up (T16). Commit `22b3eba`.
+- 2026-11-26: T17 green. RED: `BubbleVoiceFollowUpTest` failed to compile
+  (`Unresolved reference 'BubbleVoiceFollowUp'`). GREEN: 6 tests; full suite 1177
+  tests, 0 failures (+6 since T11); `assembleRelease` success.
+  `BubbleVoiceFollowUp.shouldListen` requires a dictated origin, a DONE phase and
+  a trimmed answer ending in "?" or containing "¿"; typed requests, statements
+  and failed turns never trigger it. The overlay tracks a draft as dictated until
+  the owner edits it (`TextWatcher` plus an applying-transcript guard, so the
+  overlay's own writes do not count) and remembers the origin at send. On a
+  question answer it expands (undocking first when docked), leaves the answer
+  visible and starts T11 listening once for that turn; it never sends. A dictated
+  turn still in flight keeps following when the bubble is minimized so it can do
+  this; a typed turn keeps the T6/T18 close rule. The same commit carries two T11
+  polish items: the bars animate only while listening, and the permission activity
+  drops `noHistory` so the dialog result always lands. Commit `684d9a7`.
+
 ## Next step
 
-T11 in-bubble dictation and T17 voice follow-up, then T12 (release: version
-bump, `assembleRelease`, push, live check, PR). T18 is done end to end: the
-server names the owner turn on the delivered command and the phone accepts its
-auto-approved messaging steps only while that turn is active on the device.
+T11 and T17 are done; only T12 remains (release: version bump,
+`assembleRelease`, push, live check, PR). T18 is done end to end: the server names
+the owner turn on the delivered command and the phone accepts its auto-approved
+messaging steps only while that turn is active on the device.
 Before T12, deliver only `assembleRelease` APKs (a debug APK fails with a
 signature mismatch on the phone).
