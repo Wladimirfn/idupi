@@ -178,7 +178,7 @@ every outbound or irreversible step goes through the approval queue (B1).
       ..." -> append to the compose field (accessibility set-text), ask again;
       no -> reject; silence/error -> post the usual notification as fallback.
       Reuses the T21 classifier/loop. Tests.
-- [ ] T12 Release: version bump, assembleRelease (same cert), push, live check,
+- [x] T12 Release: version bump, assembleRelease (same cert), push, live check,
       PR.
 
 ## Acceptance criteria
@@ -458,11 +458,12 @@ stacked on #28 with `size:exception`, same as #27/#28.
   1.58-burbuja-aprobar-voz (versionCode 59, `a6b1866`) installed over adb.
   On-device check pending (owner); generic non-WhatsApp node heuristics untested.
 
+- 2026-11-26: T12 done. Owner live check on 1.58: dictated WhatsApp send with
+  the voice approval (apr-6f67a1633afa approved, no notification), "léemelo"
+  and "agrégale" worked. Server suite 1023/1023, app 1240/0. PR to main
+  (#28 merged); T19 stays open for a later block.
+
 ## Next step
 
-T20 and T21 are done and 1.56-burbuja-voz is on the phone (dlv-064e0a4214e9).
-T12 remains open: owner live check of the bubble dictation (T11), the voice
-follow-up (T17), the voice confirmation loop (T21) and the app no longer
-coming up behind the bubble (T20); then the PR. T19 (per-app integration) is
-still pending. Deliver only `assembleRelease` APKs (a debug APK fails with a
-signature mismatch on the phone).
+PR open; T19 (per-app integration) is the only open task, deferred to a later
+block.
