@@ -1,5 +1,6 @@
 package com.idupi.app.data.phone.bubble
 
+import com.idupi.app.data.phone.approval.OwnerTurnRegistry
 import com.idupi.app.domain.model.PhoneAgentTurn
 import com.idupi.app.domain.model.PhoneAgentTurnStartResult
 import com.idupi.app.domain.model.PhoneAgentTurnStatus
@@ -55,6 +56,11 @@ data class BubbleChatState(
  * keeps the poll retry on virtual time. [close] cancels the poll when the panel
  * is minimized; [resume] follows the same turn again when it reopens, so a
  * minimized bubble does not lose an answer that is still running on the PC.
+ *
+ * The controller also owns the phone-local half of T18: a turn it starts is
+ * registered in [OwnerTurnRegistry] until it reaches a terminal status, the
+ * panel closes or a new request supersedes it. The approval gate uses that to
+ * accept the messaging steps the server auto-approved for this same turn.
  */
 class BubbleChatController(
     private val clientSource: IduPiClientSource,
@@ -77,6 +83,14 @@ class BubbleChatController(
     private var answerRendered = false
     private var errorRendered = false
 
+    /**
+     * Turn id registered in [OwnerTurnRegistry] on behalf of this controller
+     * (phone-bubble, T18). Written from the poll coroutine and read by [close],
+     * which may run on the main thread.
+     */
+    @Volatile
+    private var registeredTurnId: String? = null
+
     /** Sends one request. Blank text and a busy turn are no-ops. */
     fun send(text: String) {
         val request = text.trim()
@@ -92,9 +106,11 @@ class BubbleChatController(
 
     /**
      * Cancels the long poll. The server turn keeps running; [resume] reattaches
-     * to it when the owner opens the panel again.
+     * to it when the owner opens the panel again. The turn stops being an
+     * approver on this phone until then (T18).
      */
     fun close() {
+        unregisterTurn()
         turnJob?.cancel()
         turnJob = null
         if (_state.value.isBusy) _state.update { it.copy(phase = BubbleChatPhase.IDLE) }
@@ -105,11 +121,17 @@ class BubbleChatController(
         val turn = lastTurn ?: return
         if (!PhoneAgentTurnStatus.isActive(turn.status)) return
         if (turnJob?.isActive == true) return
-        turnJob = scope.launch { follow(turn) }
+        turnJob = scope.launch {
+            registerTurn(turn.id)
+            follow(turn)
+        }
     }
 
     private fun start(text: String) {
         turnJob?.cancel()
+        // A new request supersedes the previous turn on the server too, so the
+        // old id must stop authorizing anything here.
+        unregisterTurn()
         activeTurnId = null
         renderedSteps = 0
         answerRendered = false
@@ -131,7 +153,12 @@ class BubbleChatController(
                 PhoneAgentTurnStartResult.Failure()
             }
             when (result) {
-                is PhoneAgentTurnStartResult.Started -> follow(result.turn)
+                is PhoneAgentTurnStartResult.Started -> {
+                    // T18: the server may auto-approve this turn's messaging
+                    // steps; only a turn started here may be accepted here.
+                    registerTurn(result.turn.id)
+                    follow(result.turn)
+                }
                 is PhoneAgentTurnStartResult.Invalid -> fail(result.message)
                 is PhoneAgentTurnStartResult.Unavailable -> fail(result.message)
                 is PhoneAgentTurnStartResult.Failure -> fail(result.message)
@@ -171,6 +198,7 @@ class BubbleChatController(
      */
     private fun apply(turn: PhoneAgentTurn) {
         lastTurn = turn
+        if (PhoneAgentTurnStatus.isTerminal(turn.status)) unregisterTurn(turn.id)
         if (turn.id != activeTurnId) {
             activeTurnId = turn.id
             renderedSteps = 0
@@ -226,6 +254,17 @@ class BubbleChatController(
                 canRetry = true,
             )
         }
+    }
+
+    private fun registerTurn(turnId: String) {
+        registeredTurnId = turnId
+        OwnerTurnRegistry.register(turnId)
+    }
+
+    private fun unregisterTurn(turnId: String? = registeredTurnId) {
+        if (turnId == null) return
+        OwnerTurnRegistry.remove(turnId)
+        if (registeredTurnId == turnId) registeredTurnId = null
     }
 
     companion object {

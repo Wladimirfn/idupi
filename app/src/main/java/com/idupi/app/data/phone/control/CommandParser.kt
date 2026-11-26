@@ -179,7 +179,23 @@ object CommandParser {
         val reason = (args.string("approvalReason") ?: root.string("approvalReason"))
             ?.takeIf { it.isNotBlank() }
             .orEmpty()
-        return CommandApproval(approvalId, approvedTarget, reason)
+        // Owner-request fields (phone-bubble, T18). A manual approval omits them
+        // and every default stays null; a free command has no approval at all.
+        val ownerTurnId = (args.string("ownerTurnId") ?: root.string("ownerTurnId"))
+            ?.takeIf { it.isNotBlank() }
+        val category = (args.string("approvalCategory") ?: root.string("approvalCategory"))
+            ?.takeIf { it.isNotBlank() }
+        val expiresAt =
+            (args.string("approvalExpiresAt") ?: root.string("approvalExpiresAt"))
+                ?.takeIf { it.isNotBlank() }
+        return CommandApproval(
+            approvalId = approvalId,
+            approvedTarget = approvedTarget,
+            reason = reason,
+            ownerTurnId = ownerTurnId,
+            category = category,
+            expiresAt = expiresAt,
+        )
     }
 
     private fun invalid(commandId: String, type: String?, error: String) =
@@ -206,5 +222,12 @@ object CommandParser {
     private const val MAX_WAIT_MS = 10_000
     private const val MAX_APPROVAL_ID_CHARS = 80
 
-    private val APPROVAL_ARG_KEYS = setOf("approvalId", "approvedTarget", "approvalReason")
+    private val APPROVAL_ARG_KEYS = setOf(
+        "approvalId",
+        "approvedTarget",
+        "approvalReason",
+        "ownerTurnId",
+        "approvalCategory",
+        "approvalExpiresAt",
+    )
 }

@@ -2,6 +2,7 @@ package com.idupi.app.data.phone.bubble
 
 import com.idupi.app.FakeClientSource
 import com.idupi.app.FakeIduPiClient
+import com.idupi.app.data.phone.approval.OwnerTurnRegistry
 import com.idupi.app.domain.model.PhoneAgentTurn
 import com.idupi.app.domain.model.PhoneAgentTurnStartResult
 import com.idupi.app.domain.model.PhoneAgentTurnStatus
@@ -12,6 +13,7 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -34,6 +36,12 @@ class BubbleChatControllerTest {
     @Before
     fun setUp() {
         fake = FakeIduPiClient()
+        OwnerTurnRegistry.clear()
+    }
+
+    @After
+    fun tearDown() {
+        OwnerTurnRegistry.clear()
     }
 
     private fun TestScope.controller(): BubbleChatController =
@@ -415,5 +423,140 @@ class BubbleChatControllerTest {
         advanceUntilIdle()
 
         assertEquals(listOf("uno"), fake.startedPhoneTurns)
+    }
+
+    // --- owner-request approval binding (phone-bubble, T18) ---------------
+
+    @Test
+    fun `a successful post registers the turn until it finishes`() = runTest {
+        val controller = controller()
+        val gate = CompletableDeferred<Unit>()
+        fake.phoneTurnStartResults.addLast(
+            PhoneAgentTurnStartResult.Started(turn(status = PhoneAgentTurnStatus.QUEUED))
+        )
+        fake.phoneTurnPollHandlers.addLast { _, _ ->
+            gate.await()
+            turn(status = PhoneAgentTurnStatus.DONE, answer = "Listo")
+        }
+
+        controller.send("hola")
+        runCurrent()
+        assertTrue(OwnerTurnRegistry.isActive(TURN_ID))
+
+        gate.complete(Unit)
+        advanceUntilIdle()
+        assertFalse(OwnerTurnRegistry.isActive(TURN_ID))
+    }
+
+    @Test
+    fun `a failed turn unregisters the owner turn`() = runTest {
+        val controller = controller()
+        val gate = CompletableDeferred<Unit>()
+        fake.phoneTurnStartResults.addLast(
+            PhoneAgentTurnStartResult.Started(turn(status = PhoneAgentTurnStatus.QUEUED))
+        )
+        fake.phoneTurnPollHandlers.addLast { _, _ ->
+            gate.await()
+            turn(status = PhoneAgentTurnStatus.FAILED, error = "agent failed")
+        }
+
+        controller.send("hola")
+        runCurrent()
+        assertTrue(OwnerTurnRegistry.isActive(TURN_ID))
+
+        gate.complete(Unit)
+        advanceUntilIdle()
+        assertFalse(OwnerTurnRegistry.isActive(TURN_ID))
+    }
+
+    @Test
+    fun `a cancelled turn unregisters the owner turn`() = runTest {
+        val controller = controller()
+        fake.phoneTurnStartResults.addLast(
+            PhoneAgentTurnStartResult.Started(turn(status = PhoneAgentTurnStatus.QUEUED))
+        )
+        fake.phoneTurnPollHandlers.addLast { _, _ ->
+            turn(status = PhoneAgentTurnStatus.CANCELLED)
+        }
+
+        controller.send("hola")
+        advanceUntilIdle()
+
+        assertFalse(OwnerTurnRegistry.isActive(TURN_ID))
+    }
+
+    @Test
+    fun `close unregisters the turn and resume registers it again`() = runTest {
+        val controller = controller()
+        val firstPoll = CompletableDeferred<Unit>()
+        val secondPoll = CompletableDeferred<Unit>()
+        fake.phoneTurnStartResults.addLast(
+            PhoneAgentTurnStartResult.Started(turn(status = PhoneAgentTurnStatus.QUEUED))
+        )
+        fake.phoneTurnPollHandlers.addLast { _, _ ->
+            firstPoll.await()
+            turn(status = PhoneAgentTurnStatus.RUNNING)
+        }
+        fake.phoneTurnPollHandlers.addLast { _, _ ->
+            secondPoll.await()
+            turn(status = PhoneAgentTurnStatus.DONE, answer = "Listo")
+        }
+
+        controller.send("hola")
+        runCurrent()
+        assertTrue(OwnerTurnRegistry.isActive(TURN_ID))
+
+        controller.close()
+        runCurrent()
+        assertFalse(OwnerTurnRegistry.isActive(TURN_ID))
+
+        controller.resume()
+        runCurrent()
+        assertTrue(OwnerTurnRegistry.isActive(TURN_ID))
+
+        secondPoll.complete(Unit)
+        advanceUntilIdle()
+        assertFalse(OwnerTurnRegistry.isActive(TURN_ID))
+    }
+
+    @Test
+    fun `a new turn removes the previous turn id`() = runTest {
+        val controller = controller()
+        fake.phoneTurnStartResults.addLast(
+            PhoneAgentTurnStartResult.Started(turn(status = PhoneAgentTurnStatus.QUEUED))
+        )
+        repeat(BubbleChatController.MAX_POLL_FAILURES) {
+            fake.phoneTurnPollHandlers.addLast { _, _ -> throw IOException("pc off") }
+        }
+
+        controller.send("hola")
+        advanceUntilIdle()
+        assertEquals(BubbleChatPhase.FAILED, controller.state.value.phase)
+        assertTrue(OwnerTurnRegistry.isActive(TURN_ID))
+
+        val gate = CompletableDeferred<Unit>()
+        fake.phoneTurnStartResults.addLast(
+            PhoneAgentTurnStartResult.Started(
+                turn(id = NEXT_TURN_ID, status = PhoneAgentTurnStatus.QUEUED)
+            )
+        )
+        fake.phoneTurnPollHandlers.addLast { _, _ ->
+            gate.await()
+            turn(id = NEXT_TURN_ID, status = PhoneAgentTurnStatus.DONE, answer = "Listo")
+        }
+
+        controller.retry()
+        runCurrent()
+        assertFalse(OwnerTurnRegistry.isActive(TURN_ID))
+        assertTrue(OwnerTurnRegistry.isActive(NEXT_TURN_ID))
+
+        gate.complete(Unit)
+        advanceUntilIdle()
+        assertFalse(OwnerTurnRegistry.isActive(NEXT_TURN_ID))
+    }
+
+    private companion object {
+        const val TURN_ID = "pat-1a2b3c4d5e6f"
+        const val NEXT_TURN_ID = "pat-2b3c4d5e6f01"
     }
 }
