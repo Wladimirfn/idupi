@@ -90,8 +90,11 @@ import kotlinx.coroutines.launch
  * microphone: `SpeechRecognizer` runs inside the overlay, partial hypotheses
  * stream into the field, level bars follow `onRmsChanged` and the system sheet
  * remains only as the fallback when the phone cannot dictate in-process. Since
- * T21 a dictated final transcript is read back on screen and out loud and may
- * be sent after the owner's spoken confirmation ("como Android Auto con
+ * T22 a failing on-device recognizer is replaced by the standard one for the
+ * rest of the overlay's life, and a standard recognizer that cannot serve the
+ * request hands the mic to that sheet instead of leaving a dead-end error.
+ * Since T21 a dictated final transcript is read back on screen and out loud and
+ * may be sent after the owner's spoken confirmation ("como Android Auto con
  * Gemini"); typed requests keep the plain send button path. The approval
  * banner (T7) is rendered by the same shell; it never decides.
  */
@@ -201,6 +204,22 @@ class PhoneBubbleOverlay(
 
     /** Live in-process recognizer; created on first use, destroyed on collapse. */
     private var speech: SpeechRecognizer? = null
+
+    /** Whether [speech] is the on-device model; drives the T22 recovery table. */
+    private var speechOnDevice = false
+
+    /**
+     * The on-device model failed once (T22). It is never created again for the
+     * life of this overlay: on-device models usually lack the owner's Spanish
+     * locale, and the standard recognizer is the one the phone accepts.
+     */
+    private var onDeviceRecognizerDisabled = false
+
+    /** Recognition request of the live attempt; the T22 retry resends it. */
+    private var speechIntent: Intent? = null
+
+    /** The owner tapped Detener; a late error must not restart the microphone. */
+    private var stopRequested = false
 
     /** Where the last request came from; the follow-up only applies to voice (T17). */
     private var requestOrigin = BubbleRequestOrigin.TYPED
@@ -952,31 +971,115 @@ class PhoneBubbleOverlay(
         }
     }
 
-    private fun startSpeech(): Boolean =
-        try {
-            ensureSpeechRecognizer().startListening(recognitionIntent())
+    /**
+     * Starts the in-bubble recognizer for one listening attempt.
+     *
+     * [intent] defaults to the T5/T11 request; the T22 retry passes the intent
+     * of the failed attempt so the owner keeps the same language and extras.
+     *
+     * @return true when a recognizer is listening when this returns, including
+     *   a successful T22 retry with the standard recognizer.
+     */
+    private fun startSpeech(intent: Intent = recognitionIntent()): Boolean {
+        speechIntent = intent
+        return try {
+            stopRequested = false
+            ensureSpeechRecognizer().startListening(intent)
             true
         } catch (error: Exception) {
-            Log.w(TAG, "could not start in-bubble dictation: ${error.javaClass.simpleName}")
-            dispatchVoice(BubbleVoiceEvent.OtherError)
-            false
+            Log.w(
+                TAG,
+                "could not start in-bubble dictation (onDevice=$speechOnDevice): " +
+                    error.javaClass.simpleName,
+            )
+            onStartSpeechFailure()
         }
+    }
+
+    /**
+     * Applies the start-failure half of the T22 table: an on-device start that
+     * throws retries the standard recognizer; a standard one that throws leaves
+     * the system sheet as the only dictation left on this phone.
+     *
+     * @return true when the retry is listening.
+     */
+    private fun onStartSpeechFailure(): Boolean =
+        when (BubbleRecognizerRecovery.forStartFailure(speechOnDevice)) {
+            RecognizerRecovery.RETRY_STANDARD -> retryWithStandardRecognizer()
+            RecognizerRecovery.SYSTEM_SHEET -> {
+                fallBackToSystemSheet()
+                false
+            }
+            RecognizerRecovery.REPORT -> {
+                showVoiceFailure()
+                false
+            }
+        }
+
+    /**
+     * T22: the on-device model cannot serve this phone. Destroy it, keep it
+     * disabled for the rest of the overlay's life and listen again with the
+     * standard recognizer without touching the state: the owner keeps the same
+     * "Escuchando…" UI, sees no error and the T21 loop keeps waiting for its
+     * answer. A failure of this standard attempt is evaluated as a standard
+     * one, so the retry can never repeat.
+     *
+     * @return true when the standard recognizer started listening.
+     */
+    private fun retryWithStandardRecognizer(): Boolean {
+        onDeviceRecognizerDisabled = true
+        destroySpeechRecognizer()
+        return startSpeech(speechIntent ?: recognitionIntent())
+    }
+
+    /**
+     * T22: in-process dictation cannot answer here, so the existing system
+     * sheet takes over (the path that has worked since 1.55). Inside the T21
+     * read-back loop the sheet never opens: the loop stops like on any other
+     * failure, so the request stays in the field unsent.
+     */
+    private fun fallBackToSystemSheet() {
+        destroySpeechRecognizer()
+        if (confirmState != BubbleConfirmState.Idle) {
+            stopLoopOnFailure()
+            return
+        }
+        voiceState = BubbleVoiceState.Idle
+        followUpListen = false
+        renderVoice()
+        launchDictation()
+    }
+
+    /** Ends the T21 loop on a failure; the transcript stays in the field. */
+    private fun stopLoopOnFailure() {
+        voiceState = BubbleVoiceState.Idle
+        renderVoice()
+        dispatchConfirm(BubbleConfirmEvent.NoSpeech)
+    }
 
     /**
      * One recognizer for the life of the listening attempts; T11 prefers the
      * on-device model on API 31+ because it answers without a round trip.
+     *
+     * T22 drops that preference for the rest of the overlay's life after the
+     * first on-device failure ([onDeviceRecognizerDisabled]): such a failure
+     * usually means the on-device model has no model for the owner's Spanish
+     * locale, so a retried attempt uses the standard recognizer the phone is
+     * known to accept. Until then this is the T11 behaviour unchanged.
      */
     private fun ensureSpeechRecognizer(): SpeechRecognizer {
         speech?.let { return it }
-        val created = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+        val onDevice = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            !onDeviceRecognizerDisabled &&
             SpeechRecognizer.isOnDeviceRecognitionAvailable(service)
-        ) {
+        val created = if (onDevice) {
             SpeechRecognizer.createOnDeviceSpeechRecognizer(service)
         } else {
             SpeechRecognizer.createSpeechRecognizer(service)
         }
         created.setRecognitionListener(recognitionListener)
         speech = created
+        speechOnDevice = onDevice
         return created
     }
 
@@ -1001,10 +1104,25 @@ class PhoneBubbleOverlay(
      * from tapping the mic a second time.
      */
     private fun stopSpeech() {
+        // A failure after Detener must not restart the microphone (T22).
+        stopRequested = true
         try {
             speech?.stopListening()
         } catch (error: Exception) {
             Log.w(TAG, "could not stop dictation: ${error.javaClass.simpleName}")
+        }
+    }
+
+    /** Cancels and destroys the live recognizer, if any (T11, retry in T22). */
+    private fun destroySpeechRecognizer() {
+        val recognizer = speech ?: return
+        speech = null
+        speechOnDevice = false
+        try {
+            recognizer.cancel()
+            recognizer.destroy()
+        } catch (error: Exception) {
+            Log.w(TAG, "could not destroy dictation: ${error.javaClass.simpleName}")
         }
     }
 
@@ -1013,19 +1131,11 @@ class PhoneBubbleOverlay(
      * The next mic tap creates a fresh one.
      */
     private fun abandonVoice(render: Boolean) {
-        val recognizer = speech
-        speech = null
-        if (recognizer != null) {
-            try {
-                recognizer.cancel()
-                recognizer.destroy()
-            } catch (error: Exception) {
-                Log.w(TAG, "could not destroy dictation: ${error.javaClass.simpleName}")
-            }
-        }
+        destroySpeechRecognizer()
         voiceState = BubbleVoiceState.Idle
         // A transcript from a cancelled attempt is never a follow-up answer.
         followUpListen = false
+        stopRequested = false
         if (render) renderVoice()
     }
 
@@ -1108,7 +1218,14 @@ class PhoneBubbleOverlay(
         }
     }
 
-    /** Thin bridge: every recognizer callback becomes one reducer event. */
+    /**
+     * Thin bridge: every recognizer callback becomes one reducer event.
+     *
+     * `onError` first applies the T22 recovery table: an on-device failure
+     * retries the standard recognizer without leaving the Listening UI (the
+     * T21 loop keeps waiting), while a standard failure either keeps T11's copy
+     * or opens the system sheet when in-process dictation is unusable.
+     */
     private val recognitionListener = object : RecognitionListener {
         override fun onReadyForSpeech(params: Bundle?) = Unit
         override fun onBeginningOfSpeech() = Unit
@@ -1118,13 +1235,36 @@ class PhoneBubbleOverlay(
         override fun onBufferReceived(buffer: ByteArray?) = Unit
         override fun onEndOfSpeech() = Unit
         override fun onError(error: Int) {
+            val onDevice = speechOnDevice
+            val recovery = BubbleRecognizerRecovery.forError(
+                onDevice = onDevice,
+                errorCode = error,
+            )
+            // No transcript here on purpose: ids and codes only (T22).
+            Log.w(
+                TAG,
+                "recognizer error code=$error onDevice=$onDevice recovery=$recovery",
+            )
+            // A callback from a recognizer already destroyed (collapse, send,
+            // detach, or the on-device instance the T22 retry dropped) owns
+            // nothing and must never open the sheet by itself.
+            if (speech == null) return
+            if (recovery == RecognizerRecovery.RETRY_STANDARD && !stopRequested) {
+                // T22: same Listening UI, standard recognizer; inside the T21
+                // loop the loop simply keeps waiting for its answer.
+                retryWithStandardRecognizer()
+                return
+            }
             followUpListen = false
             if (confirmState != BubbleConfirmState.Idle) {
-                // T21: inside the read-back loop any recognizer failure ends
-                // the conversation; the request stays in the field unsent.
-                voiceState = BubbleVoiceState.Idle
-                renderVoice()
-                dispatchConfirm(BubbleConfirmEvent.NoSpeech)
+                // T21: inside the read-back loop any final failure ends the
+                // conversation; the request stays in the field unsent. A
+                // SYSTEM_SHEET verdict never opens the sheet from here.
+                stopLoopOnFailure()
+                return
+            }
+            if (recovery == RecognizerRecovery.SYSTEM_SHEET && !stopRequested) {
+                fallBackToSystemSheet()
                 return
             }
             dispatchVoice(recognitionErrorEvent(error))
