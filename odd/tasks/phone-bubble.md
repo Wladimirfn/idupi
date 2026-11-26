@@ -118,6 +118,22 @@ every outbound or irreversible step goes through the approval queue (B1).
       agent answers with a question, the bubble opens, shows the answer and
       starts listening again (in-bubble dictation from T11), never auto-sends.
       Tests.
+- [ ] T18 App: phone-side acceptance of owner-request approvals. The phone
+      ledger accepts an approval with `decidedBy = owner-request:<turnId>` ONLY
+      when that turn id was started from this phone's bubble and is still
+      queued/running (the bubble controller registers it on POST and clears it
+      on any terminal status), and only for the gated categories the server
+      may auto-approve (never money/destructive). Without that match the
+      executor keeps refusing (`APPROVAL_NOT_GRANTED_ON_PHONE`). Keeps the
+      phone-side guarantee: a PC can't approve anything the owner did not ask
+      for on the phone. Tests.
+- [ ] T19 Per-app integration (owner 2026-11-26: Outlook, Gmail, Messenger,
+      Instagram, Telegram, YouTube, Google, Brave, Chrome, WhatsApp): (a)
+      deep-link command (`mailto:`, `wa.me`, `t.me`, http(s) search/URL with
+      an explicit target package) behind a scheme allowlist; (b) per-app
+      playbooks (send button / compose field / search ids, how to confirm a
+      send) captured from the owner's real screen dumps, injected into the
+      agent prompt for the app in use; (c) generic fallback. Research + tests.
 - [ ] T12 Release: version bump, assembleRelease (same cert), push, live check,
       PR.
 
