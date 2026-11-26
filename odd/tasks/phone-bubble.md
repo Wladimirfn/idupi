@@ -108,6 +108,13 @@ stacked on #28 with `size:exception`, same as #27/#28.
   0 fail. The 16th CLI call kills the child and fails the turn; route logs carry
   ids and statuses only; docs section "Bubble agent turns".
   Commit `ffddd2a`.
+- 2026-11-26: parent review. Turns used the inbox config, whose default agent is
+  opencode, so the route would answer 503. Bubble turns now have their own
+  config in `index.mjs` (`claude`, model `claude-sonnet-5-5` or
+  `IDUPI_PHONE_AGENT_MODEL`, effort medium). Live runner check against the phone
+  (no server restart, one PTY alive): "¿Qué app tengo abierta y cuánta batería
+  me queda?" -> one `status` CLI call, neutral Spanish answer in 8 s.
+  Server 988 pass, 0 fail.
 
 ## Next step
 

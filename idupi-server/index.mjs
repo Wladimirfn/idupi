@@ -1380,6 +1380,11 @@ const handlePhoneCalendarRoute = createPhoneCalendarRoutes({ store: phoneCalenda
 // Phone bubble turns (phone-bubble, T1/T2): the owner request and its answer
 // are persisted; the agent runs with a single-command Bash allowlist for
 // idupi-phone, a throwaway cwd and an env without the server token.
+const PHONE_AGENT_CONFIG = Object.freeze({
+    agent: "claude",
+    model: process.env.IDUPI_PHONE_AGENT_MODEL?.trim() || "claude-sonnet-5-5",
+    effort: "medium",
+});
 const phoneAgentTurnStore = createPhoneAgentTurnStore({
     dataDir: fileURLToPath(new URL("./data", import.meta.url)),
 });
@@ -1389,7 +1394,9 @@ const phoneAgentRunner = createPhoneAgentRunner({
 const handlePhoneAgentRoute = createPhoneAgentRoutes({
     store: phoneAgentTurnStore,
     runner: phoneAgentRunner,
-    getConfig: () => inboxStore.getConfig(),
+    // Bubble turns have their own agent: only the claude profile can be limited
+    // to the single idupi-phone command, while the inbox may run on opencode.
+    getConfig: () => PHONE_AGENT_CONFIG,
 });
 
 // Phone health (phone-health, T1/T3/T4): the ADB link, the hidden-display
