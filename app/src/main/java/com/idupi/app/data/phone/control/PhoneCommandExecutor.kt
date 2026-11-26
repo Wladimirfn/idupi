@@ -11,6 +11,9 @@ import android.os.Bundle
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 import com.idupi.app.data.phone.PhoneStatusReporting
+import com.idupi.app.data.phone.approval.ApprovalGate
+import com.idupi.app.data.phone.approval.ApprovalGateResult
+import com.idupi.app.data.phone.approval.ApprovalLedger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -29,15 +32,18 @@ import kotlin.coroutines.resume
  */
 class PhoneCommandExecutor(
     private val service: AccessibilityService,
+    private val ledger: ApprovalLedger,
+    private val nowMillis: () -> Long = System::currentTimeMillis,
     private val reportStatusNow: suspend () -> Boolean = { PhoneStatusReporting.reportNow() },
 ) {
 
     suspend fun execute(command: PhoneCommand): CommandOutcome = try {
         when (command) {
             is PhoneCommand.Screen -> screen()
-            is PhoneCommand.Tap -> tap(command.target, longPress = false)
-            is PhoneCommand.LongPress -> tap(command.target, longPress = true)
-            is PhoneCommand.TypeText -> type(command.text, command.submit)
+            is PhoneCommand.Tap -> tap(command.target, longPress = false, approval = command.approval)
+            is PhoneCommand.LongPress ->
+                tap(command.target, longPress = true, approval = command.approval)
+            is PhoneCommand.TypeText -> type(command.text, command.submit, command.approval)
             is PhoneCommand.Scroll -> scroll(command.direction)
             is PhoneCommand.Global -> global(command.action)
             is PhoneCommand.OpenApp -> open(command.app)
@@ -102,8 +108,27 @@ class PhoneCommandExecutor(
 
     // --- tap / long_press ---
 
-    private suspend fun tap(target: NodeTarget, longPress: Boolean): CommandOutcome {
+    private suspend fun tap(
+        target: NodeTarget,
+        longPress: Boolean,
+        approval: CommandApproval?,
+    ): CommandOutcome {
         if (target is NodeTarget.Point) {
+            val roots = liveRoots()
+            val texts = if (roots.isEmpty()) {
+                emptyList()
+            } else {
+                NodeMatcher.textsAtPoint(roots.map(::snapshot), target.x, target.y)
+            }
+            refusal(
+                ApprovalGate.checkNode(
+                    approval = approval,
+                    nodeTexts = texts,
+                    ledger = ledger,
+                    nowMillis = nowMillis(),
+                    commandTarget = commandTarget(target),
+                )
+            )?.let { return it }
             return dispatchTap(target.x.toFloat(), target.y.toFloat(), longPress)
         }
 
@@ -114,6 +139,20 @@ class PhoneCommandExecutor(
         return when (val match = NodeMatcher.find(snapshots, target)) {
             is NodeMatch.NotFound -> CommandOutcome.failure(match.reason)
             is NodeMatch.Found -> {
+                val texts = buildList {
+                    if (target is NodeTarget.Text) add(target.text)
+                    addAll(NodeMatcher.textCandidates(match.node))
+                }
+                refusal(
+                    ApprovalGate.checkNode(
+                        approval = approval,
+                        nodeTexts = texts,
+                        ledger = ledger,
+                        nowMillis = nowMillis(),
+                        commandTarget = commandTarget(target),
+                    )
+                )?.let { return it }
+
                 val live = findLiveNode(roots, match.node)
                 val performed = when {
                     live == null -> false
@@ -204,7 +243,15 @@ class PhoneCommandExecutor(
 
     // --- type ---
 
-    private fun type(text: String, submit: Boolean): CommandOutcome {
+    private suspend fun type(
+        text: String,
+        submit: Boolean,
+        approval: CommandApproval?,
+    ): CommandOutcome {
+        if (submit) {
+            refusal(ApprovalGate.checkSubmit(approval, ledger, nowMillis()))?.let { return it }
+        }
+
         val root = service.rootInActiveWindow ?: return CommandOutcome.failure("no hay ventana activa")
         val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
         val editable = when {
@@ -349,6 +396,29 @@ class PhoneCommandExecutor(
             Log.w(TAG, "could not launch app: ${error.javaClass.simpleName}")
             CommandOutcome.failure("no se pudo abrir la app")
         }
+    }
+
+    /** The target exactly as the server normalized it (`text`, id, or `x,y`). */
+    private fun commandTarget(target: NodeTarget): String = when (target) {
+        is NodeTarget.Text -> target.text
+        is NodeTarget.Id -> target.id
+        is NodeTarget.Point -> "${target.x},${target.y}"
+    }
+
+    /**
+     * Turns a refused gate into the result the server expects. Only a refused
+     * risky node carries `result.nodeText`, which the server uses to build the
+     * approval request.
+     */
+    private fun refusal(result: ApprovalGateResult): CommandOutcome? = when (result) {
+        ApprovalGateResult.Allowed -> null
+        is ApprovalGateResult.Refused -> CommandOutcome(
+            ok = false,
+            result = result.nodeText?.takeIf { it.isNotBlank() }?.let { nodeText ->
+                buildJsonObject { put("nodeText", nodeText) }
+            },
+            error = result.error,
+        )
     }
 
     companion object {

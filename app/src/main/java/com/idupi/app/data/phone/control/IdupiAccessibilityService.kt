@@ -7,6 +7,8 @@ import com.idupi.app.data.IduPiClientProvider
 import com.idupi.app.data.calendar.CalendarReporting
 import com.idupi.app.data.health.HealthReporting
 import com.idupi.app.data.phone.PhoneStatusReporting
+import com.idupi.app.data.phone.approval.PhoneApprovalReporting
+import com.idupi.app.data.phone.approval.PhoneApprovals
 import com.idupi.app.data.settings.SettingsProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -38,7 +40,7 @@ class IdupiAccessibilityService : AccessibilityService() {
     private var controlJob: Job? = null
     private var settingsJob: Job? = null
 
-    private val executor by lazy { PhoneCommandExecutor(this) }
+    private val executor by lazy { PhoneCommandExecutor(this, PhoneApprovals.ledger(this)) }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -49,7 +51,14 @@ class IdupiAccessibilityService : AccessibilityService() {
         settingsJob?.cancel()
         settingsJob = scope.launch {
             SettingsProvider.repository.phoneControlEnabled.collect { enabled ->
-                if (enabled) startControlLoop() else stopControlLoop()
+                if (enabled) {
+                    startControlLoop()
+                    // Risky commands wait for the owner; poll while control is on.
+                    PhoneApprovalReporting.start(this@IdupiAccessibilityService)
+                } else {
+                    stopControlLoop()
+                    PhoneApprovalReporting.stop()
+                }
             }
         }
     }
@@ -64,6 +73,7 @@ class IdupiAccessibilityService : AccessibilityService() {
 
     override fun onUnbind(intent: Intent?): Boolean {
         stopControlLoop()
+        PhoneApprovalReporting.stop()
         settingsJob?.cancel()
         settingsJob = null
         return super.onUnbind(intent)
@@ -71,6 +81,7 @@ class IdupiAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         stopControlLoop()
+        PhoneApprovalReporting.stop()
         settingsJob?.cancel()
         settingsJob = null
         scope.cancel()

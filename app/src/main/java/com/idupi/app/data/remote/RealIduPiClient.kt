@@ -24,6 +24,7 @@ import io.ktor.client.request.request
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsChannel
+import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpMethod
 import io.ktor.http.contentType
@@ -46,6 +47,9 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 /**
@@ -55,7 +59,9 @@ import kotlinx.serialization.json.put
 class IduPiHttpException(
     val statusCode: Int,
     val url: String,
-    override val message: String
+    override val message: String,
+    /** Server error `code` when the body carried one (`EXPIRED`, …). */
+    val code: String? = null,
 ) : Exception(message)
 
 @Serializable
@@ -260,7 +266,18 @@ class RealIduPiClient : IduPiClient {
         }
         if (!response.status.isSuccess()) {
             Log.w(TAG, "${method.value} $path -> ${response.status.value}")
-            throw IduPiHttpException(response.status.value, url, describeHttpFailure(response.status.value))
+            // The error body carries a short `code` (EXPIRED, ALREADY_DECIDED…).
+            // Reading it here keeps every caller from parsing bodies itself.
+            val code = runCatching {
+                json.parseToJsonElement(response.bodyAsText())
+                    .jsonObject["code"]?.jsonPrimitive?.contentOrNull
+            }.getOrNull()
+            throw IduPiHttpException(
+                response.status.value,
+                url,
+                describeHttpFailure(response.status.value),
+                code,
+            )
         }
         return response
     }
@@ -1103,6 +1120,37 @@ class RealIduPiClient : IduPiClient {
         }
     }
 
+    // --- Phone approvals (phone-approvals T2) ---
+
+    override suspend fun getPhoneApprovals(state: String, limit: Int): PhoneApprovalsResponse =
+        send(HttpMethod.Get, "/api/v1/phone/approvals") {
+            parameter("state", state)
+            parameter("limit", limit)
+        }.body()
+
+    override suspend fun decidePhoneApproval(
+        id: String,
+        approve: Boolean,
+    ): PhoneApprovalDecisionResult =
+        try {
+            val approval = send(
+                HttpMethod.Post,
+                "/api/v1/phone/approvals/$id/decision",
+            ) {
+                contentType(ContentType.Application.Json)
+                setBody(PhoneApprovalDecisionPayload(if (approve) "approve" else "reject"))
+            }.body<PhoneApprovalDecisionEnvelope>().approval
+            PhoneApprovalDecisionResult.Decided(approval)
+        } catch (e: IduPiHttpException) {
+            when (e.statusCode) {
+                404 -> PhoneApprovalDecisionResult.NotFound
+                409 -> PhoneApprovalDecisionResult.Conflict(
+                    e.code ?: PhoneApprovalDecisionResult.CODE_ALREADY_DECIDED
+                )
+                else -> throw e
+            }
+        }
+
     companion object {
         private const val TAG = "RealIduPiClient"
     }
@@ -1110,6 +1158,14 @@ class RealIduPiClient : IduPiClient {
 
 @Serializable
 private data class ApplySddProfilePayload(val profileId: String)
+
+/** `POST /api/v1/phone/approvals/{id}/decision` body. */
+@Serializable
+private data class PhoneApprovalDecisionPayload(val decision: String)
+
+/** The approval decision route wraps the updated approval. */
+@Serializable
+private data class PhoneApprovalDecisionEnvelope(val approval: PhoneApproval)
 
 /** `POST /api/v1/phone/calendar/proposals/{id}/decision` body. */
 @Serializable

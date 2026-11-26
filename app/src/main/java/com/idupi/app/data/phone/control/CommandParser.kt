@@ -46,6 +46,9 @@ object CommandParser {
         }
         val args = argsElement as? JsonObject ?: JsonObject(emptyMap())
         val expiresAt = root.string("expiresAt")?.takeIf { it.isNotBlank() }
+        // The server adds the approval both inside args and at the top level.
+        // These are hints for the executor; the local ledger is the authority.
+        val approval = approvalOf(root, args)
 
         return when (type) {
             "screen" -> {
@@ -56,13 +59,16 @@ object CommandParser {
                 unknownArg(args, emptySet())?.let { return invalid(id, type, it) }
                 CommandParseResult.Valid(PhoneCommand.ReportStatus(id, expiresAt))
             }
-            "tap" -> target("tap", args, id, expiresAt) { target -> PhoneCommand.Tap(id, expiresAt, target) }
+            "tap" -> target("tap", args, id, expiresAt, approval) { target ->
+                PhoneCommand.Tap(id, expiresAt, target, approval)
+            }
             "long_press" ->
-                target("long_press", args, id, expiresAt) { target ->
-                    PhoneCommand.LongPress(id, expiresAt, target)
+                target("long_press", args, id, expiresAt, approval) { target ->
+                    PhoneCommand.LongPress(id, expiresAt, target, approval)
                 }
             "type" -> {
-                unknownArg(args, setOf("text", "submit"))?.let { return invalid(id, type, it) }
+                unknownArg(args, setOf("text", "submit") + APPROVAL_ARG_KEYS)
+                    ?.let { return invalid(id, type, it) }
                 val text = args.string("text")?.takeIf { it.isNotBlank() }
                     ?: return invalid(id, type, "text inválido")
                 if (text.length > MAX_TEXT_CHARS) return invalid(id, type, "text demasiado largo")
@@ -71,7 +77,9 @@ object CommandParser {
                     return invalid(id, type, "submit inválido")
                 }
                 val submit = (submitPrimitive as? JsonPrimitive)?.content == "true"
-                CommandParseResult.Valid(PhoneCommand.TypeText(id, expiresAt, text, submit))
+                CommandParseResult.Valid(
+                    PhoneCommand.TypeText(id, expiresAt, text, submit, approval)
+                )
             }
             "scroll" -> {
                 unknownArg(args, setOf("direction"))?.let { return invalid(id, type, it) }
@@ -119,9 +127,11 @@ object CommandParser {
         args: JsonObject,
         id: String,
         expiresAt: String?,
+        approval: CommandApproval?,
         build: (NodeTarget) -> PhoneCommand,
     ): CommandParseResult {
-        unknownArg(args, setOf("text", "id", "x", "y"))?.let { return invalid(id, type, it) }
+        unknownArg(args, setOf("text", "id", "x", "y") + APPROVAL_ARG_KEYS)
+            ?.let { return invalid(id, type, it) }
 
         val text = args.string("text")
         val viewId = args.string("id")
@@ -156,6 +166,22 @@ object CommandParser {
         return CommandParseResult.Valid(build(target))
     }
 
+    /**
+     * Reads the approval hint the server attaches to a requeued command. It is
+     * tolerated but never trusted: [ApprovalGate] still checks the local ledger.
+     */
+    private fun approvalOf(root: JsonObject, args: JsonObject): CommandApproval? {
+        val approvalId = (args.string("approvalId") ?: root.string("approvalId"))
+            ?.takeIf { it.isNotBlank() && it.length <= MAX_APPROVAL_ID_CHARS }
+            ?: return null
+        val approvedTarget = (args.string("approvedTarget") ?: root.string("approvalTarget"))
+            ?.takeIf { it.isNotBlank() }
+        val reason = (args.string("approvalReason") ?: root.string("approvalReason"))
+            ?.takeIf { it.isNotBlank() }
+            .orEmpty()
+        return CommandApproval(approvalId, approvedTarget, reason)
+    }
+
     private fun invalid(commandId: String, type: String?, error: String) =
         CommandParseResult.Invalid(commandId, type, error)
 
@@ -178,4 +204,7 @@ object CommandParser {
     private const val MAX_APP_CHARS = 200
     private const val MAX_COORDINATE = 100_000
     private const val MAX_WAIT_MS = 10_000
+    private const val MAX_APPROVAL_ID_CHARS = 80
+
+    private val APPROVAL_ARG_KEYS = setOf("approvalId", "approvedTarget", "approvalReason")
 }

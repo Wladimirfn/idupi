@@ -13,6 +13,10 @@ import com.idupi.app.domain.model.KillProcessOutcome
 import com.idupi.app.domain.model.OsProcessSample
 import com.idupi.app.domain.model.Project
 import com.idupi.app.domain.model.PtyInfo
+import com.idupi.app.domain.model.PhoneApproval
+import com.idupi.app.domain.model.PhoneApprovalDecisionResult
+import com.idupi.app.domain.model.PhoneApprovalState
+import com.idupi.app.domain.model.PhoneApprovalsResponse
 import com.idupi.app.domain.model.PhoneCalendarSnapshot
 import com.idupi.app.domain.model.PhoneCalendarProposal
 import com.idupi.app.domain.model.PhoneCalendarProposalsResponse
@@ -919,6 +923,48 @@ class FakeIduPiClient : IduPiClient {
     ) {
         maybeFail()
         postedPhoneCommandResults += PostedPhoneCommandResult(commandId, ok, result, error)
+    }
+
+    // --- Phone approvals (phone-approvals T2) ---
+
+    var approvalsToReturn: PhoneApprovalsResponse = PhoneApprovalsResponse()
+    var failApprovalsWith: Exception? = null
+    var lastApprovalsState: String? = null
+    var approvalsCalls: Int = 0
+
+    override suspend fun getPhoneApprovals(state: String, limit: Int): PhoneApprovalsResponse {
+        approvalsCalls++
+        lastApprovalsState = state
+        failApprovalsWith?.let { error ->
+            failApprovalsWith = null
+            throw error
+        }
+        maybeFail()
+        return approvalsToReturn
+    }
+
+    /** When set, the decision returns it; otherwise a Decided answer. */
+    var decisionToReturn: PhoneApprovalDecisionResult? = null
+
+    /** When set, the decision throws it (the fake keeps it, unlike one-shots). */
+    var failDecisionWith: Exception? = null
+
+    /** Every decision post, in order. */
+    val approvalDecisions = mutableListOf<Pair<String, Boolean>>()
+
+    override suspend fun decidePhoneApproval(
+        id: String,
+        approve: Boolean,
+    ): PhoneApprovalDecisionResult {
+        maybeFail()
+        failDecisionWith?.let { throw it }
+        approvalDecisions += id to approve
+        return decisionToReturn ?: PhoneApprovalDecisionResult.Decided(
+            PhoneApproval(
+                id = id,
+                state = if (approve) PhoneApprovalState.APPROVED else PhoneApprovalState.REJECTED,
+            )
+        )
     }
 
     // --- Remote screen module ---

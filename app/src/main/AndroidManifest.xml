@@ -179,6 +179,13 @@
             android:name="com.idupi.app.data.install.InstallResultReceiver"
             android:exported="false" />
 
+        <!-- Phone approval notification actions (phone-approvals T2). The
+             Aprobar / Rechazar PendingIntents are immutable and target this
+             component explicitly, so it stays unexported. -->
+        <receiver
+            android:name="com.idupi.app.data.phone.approval.ApprovalActionReceiver"
+            android:exported="false" />
+
     </application>
 
 </manifest>

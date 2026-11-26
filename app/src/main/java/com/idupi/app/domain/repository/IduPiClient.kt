@@ -255,6 +255,22 @@ interface IduPiClient {
         error: String? = null
     )
 
+    /**
+     * Pending phone approvals (phone-approvals T2). The server parks every risky
+     * command here until the owner decides on this phone.
+     */
+    suspend fun getPhoneApprovals(
+        state: String = PhoneApprovalState.PENDING,
+        limit: Int = 50,
+    ): PhoneApprovalsResponse
+
+    /**
+     * Reports the owner's decision. A 409 (expired / already decided) and a 404
+     * come back as typed values instead of exceptions, so every caller handles
+     * "no longer valid" the same way.
+     */
+    suspend fun decidePhoneApproval(id: String, approve: Boolean): PhoneApprovalDecisionResult
+
     // Remote screen module (docs/remote-screen-module.md)
     suspend fun getScreenMonitors(): List<ScreenMonitor>
 

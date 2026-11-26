@@ -48,12 +48,14 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.idupi.app.data.phone.PhoneStatusReporting
+import com.idupi.app.data.phone.approval.ApprovalNotificationText
 import com.idupi.app.data.phone.control.PhoneCommandLogEntry
 import com.idupi.app.data.phone.control.PhoneCommandLogFormat
 import com.idupi.app.data.phone.control.accessibilitySettingsIntent
 import com.idupi.app.data.phone.control.isAccessibilityControlEnabled
 import com.idupi.app.data.phone.isUsageAccessGranted
 import com.idupi.app.data.phone.usageAccessSettingsIntent
+import com.idupi.app.domain.model.PhoneApproval
 import com.idupi.app.ui.theme.AppShapes
 import com.idupi.app.ui.theme.AppSpacing
 import com.idupi.app.ui.theme.AppTypography
@@ -67,6 +69,7 @@ import com.idupi.app.ui.theme.TextPrimary
 import com.idupi.app.ui.theme.TextSecondary
 import com.idupi.app.viewmodel.PhoneAgentReportState
 import com.idupi.app.viewmodel.PhoneAgentSettingsViewModel
+import com.idupi.app.viewmodel.PhoneApprovalsState
 
 /**
  * Ajustes > ASISTENTE DEL TELÉFONO (phone-agent T2/T3): status reporting, the
@@ -84,6 +87,7 @@ fun PhoneAgentSection(viewModel: PhoneAgentSettingsViewModel) {
     val controlEnabled by viewModel.phoneControlEnabled.collectAsState()
     val report by viewModel.reportState.collectAsState()
     val recentCommands by viewModel.recentCommands.collectAsState()
+    val approvals by viewModel.approvals.collectAsState()
 
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -110,6 +114,12 @@ fun PhoneAgentSection(viewModel: PhoneAgentSettingsViewModel) {
     // Idempotent process-wide start: it makes "Enviar ahora" work even when no
     // service is connected in this process yet. The listener owns the lifecycle.
     LaunchedEffect(Unit) { PhoneStatusReporting.start(context) }
+
+    // Pending approvals are only needed while this section is visible.
+    LaunchedEffect(Unit) { viewModel.startApprovalPolling() }
+    DisposableEffect(Unit) {
+        onDispose { viewModel.stopApprovalPolling() }
+    }
 
     val phoneStatePermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -154,6 +164,125 @@ fun PhoneAgentSection(viewModel: PhoneAgentSettingsViewModel) {
                 phoneStatePermission.launch(Manifest.permission.READ_PHONE_STATE)
             }
         )
+
+        // Empty state stays hidden: the card only exists when something needs
+        // the owner (or a decision just left a message).
+        if (approvals.pending.isNotEmpty() || approvals.message != null) {
+            PendingApprovalsCard(
+                state = approvals,
+                onApprove = viewModel::approveApproval,
+                onReject = viewModel::rejectApproval,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PendingApprovalsCard(
+    state: PhoneApprovalsState,
+    onApprove: (PhoneApproval) -> Unit,
+    onReject: (PhoneApproval) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SlateCard),
+        shape = AppShapes.card
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(AppSpacing.cardPadding)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+        ) {
+            Text(
+                text = "Aprobaciones pendientes",
+                style = AppTypography.bodyLarge,
+                color = TextPrimary
+            )
+            Text(
+                text = "La PC espera tu confirmación antes de hacer algo que no se puede deshacer.",
+                style = AppTypography.bodySmall,
+                color = TextSecondary
+            )
+
+            if (state.pending.isEmpty()) {
+                Text(
+                    text = "No hay aprobaciones pendientes.",
+                    style = AppTypography.bodySmall,
+                    color = TextSecondary
+                )
+            } else {
+                state.pending.forEach { approval ->
+                    PendingApprovalRow(
+                        approval = approval,
+                        isDeciding = approval.id in state.decidingIds,
+                        onApprove = { onApprove(approval) },
+                        onReject = { onReject(approval) },
+                    )
+                }
+            }
+
+            state.message?.let { message ->
+                Text(
+                    text = message,
+                    style = AppTypography.bodySmall,
+                    color = TextSecondary
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun PendingApprovalRow(
+    approval: PhoneApproval,
+    isDeciding: Boolean,
+    onApprove: () -> Unit,
+    onReject: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
+    ) {
+        Text(
+            text = ApprovalNotificationText.describe(approval),
+            style = AppTypography.bodyLarge,
+            color = TextPrimary
+        )
+        ApprovalNotificationText.remainingLabel(
+            approval.expiresAt,
+            System.currentTimeMillis(),
+        )?.let { label ->
+            Text(
+                text = label,
+                style = AppTypography.bodySmall,
+                color = TextSecondary
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm)) {
+            Button(
+                onClick = onApprove,
+                enabled = !isDeciding,
+                shape = AppShapes.button,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = PrimaryIndigo,
+                    contentColor = Color.White
+                )
+            ) {
+                Text("Aprobar", style = AppTypography.bodySmall)
+            }
+            Button(
+                onClick = onReject,
+                enabled = !isDeciding,
+                shape = AppShapes.button,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = SlateBg,
+                    contentColor = TextPrimary
+                )
+            ) {
+                Text("Rechazar", style = AppTypography.bodySmall)
+            }
+        }
     }
 }
 

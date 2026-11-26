@@ -21,12 +21,14 @@ sealed interface PhoneCommand {
         override val id: String,
         override val expiresAt: String?,
         val target: NodeTarget,
+        val approval: CommandApproval? = null,
     ) : PhoneCommand
 
     data class LongPress(
         override val id: String,
         override val expiresAt: String?,
         val target: NodeTarget,
+        val approval: CommandApproval? = null,
     ) : PhoneCommand
 
     data class TypeText(
@@ -34,6 +36,7 @@ sealed interface PhoneCommand {
         override val expiresAt: String?,
         val text: String,
         val submit: Boolean,
+        val approval: CommandApproval? = null,
     ) : PhoneCommand
 
     data class Scroll(
@@ -65,6 +68,21 @@ sealed interface PhoneCommand {
         override val expiresAt: String?,
     ) : PhoneCommand
 }
+
+/**
+ * Approval carried by a command the server requeued after the owner approved
+ * it. The fields are hints only: the executor trusts the LOCAL approval ledger
+ * for [approvalId], never this wire data (a PC process with the token could
+ * forge it).
+ *
+ * @property approvedTarget node text the approved action is bound to; null for
+ *   `type_submit` and for sensitive-app taps.
+ */
+data class CommandApproval(
+    val approvalId: String,
+    val approvedTarget: String? = null,
+    val reason: String = "",
+)
 
 /** Target of tap / long_press: the server already enforced exactly-one-of. */
 sealed interface NodeTarget {
