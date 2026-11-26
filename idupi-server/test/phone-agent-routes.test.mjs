@@ -55,7 +55,7 @@ function controlledRunner({ supported = true } = {}) {
     };
 }
 
-async function startHarness(t, { runner = controlledRunner(), getConfig = () => ({ agent: "claude" }), maxJsonBytes } = {}) {
+async function startHarness(t, { runner = controlledRunner(), getConfig = () => ({ agent: "claude" }), maxJsonBytes, log } = {}) {
     const dir = await mkdtemp(join(tmpdir(), "idupi-phone-agent-routes-"));
     t.after(() => rm(dir, { recursive: true, force: true }));
     const clock = makeClock();
@@ -64,7 +64,7 @@ async function startHarness(t, { runner = controlledRunner(), getConfig = () => 
         store,
         runner,
         getConfig,
-        log: silentLog,
+        log: log ?? silentLog,
         ...(maxJsonBytes ? { maxJsonBytes } : {}),
     });
 
@@ -279,6 +279,41 @@ test("GET ?limit lists the newest turns first", async (t) => {
     const invalid = await fetch(`${base}/api/v1/phone/agent/turns?limit=21`);
     assert.equal(invalid.status, 400);
     assert.equal((await invalid.json()).code, "INVALID_LIMIT");
+});
+
+test("logs carry ids and statuses only, never request text or answers", async (t) => {
+    const lines = [];
+    const log = {
+        log() {},
+        info(line) { lines.push(String(line)); },
+        warn() {},
+        error() {},
+    };
+    const { base, runner } = await startHarness(t, { log });
+
+    const secretText = "revisa el mensaje de Juan sobre la cuenta secreta";
+    const secretAnswer = "Juan dijo que la cuenta es 1234.";
+    const firstRes = await postJson(base, "/api/v1/phone/agent/turns", { text: secretText });
+    const first = (await firstRes.json()).turn;
+    await waitFor(() => runner.calls.length === 1);
+
+    // A second request supersedes the first, which must also log by id only.
+    const secondRes = await postJson(base, "/api/v1/phone/agent/turns", { text: secretText });
+    const second = (await secondRes.json()).turn;
+    runner.calls[0].reject(Object.assign(new Error("aborted"), { code: "PHONE_TURN_ABORTED" }));
+    await waitFor(() => runner.calls.length === 2);
+    runner.calls[1].resolve(secretAnswer);
+    await (await fetch(`${base}/api/v1/phone/agent/turns/${second.id}?wait=5`)).json();
+
+    const joined = lines.join("\n");
+    assert.equal(joined.includes(secretText), false);
+    assert.equal(joined.includes("cuenta secreta"), false);
+    assert.equal(joined.includes(secretAnswer), false);
+    assert.equal(joined.includes("1234"), false);
+    assert.ok(lines.some((line) => line.includes(first.id) && line.includes("created")));
+    assert.ok(lines.some((line) => line.includes(first.id) && line.includes("cancelled")));
+    assert.ok(lines.some((line) => line.includes(second.id) && line.includes("created")));
+    assert.ok(lines.some((line) => line.includes(second.id) && line.includes("done")));
 });
 
 test("unknown ids answer 404 and wrong methods answer 405", async (t) => {

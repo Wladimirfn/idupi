@@ -197,6 +197,103 @@ pending approval survives a server restart; approving it rebuilds the queued
 command from the approval itself. Decisions are logged by id only, never by
 target text.
 
+## Bubble agent turns
+
+The on-device bubble sends one free-form request ("revisa mi correo", "abre
+WhatsApp y dime qué me escribió Juan") and shows the agent's answer. The server
+runs ONE agent turn at a time; a new request supersedes the previous queued or
+running one.
+
+Source: [`lib/phone-agent-turns.mjs`](../lib/phone-agent-turns.mjs) (store),
+[`lib/phone-agent-routes.mjs`](../lib/phone-agent-routes.mjs) (routes) and
+[`lib/phone-agent.mjs`](../lib/phone-agent.mjs) (profile and runner).
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/v1/phone/agent/turns` | `{text}`; `202 {turn}`; `400` on invalid text; `503 AGENT_UNAVAILABLE` when the configured agent cannot run phone turns |
+| GET | `/api/v1/phone/agent/turns/{id}?wait=0..30` | `200 {turn}`; answers immediately when the turn is terminal, otherwise waits until the status, the steps or the answer change, or `wait` seconds pass; `404` unknown |
+| GET | `/api/v1/phone/agent/turns?limit=1..20` | Newest first |
+
+A turn looks like:
+
+```json
+{
+  "id": "pat-1a2b3c4d5e6f",
+  "text": "revisa mi correo",
+  "status": "running",
+  "answer": "",
+  "steps": [
+    { "at": "2026-11-26T12:00:01.000Z", "kind": "started", "summary": "Pedido iniciado" },
+    { "at": "2026-11-26T12:00:02.000Z", "kind": "cli", "summary": "screen" }
+  ],
+  "error": null,
+  "createdAt": "2026-11-26T12:00:00.000Z",
+  "updatedAt": "2026-11-26T12:00:02.000Z",
+  "agent": "claude"
+}
+```
+
+- `status` is `queued`, `running`, `done`, `failed` or `cancelled`.
+- Caps: `text` 1..2000 characters, trimmed before it reaches a prompt; stored
+  `answer` at most 1200 characters (the prompt asks for 600); at most 40 steps
+  of 200 characters each. A failed turn carries a short `error`; a cancelled one
+  keeps an empty answer.
+- The last 20 turns are persisted in
+  `idupi-server/data/phone-agent-turns.json` (gitignored). A server restart
+  marks every queued/running turn as `failed` ("El servidor se reinició antes de
+  terminar el pedido."): its child process died with the old server, so the
+  bubble must not keep waiting for it.
+- One serialized chain: a new POST marks the previous queued/running turn
+  `cancelled` and kills its child process. A turn cancelled while still queued
+  never spawns an agent.
+
+### Agent support and safety model
+
+Only **Claude** can run bubble turns. The profile grants exactly one tool:
+
+```
+--allowedTools "Bash(node <abs>/idupi-server/bin/idupi-phone.mjs:*)"
+--permission-mode dontAsk
+--disallowedTools Task Read Edit MultiEdit Write NotebookEdit WebFetch WebSearch
+  Glob Grep TodoWrite BashOutput KillBash KillShell SlashCommand Skill
+  AskUserQuestion ExitPlanMode
+--strict-mcp-config --mcp-config '{"mcpServers":{}}'
+```
+
+`dontAsk` denies anything that is not pre-approved, so the single Bash prefix is
+the whole capability. OpenCode is not supported: its V2 permission config was
+verified for tool-level resources (`read`, `grep`, `glob`), not for a rule that
+allows one exact shell command while denying every other one. Codex and Pi are
+unsupported too. Agent, model and effort come from the same
+`inbox-config.json` the inbox uses; with another agent configured, POST answers
+`503 AGENT_UNAVAILABLE`.
+
+Each turn spawns the CLI with an argv array (never a shell), a fresh empty temp
+directory as cwd, and an env with every `IDUPI_*TOKEN*` key removed. The CLI
+reads the bearer token from `.idupi-token` by itself; `IDUPI_PORT` is kept so it
+can reach a non-default local server. The temp directory is removed afterwards.
+
+The prompt marks the owner's request as TRUSTED, inside `owner_request`, and
+states that everything the CLI prints (screen dumps, notification and message
+text, calendar titles) is UNTRUSTED DATA. Delimiter-shaped text in the request
+is neutralized so it cannot close or forge a block. The prompt lists the only
+allowed subcommands and restates the approval rules: risky steps wait in the
+phone approval queue, and the agent must not retry, bypass, or tap by
+coordinates on a send/pay/delete button.
+
+The step budget is enforced server-side: the CLI runs with
+`--output-format stream-json`, every Bash tool call becomes a `cli` step, and
+the 16th call kills the child and fails the turn ("El agente superó el límite
+de 15 pasos."). The whole turn has a 5 minute timeout, and the answer is capped.
+
+Every action still goes through the one enforcement point that already exists:
+the `idupi-phone` CLI -> `POST /phone/commands` -> `phone-risk.mjs` -> approval
+queue. This profile decides which CLI the agent may talk to, never what the
+phone may do. The bubble never approves anything.
+
+Server logs carry the turn id and status only (`[phone] turn pat-… done`),
+never the request text, the screen text or the answer.
+
 ## Status snapshot contract
 
 The phone posts an object (max 64 KiB). The server stores it as-is and adds

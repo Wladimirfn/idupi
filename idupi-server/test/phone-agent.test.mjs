@@ -383,6 +383,47 @@ test("aborting the signal kills the child and rejects as aborted", async () => {
     assert.deepEqual(deps.calls[0].child.signals, ["SIGTERM"]);
 });
 
+test("the sixteenth CLI call is killed and fails the turn", async () => {
+    const frames = [];
+    for (let index = 0; index < MAX_PHONE_CLI_CALLS + 1; index += 1) {
+        frames.push(toolUseFrame(`node ${CLI} status`));
+    }
+    const deps = fakeSpawn({ stdout: frameLines(frames), autoClose: false });
+    const { runner } = makeRunner(deps);
+    const steps = [];
+
+    await assert.rejects(
+        runner.runPhoneTurn(
+            { agent: "claude", model: MODEL, effort: "low" },
+            { text: "x", onStep: (step) => steps.push(step) },
+        ),
+        (error) => {
+            assert.equal(error.code, "PHONE_TURN_STEP_BUDGET");
+            assert.match(error.message, /15/);
+            return true;
+        },
+    );
+    assert.equal(steps.length, MAX_PHONE_CLI_CALLS);
+    assert.deepEqual(deps.calls[0].child.signals, ["SIGTERM"]);
+});
+
+test("exactly fifteen CLI calls are still allowed", async () => {
+    const frames = [];
+    for (let index = 0; index < MAX_PHONE_CLI_CALLS; index += 1) {
+        frames.push(toolUseFrame(`node ${CLI} screen`));
+    }
+    frames.push(resultFrame("Listo."));
+    const deps = fakeSpawn({ stdout: frameLines(frames) });
+    const { runner } = makeRunner(deps);
+
+    const answer = await runner.runPhoneTurn(
+        { agent: "claude", model: MODEL, effort: "low" },
+        { text: "x" },
+    );
+    assert.equal(answer, "Listo.");
+    assert.equal(deps.calls[0].child.signals.length, 0);
+});
+
 test("the default timeout is five minutes and the step budget is fifteen", () => {
     assert.equal(DEFAULT_PHONE_TURN_TIMEOUT_MS, 5 * 60 * 1000);
     assert.equal(MAX_PHONE_CLI_CALLS, 15);

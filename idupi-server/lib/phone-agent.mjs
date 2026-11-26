@@ -269,6 +269,9 @@ export function createPhoneAgentRunner({
     const limitMs = Number.isFinite(timeoutMs) && timeoutMs > 0
         ? timeoutMs
         : DEFAULT_PHONE_TURN_TIMEOUT_MS;
+    const limitSteps = Number.isInteger(maxSteps) && maxSteps > 0
+        ? maxSteps
+        : MAX_PHONE_CLI_CALLS;
 
     function phoneEnv() {
         const next = { ...env };
@@ -321,6 +324,7 @@ export function createPhoneAgentRunner({
                 let stdoutBytes = 0;
                 let pendingLine = "";
                 let finalFrame = null;
+                let cliCalls = 0;
                 let timer = null;
 
                 const child = spawnImpl(target.command, args, {
@@ -371,6 +375,7 @@ export function createPhoneAgentRunner({
                 if (signal) signal.addEventListener?.("abort", onAbort);
 
                 const handleFrame = (line) => {
+                    if (settled) return;
                     if (!line.startsWith("{")) return;
                     let frame;
                     try {
@@ -385,6 +390,22 @@ export function createPhoneAgentRunner({
                     if (frame?.type !== "assistant" || !Array.isArray(frame.message?.content)) return;
                     for (const block of frame.message.content) {
                         if (block?.type !== "tool_use" || block.name !== "Bash") continue;
+                        cliCalls += 1;
+                        // The budget is enforced here, not just asked for in the
+                        // prompt: stream-json exposes every Bash call, so the
+                        // sixteenth kills the child before it can act again.
+                        if (cliCalls > limitSteps) {
+                            try {
+                                child.kill?.("SIGTERM");
+                            } catch {
+                                // Already gone.
+                            }
+                            fail(
+                                `El agente superó el límite de ${limitSteps} pasos.`,
+                                "PHONE_TURN_STEP_BUDGET",
+                            );
+                            return;
+                        }
                         const command = typeof block.input?.command === "string"
                             ? block.input.command
                             : "";
@@ -415,7 +436,7 @@ export function createPhoneAgentRunner({
                     stdout += piece;
                     pendingLine += piece;
                     let index;
-                    while ((index = pendingLine.indexOf("\n")) >= 0) {
+                    while (!settled && (index = pendingLine.indexOf("\n")) >= 0) {
                         handleFrame(pendingLine.slice(0, index).trim());
                         pendingLine = pendingLine.slice(index + 1);
                     }
