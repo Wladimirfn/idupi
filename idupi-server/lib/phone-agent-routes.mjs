@@ -120,6 +120,7 @@ function pollMarker(turn) {
  *   store: ReturnType<import("./phone-agent-turns.mjs").createPhoneAgentTurnStore>,
  *   runner?: { runPhoneTurn: Function, supportsPhoneTurn?: Function } | null,
  *   getConfig?: () => object,
+ *   turnGrants?: ReturnType<import("./phone-turn-grants.mjs").createPhoneTurnGrants> | null,
  *   maxJsonBytes?: number,
  *   log?: { info?: Function, warn?: Function },
  * }} options
@@ -129,6 +130,7 @@ export function createPhoneAgentRoutes({
     store,
     runner = null,
     getConfig = () => ({}),
+    turnGrants = null,
     maxJsonBytes = DEFAULT_MAX_JSON_BYTES,
     log = console,
 } = {}) {
@@ -167,8 +169,12 @@ export function createPhoneAgentRoutes({
     async function runTurnJob(id) {
         try {
             const queued = store.get(id);
-            // Cancelled while waiting behind another turn: never spawn.
-            if (!queued || queued.status !== "queued") return;
+            // Cancelled while waiting behind another turn: never spawn. Its
+            // grant was already revoked by the supersede that cancelled it.
+            if (!queued || queued.status !== "queued") {
+                turnGrants?.revoke(id);
+                return;
+            }
 
             const controller = new AbortController();
             controllers.set(id, controller);
@@ -176,9 +182,11 @@ export function createPhoneAgentRoutes({
                 store.update(id, { status: "running" });
                 store.addStep(id, { kind: "started", summary: "Pedido iniciado" });
 
+                const grant = turnGrants?.secretFor(id) ?? null;
                 const answer = await runner.runPhoneTurn(runnerConfig(), {
                     text: queued.text,
                     signal: controller.signal,
+                    grant,
                     onStep: (step) => {
                         try {
                             store.addStep(id, step);
@@ -188,12 +196,18 @@ export function createPhoneAgentRoutes({
                     },
                 });
 
+                // The turn stops running here. Revoke before the terminal
+                // write so a command that was still in flight cannot use a
+                // grant the answer already belongs to the past of.
+                turnGrants?.revoke(id);
+
                 const current = store.get(id);
                 if (!current || current.status === "cancelled") return;
                 store.update(id, { status: "done", answer: String(answer ?? ""), error: null });
                 store.addStep(id, { kind: "answer", summary: "Respuesta lista" });
                 log?.info?.(`[phone] turn ${id} done`);
             } catch (err) {
+                turnGrants?.revoke(id);
                 const current = store.get(id);
                 if (!current || current.status === "cancelled" || controller.signal.aborted) return;
                 try {
@@ -204,10 +218,12 @@ export function createPhoneAgentRoutes({
                 }
                 log?.info?.(`[phone] turn ${id} failed`);
             } finally {
+                turnGrants?.revoke(id);
                 controllers.delete(id);
             }
         } catch {
             // Fire-and-forget: one broken turn must never stall the queue.
+            turnGrants?.revoke(id);
         }
     }
 
@@ -249,11 +265,14 @@ export function createPhoneAgentRoutes({
 
         // Supersede before creating: the owner replaced the request, so the old
         // one is cancelled and its child killed instead of finishing later.
+        // Its owner-turn grant dies with it: only a queued/running turn can
+        // approve its own messaging steps.
         const active = store.findActive();
         if (active) {
             const wasRunning = active.status === "running";
             store.cancel(active.id);
             if (wasRunning) controllers.get(active.id)?.abort();
+            turnGrants?.revoke(active.id);
             log?.info?.(`[phone] turn ${active.id} cancelled`);
         }
 
@@ -269,6 +288,10 @@ export function createPhoneAgentRoutes({
             );
             return;
         }
+
+        // Mint the per-turn secret before the job can run. The agent never sees
+        // it: it travels only in the CLI child's env and then in one header.
+        turnGrants?.issue(turn.id);
 
         enqueueTurn(turn.id);
         log?.info?.(`[phone] turn ${turn.id} created`);

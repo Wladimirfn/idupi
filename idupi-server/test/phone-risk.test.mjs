@@ -12,8 +12,11 @@ import assert from "node:assert/strict";
 
 import {
     classifyCommand,
+    isMessagingPackage,
+    isMoneyPackage,
     isRiskyText,
     isSensitivePackage,
+    riskyTextCategory,
 } from "../lib/phone-risk.mjs";
 
 test("reading, waiting and navigation commands are never gated", () => {
@@ -94,7 +97,12 @@ test("risk text matches risky verbs as whole words, ignoring case and accents", 
 test("tap and long-press on risky text are gated with the text as target", () => {
     for (const type of ["tap", "long_press"]) {
         const verdict = classifyCommand({ type, args: { text: "Enviar" } });
-        assert.deepEqual(verdict, { gated: true, reason: "risky_text", target: "Enviar" });
+        assert.deepEqual(verdict, {
+            gated: true,
+            reason: "risky_text",
+            target: "Enviar",
+            category: "message",
+        });
     }
 });
 
@@ -102,6 +110,7 @@ test("type with submit is gated even when the text is benign", () => {
     assert.deepEqual(classifyCommand({ type: "type", args: { text: "hola", submit: true } }), {
         gated: true,
         reason: "type_submit",
+        category: "message",
     });
     assert.equal(
         classifyCommand({ type: "type", args: { text: "hola", submit: false } }).gated,
@@ -118,13 +127,19 @@ test("id and coordinate taps are gated while a sensitive app is in front", () =>
         gated: true,
         reason: "sensitive_app",
         target: "com.whatsapp:id/send",
+        category: "message",
     });
 
     const byXY = classifyCommand(
         { type: "long_press", args: { x: 900, y: 2100 } },
         { foregroundPackage: "com.paypal.android.p2pmobile" },
     );
-    assert.deepEqual(byXY, { gated: true, reason: "sensitive_app", target: "900,2100" });
+    assert.deepEqual(byXY, {
+        gated: true,
+        reason: "sensitive_app",
+        target: "900,2100",
+        category: "money",
+    });
 
     // Composing text without submit stays free even inside a chat app.
     assert.equal(
@@ -183,4 +198,74 @@ test("sensitive packages cover messaging, payment, email and banking apps", () =
     ]) {
         assert.equal(isSensitivePackage(packageName), false, `${String(packageName)} is free`);
     }
+});
+
+// --- owner turn categories (phone-bubble, T13) -----------------------------
+
+test("risky verbs carry the category an owner turn uses to decide", () => {
+    const cases = {
+        message: ["Enviar", "Send", "Enviar ahora", "Compartir", "Share", "Publicar", "Post"],
+        money: ["Pagar", "pagar la cuenta", "Pay", "Comprar", "Buy now", "Transferir", "Transfer funds"],
+        destructive: ["Eliminar chat", "Borrar", "Delete message"],
+        confirmation: ["Aprobar", "Approve request", "Confirmar", "Confirm"],
+    };
+    for (const [category, texts] of Object.entries(cases)) {
+        for (const text of texts) {
+            assert.equal(riskyTextCategory(text), category, `"${text}" should be ${category}`);
+            assert.equal(classifyCommand({ type: "tap", args: { text } }).category, category);
+        }
+    }
+    assert.equal(riskyTextCategory("Reenviar"), null);
+    assert.equal(riskyTextCategory("Aceptar"), null);
+
+    // The most restrictive verb wins when a phrase carries two.
+    assert.equal(riskyTextCategory("Pagar y confirmar"), "money");
+    assert.equal(riskyTextCategory("Eliminar y confirmar"), "destructive");
+});
+
+test("messaging and money apps are distinguished inside the sensitive set", () => {
+    for (const packageName of [
+        "com.whatsapp",
+        "com.whatsapp.w4b",
+        "org.telegram.messenger",
+        "com.facebook.orca",
+        "com.google.android.gm",
+        "com.microsoft.office.outlook",
+        "com.google.android.apps.messaging",
+        "org.thoughtcrime.securesms",
+    ]) {
+        assert.equal(isMessagingPackage(packageName), true, `${packageName} is messaging`);
+        assert.equal(isMoneyPackage(packageName), false, `${packageName} is not money`);
+    }
+
+    for (const packageName of [
+        "com.mercadopago.wallet",
+        "com.paypal.android.p2pmobile",
+        "cl.santander.santanderchile",
+        "cl.bancoestado.app",
+        "com.some.bank.app",
+        "com.example.digitalwallet",
+    ]) {
+        assert.equal(isMoneyPackage(packageName), true, `${packageName} is money`);
+        assert.equal(isMessagingPackage(packageName), false, `${packageName} is not messaging`);
+    }
+
+    for (const packageName of ["com.android.settings", "com.spotify.music", "", null]) {
+        assert.equal(isMessagingPackage(packageName), false);
+        assert.equal(isMoneyPackage(packageName), false);
+    }
+});
+
+test("a sensitive messaging app is a message step, a bank app is money", () => {
+    const messaging = classifyCommand(
+        { type: "tap", args: { id: "com.whatsapp:id/send" } },
+        { foregroundPackage: "com.whatsapp" },
+    );
+    assert.equal(messaging.category, "message");
+
+    const banking = classifyCommand(
+        { type: "tap", args: { id: "cl.bancoestado.app:id/transfer" } },
+        { foregroundPackage: "cl.bancoestado.app" },
+    );
+    assert.equal(banking.category, "money");
 });

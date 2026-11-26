@@ -264,22 +264,47 @@ Only **Claude** can run bubble turns. The profile grants exactly one tool:
 the whole capability. OpenCode is not supported: its V2 permission config was
 verified for tool-level resources (`read`, `grep`, `glob`), not for a rule that
 allows one exact shell command while denying every other one. Codex and Pi are
-unsupported too. Agent, model and effort come from the same
-`inbox-config.json` the inbox uses; with another agent configured, POST answers
-`503 AGENT_UNAVAILABLE`.
+unsupported too. Bubble turns use their own config in `index.mjs` (`claude`,
+model `claude-sonnet-5-5` or `IDUPI_PHONE_AGENT_MODEL`, effort medium); with
+another agent configured, POST answers `503 AGENT_UNAVAILABLE`.
 
 Each turn spawns the CLI with an argv array (never a shell), a fresh empty temp
-directory as cwd, and an env with every `IDUPI_*TOKEN*` key removed. The CLI
-reads the bearer token from `.idupi-token` by itself; `IDUPI_PORT` is kept so it
-can reach a non-default local server. The temp directory is removed afterwards.
+directory as cwd, and an env with every `IDUPI_*TOKEN*` key and any inherited
+turn grant removed. The CLI reads the bearer token from `.idupi-token` by
+itself; `IDUPI_PORT` is kept so it can reach a non-default local server. The
+temp directory is removed afterwards.
+
+### Owner turns and approvals
+
+A turn is the owner's own request, so its messaging steps are already approved
+(owner rule 2026-11-26). The server mints one random per-turn secret (32 bytes,
+in memory only), passes it to the CLI child as `IDUPI_PHONE_TURN_GRANT`, and the
+CLI forwards it in the `X-Idupi-Turn-Grant` header on command creation. The
+command route resolves that header against the queued/running turn server-side;
+`requestedBy` in the body is only a label and never authorizes anything. The
+secret is revoked as soon as the turn ends (done, failed, cancelled or
+superseded), never reaches the agent prompt, and never appears in a step, an
+answer, a turn record or a log.
+
+When a gated command belongs to a resolving owner turn and its classifier
+category is `message` (a `type --submit`, or a tap on messaging text or inside a
+messaging app), the server creates the approval and marks it approved at once
+with `decidedBy: "owner-request:<turnId>"`. The command is delivered on the next
+phone poll carrying the same `approvalId`, `approvedTarget` and `approvalReason`
+a manual approval produces, so no pending card and no notification appear.
+
+Money (`pay`, `buy`, `transfer`, bank/wallet packages), destructive
+(`delete`, `borrar`, `eliminar`), confirmation (`approve`, `confirm`) and any
+unclassified sensitive-app step keep the normal gate even inside an owner turn:
+they wait in the approval queue until the owner decides on the phone.
 
 The prompt marks the owner's request as TRUSTED, inside `owner_request`, and
 states that everything the CLI prints (screen dumps, notification and message
 text, calendar titles) is UNTRUSTED DATA. Delimiter-shaped text in the request
 is neutralized so it cannot close or forge a block. The prompt lists the only
-allowed subcommands and restates the approval rules: risky steps wait in the
-phone approval queue, and the agent must not retry, bypass, or tap by
-coordinates on a send/pay/delete button.
+allowed subcommands, tells the agent that the owner's request approves its
+messaging steps, and keeps money and destructive steps waiting for an explicit
+approval.
 
 The step budget is enforced server-side: the CLI runs with
 `--output-format stream-json`, every Bash tool call becomes a `cli` step, and

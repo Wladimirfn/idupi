@@ -14,6 +14,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { HOST, resolvePort, resolveToken } from "../lib/term-cli.mjs";
 import { validateHostPort } from "../lib/adb-connection.mjs";
+import { TURN_GRANT_ENV, TURN_GRANT_HEADER } from "../lib/phone-turn-grants.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 // Same layout as bin/idupi-term.mjs and bin/idupi-push.mjs: the token file
@@ -1310,12 +1311,26 @@ function sleep(ms) {
 
 // --- HTTP client -----------------------------------------------------------
 
-function apiRequest(method, path, body, timeoutMs = 10_000) {
+/**
+ * Header that carries the running bubble turn's secret, when the server
+ * launched this CLI for one. The secret comes only from the child env the
+ * runner set; screen text can never mint or extend it. It is never printed.
+ */
+export function turnGrantHeader(env = process.env) {
+    const grant = env && typeof env === "object" ? env[TURN_GRANT_ENV] : undefined;
+    if (typeof grant !== "string" || grant.length === 0) return {};
+    return { [TURN_GRANT_HEADER]: grant };
+}
+
+function apiRequest(method, path, body, timeoutMs = 10_000, extraHeaders = null) {
     return new Promise((resolve, reject) => {
         const payload = body === undefined
             ? null
             : Buffer.from(JSON.stringify(body), "utf8");
-        const headers = { Authorization: `Bearer ${token}` };
+        const headers = {
+            Authorization: `Bearer ${token}`,
+            ...(extraHeaders && typeof extraHeaders === "object" ? extraHeaders : {}),
+        };
         if (payload) {
             headers["Content-Type"] = "application/json";
             headers["Content-Length"] = String(payload.length);
@@ -1385,7 +1400,13 @@ async function fetchApprovals(json) {
 async function enqueue(type, args) {
     let res;
     try {
-        res = await apiRequest("POST", "/api/v1/phone/commands", { type, args });
+        res = await apiRequest(
+            "POST",
+            "/api/v1/phone/commands",
+            { type, args },
+            10_000,
+            turnGrantHeader(process.env),
+        );
     } catch {
         fail(serverUnreachable());
     }

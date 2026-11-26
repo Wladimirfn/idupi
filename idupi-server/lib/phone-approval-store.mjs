@@ -269,6 +269,10 @@ export function createPhoneApprovalStore({
             createdAt,
             expiresAt: new Date(Date.parse(createdAt) + ttl).toISOString(),
             decidedAt: null,
+            // Present for approvals the server grants on behalf of a running
+            // owner bubble turn ("owner-request:<turnId>"); null when the
+            // owner decided it on the phone or the PC.
+            decidedBy: null,
             commandId: clip(input.commandId.trim(), MAX_COMMAND_ID_CHARS),
             resultCommandId: null,
         };
@@ -317,8 +321,12 @@ export function createPhoneApprovalStore({
      * Records the owner's decision. Expiry always wins: an approval whose TTL
      * elapsed answers `expired` and stays expired even when the decision is
      * "approve".
+     *
+     * `decidedBy` is server-side provenance for an automatic decision
+     * ("owner-request:<turnId>"); the route must never take it from a request
+     * body. Manual decisions leave it null.
      */
-    function decideApproval(id, decision) {
+    function decideApproval(id, decision, { decidedBy = null } = {}) {
         if (!APPROVAL_DECISIONS.includes(decision)) {
             throw typedError("INVALID_DECISION", "decision must be approve or reject");
         }
@@ -330,6 +338,9 @@ export function createPhoneApprovalStore({
 
         approval.state = decision === "approve" ? "approved" : "rejected";
         approval.decidedAt = clockIso();
+        approval.decidedBy = typeof decidedBy === "string" && decidedBy.trim().length > 0
+            ? clip(decidedBy.trim(), MAX_REQUESTER_CHARS)
+            : null;
         persist();
         return { ok: true, approval: cloneApproval(approval) };
     }

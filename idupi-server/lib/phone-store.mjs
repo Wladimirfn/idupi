@@ -590,13 +590,19 @@ export function createPhoneStore({
         }
     }
 
-    function createCommand({ type, args, requestedBy = "cli" } = {}) {
+    function createCommand({ type, args, requestedBy = "cli", ownerTurnId = null } = {}) {
         if (typeof type !== "string" || type.length === 0) {
             throw typedError("INVALID_COMMAND", "type is required");
         }
         if (typeof requestedBy !== "string") {
             throw typedError("INVALID_COMMAND", "requestedBy must be a string");
         }
+        // Server-side provenance only: the route resolves the per-turn secret
+        // and passes the turn id here. `requestedBy` is display text and never
+        // authorizes anything.
+        const turnId = typeof ownerTurnId === "string" && ownerTurnId.trim().length > 0
+            ? ownerTurnId.trim()
+            : null;
         const normalizedArgs = normalizeCommandArgs(type, args);
         const requester = requestedBy.trim().length > 0 ? requestedBy.trim() : "cli";
         const foreground = latestForegroundApp();
@@ -622,11 +628,26 @@ export function createPhoneStore({
         };
         commands.push(command);
         if (verdict.gated) {
-            beginApproval(command, {
+            const approval = beginApproval(command, {
                 reason: verdict.reason,
                 target: verdict.target ?? null,
                 requestedBy: requester,
             });
+            // An owner bubble turn is the approval for its messaging steps
+            // (owner rule 2026-11-26). Money, destructive, confirmation and
+            // sensitive-app steps keep the normal gate. The approval is marked
+            // approved before anyone can poll it, so no card or notification is
+            // shown and the command is delivered on the next poll carrying the
+            // same approvalId/approvedTarget a manual approval produces.
+            if (turnId !== null && verdict.category === "message") {
+                const decided = approvalStore.decideApproval(approval.id, "approve", {
+                    decidedBy: `owner-request:${turnId}`,
+                });
+                if (decided.ok) {
+                    requeueCommand(command, decided.approval);
+                    approvalStore.attachResultCommand(decided.approval.id, command.id);
+                }
+            }
         }
         pruneFinished();
         notify();

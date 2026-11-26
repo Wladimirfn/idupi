@@ -27,6 +27,7 @@ import {
     formatPhoneStatus,
     formatProposalCreated,
     parseArgs,
+    turnGrantHeader,
 } from "../bin/idupi-phone.mjs";
 
 test("parseArgs handles status, screen and their --json flag", () => {
@@ -71,6 +72,17 @@ test("parseArgs rejects ambiguous or incomplete targets", () => {
         assert.equal(parsed.command, "help", argv.join(" "));
         assert.ok(parsed.error, argv.join(" "));
     }
+});
+
+test("the CLI forwards an owner turn grant header only when the env carries one", () => {
+    assert.deepEqual(turnGrantHeader({}), {});
+    assert.deepEqual(turnGrantHeader({ IDUPI_PHONE_TURN_GRANT: "" }), {});
+    assert.deepEqual(turnGrantHeader({ IDUPI_PHONE_TURN_GRANT: 42 }), {});
+    assert.deepEqual(turnGrantHeader(null), {});
+    assert.deepEqual(
+        turnGrantHeader({ IDUPI_PHONE_TURN_GRANT: "abc123" }),
+        { "x-idupi-turn-grant": "abc123" },
+    );
 });
 
 test("parseArgs handles type, scroll, global shortcuts, open and wait", () => {

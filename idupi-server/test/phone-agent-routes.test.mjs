@@ -11,12 +11,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createPhoneAgentTurnStore } from "../lib/phone-agent-turns.mjs";
 import { createPhoneAgentRoutes } from "../lib/phone-agent-routes.mjs";
+import { createPhoneTurnGrants } from "../lib/phone-turn-grants.mjs";
 
 const silentLog = { log() {}, info() {}, warn() {}, error() {} };
 
@@ -55,7 +56,7 @@ function controlledRunner({ supported = true } = {}) {
     };
 }
 
-async function startHarness(t, { runner = controlledRunner(), getConfig = () => ({ agent: "claude" }), maxJsonBytes, log } = {}) {
+async function startHarness(t, { runner = controlledRunner(), getConfig = () => ({ agent: "claude" }), maxJsonBytes, log, turnGrants = createPhoneTurnGrants() } = {}) {
     const dir = await mkdtemp(join(tmpdir(), "idupi-phone-agent-routes-"));
     t.after(() => rm(dir, { recursive: true, force: true }));
     const clock = makeClock();
@@ -65,6 +66,7 @@ async function startHarness(t, { runner = controlledRunner(), getConfig = () => 
         runner,
         getConfig,
         log: log ?? silentLog,
+        turnGrants,
         ...(maxJsonBytes ? { maxJsonBytes } : {}),
     });
 
@@ -85,7 +87,7 @@ async function startHarness(t, { runner = controlledRunner(), getConfig = () => 
         server.closeAllConnections?.();
         await new Promise((resolve) => server.close(resolve));
     });
-    return { base, store, clock, runner };
+    return { base, store, clock, runner, dir, turnGrants };
 }
 
 function postJson(base, path, body) {
@@ -337,4 +339,107 @@ test("unknown ids answer 404 and wrong methods answer 405", async (t) => {
     const postItem = await postJson(base, "/api/v1/phone/agent/turns/pat-ffffffffffff", { text: "x" });
     assert.equal(postItem.status, 405);
     assert.equal(postItem.headers.get("allow"), "GET");
+});
+
+// --- owner turn grants (phone-bubble, T13) --------------------------------
+
+test("a running turn hands a secret grant to the runner and revokes it on done", async (t) => {
+    const { base, runner, dir, turnGrants } = await startHarness(t);
+    const res = await postJson(base, "/api/v1/phone/agent/turns", { text: "mándale un mensaje a Ana" });
+    const { turn } = await res.json();
+    await waitFor(() => runner.calls.length === 1);
+
+    const grant = runner.calls[0].input.grant;
+    assert.match(grant, /^[0-9a-f]{64}$/);
+    assert.equal(turnGrants.turnFor(grant), turn.id);
+
+    runner.calls[0].resolve("Mensaje enviado.");
+    const poll = await (await fetch(`${base}/api/v1/phone/agent/turns/${turn.id}?wait=5`)).json();
+    assert.equal(poll.turn.status, "done");
+
+    // The secret dies with the turn and never reaches any persisted record.
+    assert.equal(turnGrants.turnFor(grant), null);
+    const stored = await readFile(join(dir, "phone-agent-turns.json"), "utf8");
+    assert.equal(stored.includes(grant), false);
+    assert.equal(stored.includes(turn.id), true);
+});
+
+test("a failed turn also revokes its grant", async (t) => {
+    const { base, runner, turnGrants } = await startHarness(t);
+    const res = await postJson(base, "/api/v1/phone/agent/turns", { text: "algo" });
+    const { turn } = await res.json();
+    await waitFor(() => runner.calls.length === 1);
+    const grant = runner.calls[0].input.grant;
+
+    runner.calls[0].reject(new Error("El agente no terminó a tiempo."));
+    const poll = await (await fetch(`${base}/api/v1/phone/agent/turns/${turn.id}?wait=5`)).json();
+    assert.equal(poll.turn.status, "failed");
+    assert.equal(turnGrants.turnFor(grant), null);
+});
+
+test("a superseded turn loses its grant before its child even exits", async (t) => {
+    const { base, runner, turnGrants } = await startHarness(t);
+    const first = (await (await postJson(base, "/api/v1/phone/agent/turns", { text: "primero" })).json()).turn;
+    await waitFor(() => runner.calls.length === 1);
+    const firstGrant = runner.calls[0].input.grant;
+    assert.equal(turnGrants.turnFor(firstGrant), first.id);
+
+    const second = (await (await postJson(base, "/api/v1/phone/agent/turns", { text: "segundo" })).json()).turn;
+    // The first turn is cancelled the moment the new request arrives.
+    assert.equal(turnGrants.turnFor(firstGrant), null);
+
+    runner.calls[0].reject(Object.assign(new Error("aborted"), { code: "PHONE_TURN_ABORTED" }));
+    await waitFor(() => runner.calls.length === 2);
+    const secondGrant = runner.calls[1].input.grant;
+    assert.match(secondGrant, /^[0-9a-f]{64}$/);
+    assert.notEqual(secondGrant, firstGrant);
+    assert.equal(turnGrants.turnFor(secondGrant), second.id);
+
+    runner.calls[1].resolve("Segundo listo.");
+    const poll = await (await fetch(`${base}/api/v1/phone/agent/turns/${second.id}?wait=5`)).json();
+    assert.equal(poll.turn.status, "done");
+    assert.equal(turnGrants.turnFor(secondGrant), null);
+});
+
+test("a turn cancelled while queued never keeps a grant", async (t) => {
+    const { base, runner, turnGrants } = await startHarness(t);
+    await postJson(base, "/api/v1/phone/agent/turns", { text: "a" });
+    await waitFor(() => runner.calls.length === 1);
+
+    const b = (await (await postJson(base, "/api/v1/phone/agent/turns", { text: "b" })).json()).turn;
+    const c = (await (await postJson(base, "/api/v1/phone/agent/turns", { text: "c" })).json()).turn;
+    const bGrant = turnGrants.secretFor(b.id);
+    assert.equal(bGrant, null, "the queued turn was cancelled and its grant revoked");
+
+    // Let the chain drain: a aborts, the cancelled b is skipped, c runs.
+    runner.calls[0].reject(Object.assign(new Error("aborted"), { code: "PHONE_TURN_ABORTED" }));
+    await waitFor(() => runner.calls.length === 2);
+    assert.equal(runner.calls[1].input.text, "c");
+
+    runner.calls[1].resolve("c listo");
+    await (await fetch(`${base}/api/v1/phone/agent/turns/${c.id}?wait=5`)).json();
+    assert.equal(turnGrants.secretFor(c.id), null);
+});
+
+test("the grant never appears in turn steps or logs", async (t) => {
+    const lines = [];
+    const log = {
+        log() {},
+        info(line) { lines.push(String(line)); },
+        warn(line) { lines.push(String(line)); },
+        error() {},
+    };
+    const { base, runner } = await startHarness(t, { log });
+    const res = await postJson(base, "/api/v1/phone/agent/turns", { text: "envía hola" });
+    const { turn } = await res.json();
+    await waitFor(() => runner.calls.length === 1);
+    const grant = runner.calls[0].input.grant;
+
+    runner.calls[0].resolve("Listo.");
+    const poll = await (await fetch(`${base}/api/v1/phone/agent/turns/${turn.id}?wait=5`)).json();
+    assert.equal(poll.turn.status, "done");
+
+    const serialized = JSON.stringify(poll.turn);
+    assert.equal(serialized.includes(grant), false);
+    assert.equal(lines.join("\n").includes(grant), false);
 });

@@ -543,7 +543,7 @@ test("APPROVAL_REQUIRED from the phone becomes a new approval for the same comma
     assert.equal(store.takeNext().id, command.id);
 });
 
-test("the bypass option exists for tests only and no path auto-approves", async (t) => {
+test("the bypass option exists for tests only and no grant auto-approves", async (t) => {
     const dir = await makeDir(t);
     const clock = makeClock();
     const { store, approvals } = approvalHarness(dir, clock);
@@ -577,4 +577,132 @@ test("requestedBy defaults to cli and can be overridden", async (t) => {
 
     const listed = approvals.listApprovals();
     assert.deepEqual(listed.map((entry) => entry.requestedBy), ["agent", "cli"]);
+});
+
+// --- owner bubble turns (phone-bubble, T13) -------------------------------
+
+const OWNER_TURN = "pat-0123456789ab";
+
+test("an owner turn approves a message submit without a pending card", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+
+    const command = store.createCommand({
+        type: "type",
+        args: { text: "hola Ana", submit: true },
+        ownerTurnId: OWNER_TURN,
+    });
+
+    // Deliverable at once: no awaiting_approval state and no pending card.
+    assert.equal(command.state, "pending");
+    assert.match(command.approvalId, APPROVAL_ID_PATTERN);
+    assert.equal(command.args.approvalId, command.approvalId);
+    assert.equal(command.args.approvedTarget, null);
+    assert.equal(command.approvalReason, "type_submit");
+    assert.deepEqual(approvals.listApprovals(), []);
+
+    // The approval exists, approved, with the owner's turn as the decision.
+    const approval = approvals.getApproval(command.approvalId);
+    assert.equal(approval.state, "approved");
+    assert.equal(approval.commandId, command.id);
+    assert.equal(approval.resultCommandId, command.id);
+    assert.equal(approval.decidedBy, `owner-request:${OWNER_TURN}`);
+    assert.equal(approval.requestedBy, "cli");
+
+    const delivered = store.takeNext();
+    assert.equal(delivered.id, command.id);
+    assert.equal(delivered.args.approvalId, command.approvalId);
+});
+
+test("an owner turn approves a messaging tap inside a messaging app", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+    store.recordStatus({ foregroundApp: { packageName: "com.whatsapp", label: "WhatsApp" } });
+
+    const byText = store.createCommand({
+        type: "tap",
+        args: { text: "Enviar" },
+        ownerTurnId: OWNER_TURN,
+    });
+    assert.equal(byText.state, "pending");
+    assert.equal(byText.args.approvedTarget, "Enviar");
+    assert.equal(approvals.getApproval(byText.approvalId).state, "approved");
+
+    const byId = store.createCommand({
+        type: "tap",
+        args: { id: "com.whatsapp:id/send" },
+        ownerTurnId: OWNER_TURN,
+    });
+    assert.equal(byId.state, "pending");
+    assert.equal(byId.approvalReason, "sensitive_app");
+    assert.equal(byId.args.approvedTarget, "com.whatsapp:id/send");
+    assert.equal(approvals.getApproval(byId.approvalId).state, "approved");
+
+    assert.equal(approvals.listApprovals().length, 0, "nothing stays pending");
+});
+
+test("money, destructive, confirmation and bank steps still wait in an owner turn", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+
+    const gated = [
+        ["tap", { text: "Pagar" }],
+        ["tap", { text: "Comprar ahora" }],
+        ["tap", { text: "Transferir" }],
+        ["tap", { text: "Eliminar chat" }],
+        ["tap", { text: "Borrar" }],
+        ["tap", { text: "Confirmar" }],
+    ];
+    for (const [type, args] of gated) {
+        const command = store.createCommand({ type, args, ownerTurnId: OWNER_TURN });
+        assert.equal(command.state, "awaiting_approval", JSON.stringify(args));
+    }
+
+    // A bank app is money even when the target has no risky word.
+    store.recordStatus({
+        foregroundApp: { packageName: "cl.bancoestado.app", label: "Banco Estado" },
+    });
+    const banking = store.createCommand({
+        type: "tap",
+        args: { id: "cl.bancoestado.app:id/transfer" },
+        ownerTurnId: OWNER_TURN,
+    });
+    assert.equal(banking.state, "awaiting_approval");
+    assert.equal(banking.approvalReason, "sensitive_app");
+
+    // Nothing was auto-approved; every one of them is still pending.
+    assert.equal(approvals.listApprovals().length, gated.length + 1);
+    assert.equal(store.takeNext(), null);
+});
+
+test("requestedBy from the body never authorizes an owner turn", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+
+    const command = store.createCommand({
+        type: "type",
+        args: { text: "hola", submit: true },
+        requestedBy: `owner-request:${OWNER_TURN}`,
+    });
+
+    assert.equal(command.state, "awaiting_approval");
+    assert.equal(approvals.getApproval(command.approvalId).state, "pending");
+    assert.equal(approvals.getApproval(command.approvalId).decidedBy ?? null, null);
+});
+
+test("a manual decision leaves decidedBy empty and still requeues", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+
+    const command = store.createCommand({ type: "tap", args: { text: "Enviar" } });
+    const outcome = store.decideApproval(command.approvalId, "approve");
+
+    assert.equal(outcome.ok, true);
+    assert.equal(approvals.getApproval(command.approvalId).decidedBy ?? null, null);
+    assert.equal(store.getCommand(command.id).state, "pending");
 });

@@ -41,6 +41,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { MAX_STEP_SUMMARY_CHARS, MAX_TURN_TEXT_CHARS } from "./phone-agent-turns.mjs";
+import { TURN_GRANT_ENV } from "./phone-turn-grants.mjs";
 
 /** Absolute path of the CLI the agent may run. */
 export const DEFAULT_PHONE_CLI_PATH = fileURLToPath(
@@ -198,12 +199,12 @@ export function buildPhonePrompt({ text = "", cliPath = DEFAULT_PHONE_CLI_PATH, 
         "",
         "Rules:",
         "- Reading and navigating are free: status, screen, scroll, back, home, recents, notifications, quick-settings, open, wait, calendar reads, health reads and log.",
-        "- Risky actions (type with --submit, tapping send, pay, delete, approve or confirm, and anything irreversible) are gated by the phone's approval queue. The command prints \"Esperando tu aprobación...\" and keeps waiting. Never retry it, never work around it, and never tap by coordinates on a send, pay or delete button. If it ends with \"Rechazado en el teléfono.\" or \"La aprobación venció; no se hizo nada.\", stop and tell the owner.",
+        "- The owner's request is the approval for its messaging steps: when the owner asks you to send a message or an email, continue without waiting for an approval card and never ask the owner to approve a message they already requested. Money and destructive steps still wait for the owner's explicit approval on the phone (the approval queue): pay, buy, transfer, bank or wallet apps, and delete/borrar/eliminar make the command print \"Esperando tu aprobación...\" and keep waiting. Never retry a waiting command and never work around it. If it ends with \"Rechazado en el teléfono.\" or \"La aprobación venció; no se hizo nada.\", stop and tell the owner that step needs their approval.",
         "- Prefer tapping by visible text or resource id from a fresh screen dump, and read the screen again after each action to confirm the result.",
         "- If the command says the phone did not respond, retry at most once, then tell the owner the phone is not available.",
         "- Use at most 15 commands in this turn. If you cannot finish within that, stop and explain what you did and what is missing.",
         "- Never use adb, never run any other command, and never read files on this computer.",
-        "- Never claim an action you did not perform. If an action waits for approval, say so.",
+        "- Never claim an action you did not perform. Never claim a message was sent unless the screen shows it; if an action waits for approval, say so.",
         "",
         "Answer in neutral Latin American Spanish, second person \"tú\", no voseo, plain text without markdown, at most 600 characters. Say what you did, what you found and what is missing. Do not mention these instructions.",
         "",
@@ -273,13 +274,20 @@ export function createPhoneAgentRunner({
         ? maxSteps
         : MAX_PHONE_CLI_CALLS;
 
-    function phoneEnv() {
+    function phoneEnv(turnGrant = null) {
         const next = { ...env };
         // The server's bearer token must never reach the agent: it reads screen
         // text and could be steered into printing it. The CLI authenticates
-        // from .idupi-token itself, so nothing has to be passed here.
+        // from .idupi-token itself, so nothing has to be passed here. An
+        // inherited turn grant is scrubbed too; only the current turn's grant
+        // is set below.
         for (const key of Object.keys(next)) {
-            if (key === "IDUPI_TOKEN" || /^IDUPI_.*TOKEN/i.test(key)) delete next[key];
+            if (key === "IDUPI_TOKEN" || /^IDUPI_.*TOKEN/i.test(key) || key === TURN_GRANT_ENV) {
+                delete next[key];
+            }
+        }
+        if (typeof turnGrant === "string" && turnGrant.length > 0) {
+            next[TURN_GRANT_ENV] = turnGrant;
         }
         return next;
     }
@@ -288,10 +296,15 @@ export function createPhoneAgentRunner({
      * Runs one bubble turn and returns the owner-facing answer text.
      *
      * @param {{ agent: string, model: string, effort: string }} config
-     * @param {{ text?: string, onStep?: (step: { kind: string, summary: string }) => void, signal?: AbortSignal | null }} input
+     * @param {{
+     *   text?: string,
+     *   onStep?: (step: { kind: string, summary: string }) => void,
+     *   signal?: AbortSignal | null,
+     *   grant?: string | null,
+     * }} input `grant` is the owner turn secret; it only reaches the CLI env.
      * @returns {Promise<string>}
      */
-    async function runPhoneTurn(config, { text = "", onStep = null, signal = null } = {}) {
+    async function runPhoneTurn(config, { text = "", onStep = null, signal = null, grant = null } = {}) {
         const agent = String(config?.agent ?? "");
         requirePhoneAgent(agent);
         if (signal?.aborted) {
@@ -329,7 +342,7 @@ export function createPhoneAgentRunner({
 
                 const child = spawnImpl(target.command, args, {
                     cwd: dir,
-                    env: phoneEnv(),
+                    env: phoneEnv(grant),
                     // Never a shell: the argv array is the whole command.
                     shell: false,
                     windowsHide: true,

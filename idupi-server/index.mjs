@@ -86,6 +86,7 @@ import { createPhoneApprovalStore } from "./lib/phone-approval-store.mjs";
 // lib/phone-agent.mjs.
 import { createPhoneAgentTurnStore } from "./lib/phone-agent-turns.mjs";
 import { createPhoneAgentRoutes } from "./lib/phone-agent-routes.mjs";
+import { createPhoneTurnGrants } from "./lib/phone-turn-grants.mjs";
 import { createPhoneAgentRunner } from "./lib/phone-agent.mjs";
 // Phone calendar (phone-calendar, T1): the phone's calendar snapshot, conflict
 // and free-slot math, and the PC proposal queue the owner approves on the
@@ -1374,7 +1375,12 @@ const phoneStore = createPhoneStore({
     dataDir: fileURLToPath(new URL("./data", import.meta.url)),
     approvalStore: phoneApprovalStore,
 });
-const handlePhoneRoute = createPhoneRoutes({ store: phoneStore });
+// One in-memory registry for owner bubbles: the agent routes mint and revoke a
+// per-turn secret, and the command route resolves it on POST /commands. A
+// command created by a queued/running bubble turn auto-approves its messaging
+// steps (phone-bubble, T13); money and destructive ones still wait.
+const phoneTurnGrants = createPhoneTurnGrants();
+const handlePhoneRoute = createPhoneRoutes({ store: phoneStore, turnGrants: phoneTurnGrants });
 const handlePhoneCalendarRoute = createPhoneCalendarRoutes({ store: phoneCalendarStore });
 
 // Phone bubble turns (phone-bubble, T1/T2): the owner request and its answer
@@ -1397,6 +1403,7 @@ const handlePhoneAgentRoute = createPhoneAgentRoutes({
     // Bubble turns have their own agent: only the claude profile can be limited
     // to the single idupi-phone command, while the inbox may run on opencode.
     getConfig: () => PHONE_AGENT_CONFIG,
+    turnGrants: phoneTurnGrants,
 });
 
 // Phone health (phone-health, T1/T3/T4): the ADB link, the hidden-display
