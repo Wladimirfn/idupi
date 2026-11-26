@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ChatBubbleOutline
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -85,6 +86,7 @@ import com.idupi.app.viewmodel.PhoneApprovalsState
 fun PhoneAgentSection(viewModel: PhoneAgentSettingsViewModel) {
     val statusEnabled by viewModel.phoneStatusEnabled.collectAsState()
     val controlEnabled by viewModel.phoneControlEnabled.collectAsState()
+    val bubbleEnabled by viewModel.phoneBubbleEnabled.collectAsState()
     val report by viewModel.reportState.collectAsState()
     val recentCommands by viewModel.recentCommands.collectAsState()
     val approvals by viewModel.approvals.collectAsState()
@@ -161,6 +163,19 @@ fun PhoneAgentSection(viewModel: PhoneAgentSettingsViewModel) {
             onRequestPhoneState = {
                 phoneStatePermission.launch(Manifest.permission.READ_PHONE_STATE)
             }
+        )
+
+        PhoneBubbleCard(
+            enabled = bubbleEnabled,
+            controlEnabled = controlEnabled,
+            accessibilityEnabled = accessibilityEnabled,
+            onEnabledChange = { enabled ->
+                viewModel.setPhoneBubbleEnabled(enabled)
+                // The bubble is drawn by the accessibility service; without the
+                // grant nothing can appear, so guide the owner there right away.
+                if (enabled && !accessibilityEnabled) openAccessibilitySettings()
+            },
+            onOpenAccessibility = openAccessibilitySettings,
         )
 
         // Empty state stays hidden: the card only exists when something needs
@@ -588,6 +603,106 @@ private fun PhoneControlCard(
                 recentCommands.take(RECENT_COMMANDS_IN_UI).forEach { entry ->
                     RecentCommandRow(entry)
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PhoneBubbleCard(
+    enabled: Boolean,
+    controlEnabled: Boolean,
+    accessibilityEnabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    onOpenAccessibility: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SlateCard),
+        shape = AppShapes.card
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(AppSpacing.cardPadding)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .background(SlateBorder, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.ChatBubbleOutline,
+                        contentDescription = null,
+                        tint = if (enabled && controlEnabled && accessibilityEnabled) {
+                            StatusConnected
+                        } else {
+                            TextSecondary
+                        }
+                    )
+                }
+                Spacer(modifier = Modifier.width(AppSpacing.lg))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Burbuja de IDUPI",
+                        style = AppTypography.bodyLarge,
+                        color = TextPrimary
+                    )
+                    Text(
+                        text = "Pide cosas al agente desde una burbuja sobre otras apps.",
+                        style = AppTypography.bodySmall,
+                        color = TextSecondary
+                    )
+                }
+                Switch(
+                    checked = enabled,
+                    onCheckedChange = onEnabledChange,
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = PrimaryIndigo,
+                        uncheckedThumbColor = TextSecondary,
+                        uncheckedTrackColor = SlateBg,
+                        uncheckedBorderColor = SlateBorder
+                    )
+                )
+            }
+
+            Divider(color = SlateBorder)
+
+            when {
+                !accessibilityEnabled -> {
+                    Text(
+                        text = "Necesita Accesibilidad activa para dibujarse sobre otras apps.",
+                        style = AppTypography.bodySmall,
+                        color = StatusError
+                    )
+                    Button(
+                        onClick = onOpenAccessibility,
+                        shape = AppShapes.button,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = PrimaryIndigo,
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Text("Activar Accesibilidad", style = AppTypography.bodySmall)
+                    }
+                }
+                !controlEnabled -> Text(
+                    text = "Necesita «Control desde la PC» encendido. Actívalo arriba para que la burbuja aparezca.",
+                    style = AppTypography.bodySmall,
+                    color = StatusError
+                )
+                else -> Text(
+                    text = "La burbuja aparece sobre las demás apps: escribe o dicta tu pedido y el agente responde ahí.",
+                    style = AppTypography.bodySmall,
+                    color = TextSecondary
+                )
             }
         }
     }

@@ -75,6 +75,9 @@ class PhoneAgentSettingsViewModel(
     val phoneControlEnabled: StateFlow<Boolean> = settingsRepository.phoneControlEnabled
         .stateIn(viewModelScope, SharingStarted.Eagerly, false)
 
+    val phoneBubbleEnabled: StateFlow<Boolean> = settingsRepository.phoneBubbleEnabled
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
     /** Newest first, capped by [PhoneCommandLog]. Payload-free by construction. */
     val recentCommands: StateFlow<List<PhoneCommandLogEntry>> = commandLog
 
@@ -104,6 +107,12 @@ class PhoneAgentSettingsViewModel(
     fun setPhoneControlEnabled(enabled: Boolean) {
         viewModelScope.launch {
             settingsRepository.setPhoneControlEnabled(enabled)
+        }
+    }
+
+    fun setPhoneBubbleEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            settingsRepository.setPhoneBubbleEnabled(enabled)
         }
     }
 
