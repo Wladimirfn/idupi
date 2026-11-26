@@ -391,14 +391,6 @@ stacked on #28 with `size:exception`, same as #27/#28.
   polish items: the bars animate only while listening, and the permission activity
   drops `noHistory` so the dialog result always lands. Commit `684d9a7`.
 
-## Next step
-
-T11 and T17 are done; only T12 remains (release: version bump,
-`assembleRelease`, push, live check, PR). T18 is done end to end: the server names
-the owner turn on the delivered command and the phone accepts its auto-approved
-messaging steps only while that turn is active on the device.
-Before T12, deliver only `assembleRelease` APKs (a debug APK fails with a
-signature mismatch on the phone).
 - 2026-11-26: T20 done. Manifest-only: `android:taskAffinity=""` on
   `VoiceInputActivity` and `MicPermissionActivity`; merged debug manifest
   checked. Commit `f67eb80`. On-device check pending (owner).
@@ -414,3 +406,12 @@ signature mismatch on the phone).
   `880ea31`), assembleRelease, signer SHA-256 matches dlv-33a07717c839, pushed
   as dlv-064e0a4214e9. Includes T11/T17 for the first time on the phone (1.55
   was built before them). Pending: owner live check, PR.
+
+## Next step
+
+T20 and T21 are done and 1.56-burbuja-voz is on the phone (dlv-064e0a4214e9).
+T12 remains open: owner live check of the bubble dictation (T11), the voice
+follow-up (T17), the voice confirmation loop (T21) and the app no longer
+coming up behind the bubble (T20); then the PR. T19 (per-app integration) is
+still pending. Deliver only `assembleRelease` APKs (a debug APK fails with a
+signature mismatch on the phone).
