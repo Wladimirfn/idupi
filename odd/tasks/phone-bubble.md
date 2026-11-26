@@ -14,7 +14,11 @@ every outbound or irreversible step goes through the approval queue (B1).
 ## Product rules (owner)
 
 - Observe everything, even with the screen off; risky actions need explicit
-  approval on the phone. The bubble never approves. No auto-approve.
+  approval on the phone. The bubble never approves a pending card.
+- Update 2026-11-26 (owner): a task the owner sends from the bubble IS the
+  approval for its messaging steps (hands-free); money and destructive steps
+  still wait for an explicit approval. Autonomous/proactive agents keep the
+  full gate.
 - Neutral Latin American Spanish in UI copy and agent answers (tú, no voseo).
 - IDUPI flows on its own; only outbound-to-others or irreversible actions wait.
 
@@ -89,6 +93,31 @@ every outbound or irreversible step goes through the approval queue (B1).
       Ajustes when the bubble is enabled or via a tiny transparent permission
       activity on first tap; falls back to the current `VoiceInputActivity`
       when the permission is denied or no recognizer exists. Tests.
+- [ ] T13 Server: owner-initiated turns run without approvals (owner 2026-11-26:
+      "cuando envío una tarea no pedir aprobaciones", hands-free use). A
+      command created by a running bubble turn (per-turn secret the runner
+      passes to the CLI; never trusted from `requestedBy` alone) is approved
+      automatically and recorded as decided by the owner's request, so the
+      phone ledger accepts it and the phone never jumps to Alertas mid-task.
+      Still gated even inside a turn: money (sensitive bank/wallet apps,
+      pay/buy/transfer words) and destructive words (delete/borrar/eliminar).
+      Agent prompt updated (no "esperando aprobación" for messaging). Tests.
+- [ ] T14 Server: agent tap reliability. Prompt teaches `tap --id` (e.g.
+      `com.whatsapp:id/send`) and disambiguation when "varios elementos
+      coinciden"; `type --submit` that leaves text in a chat field falls back
+      to tapping the send button by id. Tests on prompt/CLI.
+- [ ] T15 App: movable panel. The expanded chat panel drags by its header
+      like the circle instead of staying fixed at the centre; position
+      clamped to the screen and remembered while the service lives. Tests.
+- [ ] T16 App: keyboard and navigation. While the panel has focus the
+      owner can hide the keyboard (back key closes the IME first, a second
+      back collapses the panel; a tap outside the panel releases focus via
+      `FLAG_WATCH_OUTSIDE_TOUCH`), and system back/home keep working. Tests on
+      the pure key/focus reducer.
+- [ ] T17 App: voice follow-up. When the last request was dictated and the
+      agent answers with a question, the bubble opens, shows the answer and
+      starts listening again (in-bubble dictation from T11), never auto-sends.
+      Tests.
 - [ ] T12 Release: version bump, assembleRelease (same cert), push, live check,
       PR.
 
@@ -201,6 +230,16 @@ stacked on #28 with `size:exception`, same as #27/#28.
   circle half off the edge after idle (`FLAG_LAYOUT_NO_LIMITS` on the collapsed
   window only). Commit `7441066`. 1.54-burbuja-vidrio (versionCode 55, `b27cc80`)
   release-signed, same cert, pushed as dlv-e1ed0aeba3d6. Awaiting owner's look.
+- 2026-11-26: owner on 1.54: "estéticamente es hermoso". New asks: the chat
+  panel must move like the circle; the keyboard cannot be hidden and back/home
+  are unavailable while typing; approvals block hands-free use (turns
+  pat-b28176e79c15 / pat-55184a14e093 / pat-c802bb85febe: the WhatsApp contact
+  was found but the approval jump to Alertas broke typing, `type --submit` left
+  the text unsent, `tap "Enviar"` matched several nodes, the agent did not use
+  `tap --id`); after a dictated request answered with a question, reopen with
+  dictation ready; dictation must be integrated, not the Google sheet. Added
+  T13-T17; owner product rule updated (owner-initiated turns need no approval,
+  money and destructive steps still do).
 
 ## Next step
 
