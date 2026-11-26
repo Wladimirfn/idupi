@@ -93,7 +93,7 @@ every outbound or irreversible step goes through the approval queue (B1).
       Ajustes when the bubble is enabled or via a tiny transparent permission
       activity on first tap; falls back to the current `VoiceInputActivity`
       when the permission is denied or no recognizer exists. Tests.
-- [ ] T13 Server: owner-initiated turns run without approvals (owner 2026-11-26:
+- [x] T13 Server: owner-initiated turns run without approvals (owner 2026-11-26:
       "cuando envío una tarea no pedir aprobaciones", hands-free use). A
       command created by a running bubble turn (per-turn secret the runner
       passes to the CLI; never trusted from `requestedBy` alone) is approved
@@ -102,7 +102,7 @@ every outbound or irreversible step goes through the approval queue (B1).
       Still gated even inside a turn: money (sensitive bank/wallet apps,
       pay/buy/transfer words) and destructive words (delete/borrar/eliminar).
       Agent prompt updated (no "esperando aprobación" for messaging). Tests.
-- [ ] T14 Server: agent tap reliability. Prompt teaches `tap --id` (e.g.
+- [x] T14 Server: agent tap reliability. Prompt teaches `tap --id` (e.g.
       `com.whatsapp:id/send`) and disambiguation when "varios elementos
       coinciden"; `type --submit` that leaves text in a chat field falls back
       to tapping the send button by id. Tests on prompt/CLI.
@@ -240,10 +240,41 @@ stacked on #28 with `size:exception`, same as #27/#28.
   dictation ready; dictation must be integrated, not the Google sheet. Added
   T13-T17; owner product rule updated (owner-initiated turns need no approval,
   money and destructive steps still do).
+- 2026-11-26: T13 green. RED: the new grant tests failed to load
+  (`ERR_MODULE_NOT_FOUND`); the owner-turn store tests got `awaiting_approval`
+  where `pending` was expected; the risk, route, runner and CLI tests failed
+  because the grant module, the categories and the header helper did not exist.
+  GREEN: full suite 1018 pass, 0 fail (+28). A queued/running turn mints a
+  32-byte secret bound to its id (`lib/phone-turn-grants.mjs`, memory only,
+  `timingSafeEqual` lookup); the runner passes it as
+  `IDUPI_PHONE_TURN_GRANT` (the env scrub drops inherited grants and the prompt
+  never sees it) and the CLI forwards it as `X-Idupi-Turn-Grant` on command
+  creation. The command route resolves it server-side; `requestedBy` never
+  authorizes. `createCommand` instantly approves `message`-category steps with
+  `decidedBy: "owner-request:<turnId>"` (type_submit, messaging text, messaging
+  apps) and requeues them with the same `approvalId`/`approvedTarget` a manual
+  approval produces; money, destructive, confirmation and bank/wallet apps stay
+  pending. Grants are revoked on done/failed/cancelled/superseded and never
+  appear in turn JSON, steps, answers or logs. Commit `c251c7f`.
+  Note: the phone's `ApprovalGate` still consumes only local ledger grants, so
+  hands-free execution needs the app-side half (accept an owner-request
+  approval or record its grant) before T12; server side is complete.
+- 2026-11-26: T14 green. RED: the new prompt test failed because the prompt had
+  no `tap --id`, no "varios elementos coinciden" guidance and no send
+  verification. GREEN: full suite 1019 pass, 0 fail (+1). The prompt now
+  explains the `#resource-id` token in the screen dump, `tap --id` (WhatsApp
+  `com.whatsapp:id/send`), disambiguating an ambiguous text tap, and that
+  `type --submit` may only add a newline: read the screen, tap the send button
+  by id and confirm the field is empty or the bubble appears. The blanket
+  coordinate ban is gone because the phone still checks the node under a point
+  (`ApprovalGate.checkNode` + `textsAtPoint`); `tap --xy` is a last resort.
+  Commit `2174d26`.
 
 ## Next step
 
-T9-T11 design pass (owner feedback 2026-11-26 on 1.53): glass look in the
-owner's palette with the translucent logo, edge docking, in-bubble dictation.
-Then T12 release. Deliver only `assembleRelease` APKs (a debug APK fails with a
-signature mismatch on the phone).
+T11 in-bubble dictation and T15-T17 app follow-ups (movable panel, keyboard and
+back behaviour, voice follow-up) on `feat/phone-bubble`. Before T12, add the
+app-side half of T13 so the phone accepts a server-approved owner-request
+command (its `ApprovalGate` still requires a local ledger grant). Deliver only
+`assembleRelease` APKs (a debug APK fails with a signature mismatch on the
+phone).
