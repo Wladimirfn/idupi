@@ -50,6 +50,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.idupi.app.data.phone.PhoneStatusReporting
 import com.idupi.app.data.phone.approval.ApprovalNotificationText
+import com.idupi.app.data.phone.bubble.MicPermission
 import com.idupi.app.data.phone.control.PhoneCommandLogEntry
 import com.idupi.app.data.phone.control.PhoneCommandLogFormat
 import com.idupi.app.data.phone.control.accessibilitySettingsIntent
@@ -97,6 +98,7 @@ fun PhoneAgentSection(viewModel: PhoneAgentSettingsViewModel) {
     var usageAccess by remember { mutableStateOf(isUsageAccessGranted(context)) }
     var accessibilityEnabled by remember { mutableStateOf(isAccessibilityControlEnabled(context)) }
     var phoneStateGranted by remember { mutableStateOf(hasReadPhoneState(context)) }
+    var microphoneGranted by remember { mutableStateOf(MicPermission.isGranted(context)) }
 
     // Every grant below happens in the system settings or a system dialog:
     // re-check them all when the owner comes back instead of trusting the
@@ -107,6 +109,7 @@ fun PhoneAgentSection(viewModel: PhoneAgentSettingsViewModel) {
                 usageAccess = isUsageAccessGranted(context)
                 accessibilityEnabled = isAccessibilityControlEnabled(context)
                 phoneStateGranted = hasReadPhoneState(context)
+                microphoneGranted = MicPermission.isGranted(context)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -124,6 +127,12 @@ fun PhoneAgentSection(viewModel: PhoneAgentSettingsViewModel) {
     val phoneStatePermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted -> phoneStateGranted = granted }
+
+    // T11: in-bubble dictation records the microphone itself, so the switch
+    // asks for RECORD_AUDIO here instead of surprising the owner mid-dictation.
+    val microphonePermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted -> microphoneGranted = granted }
 
     val openAccessibilitySettings = {
         runCatching {
@@ -171,6 +180,9 @@ fun PhoneAgentSection(viewModel: PhoneAgentSettingsViewModel) {
             accessibilityEnabled = accessibilityEnabled,
             onEnabledChange = { enabled ->
                 viewModel.setPhoneBubbleEnabled(enabled)
+                if (enabled && !microphoneGranted) {
+                    microphonePermission.launch(MicPermission.PERMISSION)
+                }
                 // The bubble is drawn by the accessibility service; without the
                 // grant nothing can appear, so guide the owner there right away.
                 if (enabled && !accessibilityEnabled) openAccessibilitySettings()

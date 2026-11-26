@@ -15,6 +15,12 @@
          Ajustes requests it. -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
 
+    <!-- In-bubble dictation (phone-bubble T11): the overlay owns a
+         SpeechRecognizer directly, so IDUPI records the microphone itself.
+         A transparent activity requests it once; Ajustes asks when the owner
+         turns the bubble on. Denying it keeps the system sheet working. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
     <!-- Phone calendar (phone-calendar T2/T3): read the phone's calendars and
          write an event only after the owner confirms it in the app. Both are
          runtime permissions; Ajustes > CALENDARIO requests them. -->
@@ -186,13 +192,26 @@
             android:name="com.idupi.app.data.phone.approval.ApprovalActionReceiver"
             android:exported="false" />
 
-        <!-- Phone bubble dictation (phone-bubble T5). Launched from the
-             accessibility overlay with FLAG_ACTIVITY_NEW_TASK, transparent and
-             history-free: it only opens the system recognizer sheet and relays
-             the transcript to the bubble. It is never exported and owns no
-             microphone permission of its own. -->
+        <!-- Phone bubble dictation (phone-bubble T5). Fallback only since T11:
+             when RECORD_AUDIO is denied or no recognizer exists it opens the
+             system recognizer sheet and relays the transcript to the bubble.
+             Launched from the accessibility overlay with
+             FLAG_ACTIVITY_NEW_TASK, transparent and history-free. Never
+             exported; it owns no microphone permission of its own. -->
         <activity
             android:name="com.idupi.app.data.phone.bubble.VoiceInputActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <!-- In-bubble dictation permission (phone-bubble T11). The overlay is
+             an accessibility service and cannot request RECORD_AUDIO itself,
+             so this transparent trampoline asks once and finishes. Never
+             exported and never in recents. -->
+        <activity
+            android:name="com.idupi.app.data.phone.bubble.MicPermissionActivity"
             android:exported="false"
             android:excludeFromRecents="true"
             android:noHistory="true"

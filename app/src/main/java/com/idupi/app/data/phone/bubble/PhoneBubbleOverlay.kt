@@ -9,7 +9,11 @@ import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
+import android.os.Bundle
 import android.os.SystemClock
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.text.InputType
 import android.util.Log
 import android.util.TypedValue
@@ -43,6 +47,7 @@ import com.idupi.app.data.settings.SettingsProvider
 import com.idupi.app.data.settings.SettingsRepository
 import com.idupi.app.domain.model.ThemeSettings
 import com.idupi.app.ui.theme.ThemePalettes
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
@@ -77,8 +82,11 @@ import kotlinx.coroutines.launch
  * panel so the keyboard can reach the text field; minimizing collapses it and
  * cancels the long poll ([BubbleChatController.close]).
  *
- * Voice (T5) and the approval banner (T7) plug into this shell: they own their
- * own wiring, the shell only renders what the state exposes.
+ * Voice (T5) plugs into this shell, and since T11 the panel owns the
+ * microphone: `SpeechRecognizer` runs inside the overlay, partial hypotheses
+ * stream into the field, level bars follow `onRmsChanged` and the system sheet
+ * remains only as the fallback when the phone cannot dictate in-process. The
+ * approval banner (T7) is rendered by the same shell; it never decides.
  */
 class PhoneBubbleOverlay(
     private val service: AccessibilityService,
@@ -96,6 +104,7 @@ class PhoneBubbleOverlay(
     private var params: WindowManager.LayoutParams? = null
     private var stateJob: Job? = null
     private var voiceJob: Job? = null
+    private var permissionJob: Job? = null
     private var themeJob: Job? = null
     private var dockJob: Job? = null
 
@@ -153,6 +162,14 @@ class PhoneBubbleOverlay(
     private var sendButton: Button? = null
     private var voiceButton: Button? = null
     private var voiceHint: TextView? = null
+    private var voiceListeningRow: View? = null
+    private var voiceLevels: VoiceLevelView? = null
+
+    /** In-bubble dictation state (T11); the reducer is the only writer. */
+    private var voiceState: BubbleVoiceState = BubbleVoiceState.Idle
+
+    /** Live in-process recognizer; created on first use, destroyed on collapse. */
+    private var speech: SpeechRecognizer? = null
 
     private var idleAnimator: ValueAnimator? = null
     private var dockAnimator: ValueAnimator? = null
@@ -277,6 +294,8 @@ class PhoneBubbleOverlay(
         stateJob = null
         voiceJob?.cancel()
         voiceJob = null
+        permissionJob?.cancel()
+        permissionJob = null
         themeJob?.cancel()
         themeJob = null
         dockJob?.cancel()
@@ -284,6 +303,7 @@ class PhoneBubbleOverlay(
         cancelIdleAnimation()
         dockAnimator?.cancel()
         dockAnimator = null
+        abandonVoice(render = false)
         controller.close()
         focusState = BubbleFocusState()
         val view = root ?: return
@@ -305,6 +325,8 @@ class PhoneBubbleOverlay(
         sendButton = null
         voiceButton = null
         voiceHint = null
+        voiceListeningRow = null
+        voiceLevels = null
         try {
             windowManager.removeView(view)
         } catch (error: Exception) {
@@ -330,6 +352,15 @@ class PhoneBubbleOverlay(
                     is VoiceInputEvent.Transcript -> acceptTranscript(event.text)
                     VoiceInputEvent.Failed -> showVoiceFailure()
                 }
+            }
+        }
+        permissionJob?.cancel()
+        permissionJob = scope.launch {
+            MicPermissionChannel.results.collect { granted ->
+                dispatchVoice(
+                    if (granted) BubbleVoiceEvent.PermissionGranted
+                    else BubbleVoiceEvent.PermissionDenied,
+                )
             }
         }
         themeJob?.cancel()
@@ -437,6 +468,8 @@ class PhoneBubbleOverlay(
         sendButton = null
         voiceButton = null
         voiceHint = null
+        voiceListeningRow = null
+        voiceLevels = null
         startIdleAnimation(circle, sheen)
     }
 
@@ -670,7 +703,9 @@ class PhoneBubbleOverlay(
             }
         }
         val send = filledButton("Enviar") { sendDraft() }
-        val dictate = glassButton("Dictar") { launchDictation() }
+        // T11: the primary path is in-bubble dictation; the recognizer sheet is
+        // reached only through the reducer's fallback.
+        val dictate = glassButton("Dictar") { onMicTapped() }
         val hideKeyboard = glassButton(HIDE_KEYBOARD_GLYPH) {
             handleFocusEvent(BubbleFocusEvent.HIDE_KEYBOARD)
         }.apply {
@@ -699,7 +734,6 @@ class PhoneBubbleOverlay(
             )
         }
         val hint = TextView(service).apply {
-            text = VoiceInputContract.FAILURE_MESSAGE
             setTextColor(style.error)
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
             setPadding(0, dp(6), 0, 0)
@@ -710,6 +744,7 @@ class PhoneBubbleOverlay(
             )
         }
         column.addView(field)
+        column.addView(buildVoiceListeningRow())
         column.addView(buttons)
         column.addView(hint)
         input = field
@@ -719,8 +754,174 @@ class PhoneBubbleOverlay(
         return column
     }
 
-    // --- dictation (T5) ---------------------------------------------------
+    /**
+     * The listening feedback that lives inside the panel (T11): the dancing
+     * level bars and "Escuchando…". The partial transcript goes into the field
+     * itself, not here, so the owner can already edit it while speaking.
+     */
+    private fun buildVoiceListeningRow(): View {
+        val row = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            visibility = View.GONE
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { topMargin = dp(6) }
+        }
+        val bars = VoiceLevelView(service, barColor = style.primary).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(64), dp(18))
+        }
+        val label = TextView(service).apply {
+            text = BubbleVoiceReducer.MESSAGE_LISTENING
+            setTextColor(style.textSecondary)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+            setPadding(dp(8), 0, 0, 0)
+        }
+        row.addView(bars)
+        row.addView(label)
+        voiceLevels = bars
+        voiceListeningRow = row
+        return row
+    }
 
+    // --- dictation (T5, in-bubble since T11) ------------------------------
+
+    /**
+     * The mic toggle. The reducer decides everything: ask for RECORD_AUDIO,
+     * start or finish the recognizer, retry after an error, or fall back to the
+     * system sheet when the phone cannot dictate in-process.
+     */
+    private fun onMicTapped() {
+        dispatchVoice(
+            BubbleVoiceEvent.MicTapped(
+                permissionGranted = MicPermission.isGranted(service),
+                recognizerAvailable = inBubbleRecognitionAvailable(),
+            ),
+        )
+    }
+
+    private fun inBubbleRecognitionAvailable(): Boolean =
+        SpeechRecognizer.isRecognitionAvailable(service) ||
+            (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                SpeechRecognizer.isOnDeviceRecognitionAvailable(service))
+
+    private fun dispatchVoice(event: BubbleVoiceEvent) {
+        val decision = BubbleVoiceReducer.reduce(voiceState, event)
+        voiceState = decision.state
+        decision.actions.forEach(::applyVoiceAction)
+        renderVoice()
+    }
+
+    private fun applyVoiceAction(action: BubbleVoiceAction) {
+        when (action) {
+            BubbleVoiceAction.RequestMicrophonePermission -> startMicPermission()
+            BubbleVoiceAction.StartRecognizer -> startSpeech()
+            BubbleVoiceAction.StopRecognizer -> stopSpeech()
+            BubbleVoiceAction.LaunchSystemDictation -> launchDictation()
+            is BubbleVoiceAction.PutText -> putTranscript(action.text)
+        }
+    }
+
+    /**
+     * The overlay cannot request a runtime permission, so a transparent
+     * activity asks once and publishes its answer on [MicPermissionChannel].
+     */
+    private fun startMicPermission() {
+        val intent = Intent(service, MicPermissionActivity::class.java).apply {
+            addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_NO_HISTORY or
+                    Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
+            )
+        }
+        try {
+            service.startActivity(intent)
+        } catch (error: Exception) {
+            Log.w(TAG, "could not ask for the microphone: ${error.javaClass.simpleName}")
+            // No dialog means no permission: the system sheet still works.
+            dispatchVoice(BubbleVoiceEvent.PermissionDenied)
+        }
+    }
+
+    private fun startSpeech() {
+        try {
+            ensureSpeechRecognizer().startListening(recognitionIntent())
+        } catch (error: Exception) {
+            Log.w(TAG, "could not start in-bubble dictation: ${error.javaClass.simpleName}")
+            dispatchVoice(BubbleVoiceEvent.OtherError)
+        }
+    }
+
+    /**
+     * One recognizer for the life of the listening attempts; T11 prefers the
+     * on-device model on API 31+ because it answers without a round trip.
+     */
+    private fun ensureSpeechRecognizer(): SpeechRecognizer {
+        speech?.let { return it }
+        val created = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            SpeechRecognizer.isOnDeviceRecognitionAvailable(service)
+        ) {
+            SpeechRecognizer.createOnDeviceSpeechRecognizer(service)
+        } else {
+            SpeechRecognizer.createSpeechRecognizer(service)
+        }
+        created.setRecognitionListener(recognitionListener)
+        speech = created
+        return created
+    }
+
+    /** es-CL on a Spanish phone, the device tag otherwise (T5 rule). */
+    private fun recognitionIntent(): Intent {
+        val language = VoiceInputContract.resolveLanguage(Locale.getDefault().toLanguageTag())
+        return Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM,
+            )
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, language)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, language)
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+        }
+    }
+
+    /**
+     * Asks the recognizer to finish instead of dropping the attempt: the final
+     * transcript still arrives in `onResults`, which is what the owner expects
+     * from tapping the mic a second time.
+     */
+    private fun stopSpeech() {
+        try {
+            speech?.stopListening()
+        } catch (error: Exception) {
+            Log.w(TAG, "could not stop dictation: ${error.javaClass.simpleName}")
+        }
+    }
+
+    /**
+     * Cancels and destroys the recognizer (T11: on collapse, detach and send).
+     * The next mic tap creates a fresh one.
+     */
+    private fun abandonVoice(render: Boolean) {
+        val recognizer = speech
+        speech = null
+        if (recognizer != null) {
+            try {
+                recognizer.cancel()
+                recognizer.destroy()
+            } catch (error: Exception) {
+                Log.w(TAG, "could not destroy dictation: ${error.javaClass.simpleName}")
+            }
+        }
+        voiceState = BubbleVoiceState.Idle
+        if (render) renderVoice()
+    }
+
+    /**
+     * Fallback only: the existing transparent activity opens the system
+     * recognizer sheet when RECORD_AUDIO is denied or no recognizer exists.
+     */
     private fun launchDictation() {
         val intent = Intent(service, VoiceInputActivity::class.java).apply {
             addFlags(
@@ -737,19 +938,93 @@ class PhoneBubbleOverlay(
         }
     }
 
-    /** The transcript lands in the field for editing; it is never auto-sent. */
+    /** A system-sheet transcript lands in the field for editing, never sent. */
     private fun acceptTranscript(text: String) {
+        voiceState = BubbleVoiceState.Idle
+        putTranscript(text)
+        renderVoice()
+    }
+
+    /**
+     * The only writer of the field for dictation: partial hypotheses stream in
+     * and the final transcript stays for editing. Never sends, and never asks
+     * for field focus: starting to listen must not force the IME up (T16).
+     */
+    private fun putTranscript(text: String) {
         val field = input ?: return
         field.setText(text)
         field.setSelection(text.length)
-        field.requestFocus()
         voiceHint?.visibility = View.GONE
     }
 
     private fun showVoiceFailure() {
-        voiceHint?.text = VoiceInputContract.FAILURE_MESSAGE
-        voiceHint?.visibility = View.VISIBLE
+        voiceState = BubbleVoiceState.Error(VoiceInputContract.FAILURE_MESSAGE)
+        renderVoice()
     }
+
+    /** Paints the mic toggle, the level bars and the short error copy. */
+    private fun renderVoice() {
+        val listening = voiceState as? BubbleVoiceState.Listening
+        voiceListeningRow?.visibility = if (listening != null) View.VISIBLE else View.GONE
+        listening?.let { voiceLevels?.setLevel(it.level) }
+
+        voiceButton?.text = if (listening != null) "Detener" else "Dictar"
+        voiceButton?.contentDescription =
+            if (listening != null) "Detener el dictado" else "Dictar tu pedido"
+        val waitingForPermission = voiceState == BubbleVoiceState.RequestingPermission
+        voiceButton?.isEnabled = !waitingForPermission
+        voiceButton?.alpha = if (waitingForPermission) 0.5f else 1f
+
+        when (val state = voiceState) {
+            is BubbleVoiceState.Error -> {
+                voiceHint?.text = state.message
+                voiceHint?.visibility = View.VISIBLE
+            }
+            else -> voiceHint?.visibility = View.GONE
+        }
+    }
+
+    /** Thin bridge: every recognizer callback becomes one reducer event. */
+    private val recognitionListener = object : RecognitionListener {
+        override fun onReadyForSpeech(params: Bundle?) = Unit
+        override fun onBeginningOfSpeech() = Unit
+        override fun onRmsChanged(rmsdB: Float) {
+            dispatchVoice(BubbleVoiceEvent.Level(rmsdB))
+        }
+        override fun onBufferReceived(buffer: ByteArray?) = Unit
+        override fun onEndOfSpeech() = Unit
+        override fun onError(error: Int) {
+            dispatchVoice(recognitionErrorEvent(error))
+        }
+        override fun onResults(results: Bundle?) {
+            val text = firstResult(results)
+            dispatchVoice(
+                if (text != null) BubbleVoiceEvent.Final(text) else BubbleVoiceEvent.NoSpeech,
+            )
+        }
+        override fun onPartialResults(partialResults: Bundle?) {
+            val text = firstResult(partialResults) ?: return
+            dispatchVoice(BubbleVoiceEvent.Partial(text))
+        }
+        override fun onEvent(eventType: Int, params: Bundle?) = Unit
+    }
+
+    private fun recognitionErrorEvent(error: Int): BubbleVoiceEvent = when (error) {
+        SpeechRecognizer.ERROR_NO_MATCH,
+        SpeechRecognizer.ERROR_SPEECH_TIMEOUT,
+        -> BubbleVoiceEvent.NoSpeech
+        SpeechRecognizer.ERROR_NETWORK,
+        SpeechRecognizer.ERROR_NETWORK_TIMEOUT,
+        -> BubbleVoiceEvent.NetworkError
+        SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> BubbleVoiceEvent.Busy
+        else -> BubbleVoiceEvent.OtherError
+    }
+
+    private fun firstResult(results: Bundle?): String? =
+        results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+            ?.firstOrNull { it.isNotBlank() }
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
 
     // --- interaction ------------------------------------------------------
 
@@ -914,6 +1189,8 @@ class PhoneBubbleOverlay(
     }
 
     private fun collapse() {
+        // T11: a collapsed bubble must not keep the microphone open.
+        abandonVoice(render = false)
         hideKeyboard()
         input?.clearFocus()
         controller.close()
@@ -944,6 +1221,9 @@ class PhoneBubbleOverlay(
     private fun sendDraft() {
         val text = input?.text?.toString().orEmpty()
         if (text.isBlank()) return
+        // A live recognizer must not drop a late transcript into the field the
+        // request is leaving from.
+        abandonVoice(render = true)
         input?.setText("")
         // The service can start in a process where MainActivity never ran, so
         // the shared client may still point at the emulator default.
@@ -1184,6 +1464,7 @@ class PhoneBubbleOverlay(
         sendButton?.alpha = if (chatState.isBusy) 0.5f else 1f
         approvalBanner?.visibility =
             if (approvalUi.waitingForApproval) View.VISIBLE else View.GONE
+        renderVoice()
     }
 
     // --- helpers ----------------------------------------------------------
