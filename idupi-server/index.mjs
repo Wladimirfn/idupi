@@ -86,6 +86,7 @@ import { createPhoneApprovalStore } from "./lib/phone-approval-store.mjs";
 // lib/phone-agent.mjs.
 import { createPhoneAgentTurnStore } from "./lib/phone-agent-turns.mjs";
 import { createPhoneAgentRoutes } from "./lib/phone-agent-routes.mjs";
+import { createPhoneAgentRunner } from "./lib/phone-agent.mjs";
 // Phone calendar (phone-calendar, T1): the phone's calendar snapshot, conflict
 // and free-slot math, and the PC proposal queue the owner approves on the
 // phone. Times are UTC; day boundaries use the phone's reported offset.
@@ -1376,14 +1377,18 @@ const phoneStore = createPhoneStore({
 const handlePhoneRoute = createPhoneRoutes({ store: phoneStore });
 const handlePhoneCalendarRoute = createPhoneCalendarRoutes({ store: phoneCalendarStore });
 
-// Phone bubble turns (phone-bubble, T1): the owner request and its answer are
-// persisted; the agent runner that executes them is wired below (T2).
+// Phone bubble turns (phone-bubble, T1/T2): the owner request and its answer
+// are persisted; the agent runs with a single-command Bash allowlist for
+// idupi-phone, a throwaway cwd and an env without the server token.
 const phoneAgentTurnStore = createPhoneAgentTurnStore({
     dataDir: fileURLToPath(new URL("./data", import.meta.url)),
 });
+const phoneAgentRunner = createPhoneAgentRunner({
+    resolveCommand: resolveInboxAgentCommand,
+});
 const handlePhoneAgentRoute = createPhoneAgentRoutes({
     store: phoneAgentTurnStore,
-    runner: null,
+    runner: phoneAgentRunner,
     getConfig: () => inboxStore.getConfig(),
 });
 
