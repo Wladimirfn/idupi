@@ -52,11 +52,11 @@ screen; Personalizado colors can be opened and closed.
 
 ## Tasks
 
-- [ ] T1 Navigation + shared pieces: `SettingsRoute` model with parent/back
+- [x] T1 Navigation + shared pieces: `SettingsRoute` model with parent/back
       table and saveable state, `SettingsSubScreen`, `SettingsCategoryRow`,
       `SettingsCard`; hub renders category rows and each route renders the
       existing section unchanged. Pure route/back tests.
-- [ ] T2 Hub summaries: pure summary functions per category from the existing
+- [x] T2 Hub summaries: pure summary functions per category from the existing
       view-model state; tests.
 - [ ] T3 Apariencia: Personalizado color editor behind "Editar colores"
       (expand/collapse, collapsed on entry, opened right after choosing
@@ -65,7 +65,7 @@ screen; Personalizado colors can be opened and closed.
       "Apps a seguir" (full searchable list, followed first, no 420dp cap),
       "Chats silenciados", "Analista en la PC" and "Estado de captura". Tests
       on any new state.
-- [ ] T5 Asistente del teléfono, Calendario, Salud, Acciones y seguridad as
+- [x] T5 Asistente del teléfono, Calendario, Salud, Acciones y seguridad as
       sub-screens (content moved as-is; "Actividad reciente" and "Aprobaciones
       pendientes" stay inside Asistente). Tests where state changes.
 - [ ] T6 Release: version bump, assembleRelease (same cert), install, owner
@@ -96,7 +96,13 @@ Delivery: forecast ~1500 authored lines (mostly moved code); strategy
 
 - 2026-11-26: exploration done (explore-1); owner chose the hub with
   sub-screens; branch created on `feat/phone-bubble`.
+- 2026-11-26: T1+T2 done (writer idu-pi work-1). `SettingsRoute` (parent/back,
+  saveable name), `SettingsCard`/`SettingsCategoryRow`/`SettingsSubScreen`,
+  hub summaries. RED: compile failures on the missing route/summary symbols.
+  GREEN: 132 suites, 1256 tests, 0 failures; assembleDebug ok. T5 satisfied by
+  the same change (sections moved as-is into sub-screens). Back/rotation only
+  compile-verified (no Compose UI tests); device check in T6. Commit below.
 
 ## Next step
 
-T1 (navigation and shared pieces).
+T3 (collapsible colors) and T4 (Alertas sub-screens).
