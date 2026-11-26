@@ -53,6 +53,47 @@ class BubbleOverlayModelTest {
         )
     }
 
+    @Test
+    fun `the keyguard hides the bubble whatever the settings or the session say`() {
+        // Accessibility overlays draw ABOVE the lock screen (assistant-key T5),
+        // so a locked phone must hide the bubble even when the owner's setting
+        // and the temporary assistant session would otherwise show it.
+        assertFalse(
+            BubbleGate.shouldShow(
+                bubbleEnabled = true,
+                phoneControlEnabled = true,
+                accessibilityConnected = true,
+                keyguardLocked = true,
+            ),
+        )
+        assertFalse(
+            BubbleGate.shouldShow(
+                bubbleEnabled = true,
+                phoneControlEnabled = true,
+                accessibilityConnected = true,
+                temporarySessionActive = true,
+                keyguardLocked = true,
+            ),
+        )
+        assertTrue(
+            BubbleGate.shouldShow(
+                bubbleEnabled = true,
+                phoneControlEnabled = true,
+                accessibilityConnected = true,
+                keyguardLocked = false,
+            ),
+        )
+        assertTrue(
+            BubbleGate.shouldShow(
+                bubbleEnabled = false,
+                phoneControlEnabled = false,
+                accessibilityConnected = true,
+                temporarySessionActive = true,
+                keyguardLocked = false,
+            ),
+        )
+    }
+
     // --- window spec ------------------------------------------------------
 
     @Test

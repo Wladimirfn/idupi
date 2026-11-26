@@ -39,4 +39,27 @@ object AssistDictationHost {
         val current = synchronized(lock) { handler } ?: return false
         return current()
     }
+
+    /** Deadline of a side-key press made while locked, or 0 when none. */
+    private var deferredUntilMillis = 0L
+
+    /**
+     * assistant-key T5: the side key was pressed on the lock screen and the
+     * unlock prompt did not complete (Samsung's SystemUI cancelled it). The
+     * press is remembered for [UNLOCK_WINDOW_MS]; unlocking inside that window
+     * opens the dictation, later unlocks do not.
+     */
+    fun deferUntilUnlock(nowMillis: Long) {
+        synchronized(lock) { deferredUntilMillis = nowMillis + UNLOCK_WINDOW_MS }
+    }
+
+    /** True once if a deferred press is still live at [nowMillis]; clears it. */
+    fun consumeDeferred(nowMillis: Long): Boolean = synchronized(lock) {
+        val live = deferredUntilMillis != 0L && nowMillis <= deferredUntilMillis
+        deferredUntilMillis = 0L
+        live
+    }
+
+    /** How long a locked side-key press waits for the unlock. */
+    const val UNLOCK_WINDOW_MS = 30_000L
 }

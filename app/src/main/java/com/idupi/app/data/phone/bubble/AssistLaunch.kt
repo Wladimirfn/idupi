@@ -28,3 +28,29 @@ object AssistLaunchRule {
             AssistLaunch.OpenAppWithHint
         }
 }
+
+/** What the system assistant entry point does about the lock screen (assistant-key T5). */
+enum class AssistUnlockDecision {
+
+    /** The phone is unlocked: the launch rule may run now. */
+    Launch,
+
+    /** The keyguard is showing: ask the owner to unlock and open nothing yet. */
+    AskToUnlock,
+}
+
+/**
+ * Pure keyguard rule behind `AssistEntryActivity` (assistant-key T5).
+ *
+ * Firing `android.intent.action.ASSIST` while the phone was locked opened the
+ * bubble panel over the lock screen, and a bubble turn approves messaging out
+ * loud (phone-bubble T23), so a locked phone must never reach the launch rule
+ * before the owner is past the keyguard. The activity asks the system to
+ * dismiss the keyguard and only an `onDismissSucceeded` callback runs the
+ * launch rule; a cancelled or failed dismissal opens nothing.
+ */
+object AssistUnlockRule {
+
+    fun decide(keyguardLocked: Boolean): AssistUnlockDecision =
+        if (keyguardLocked) AssistUnlockDecision.AskToUnlock else AssistUnlockDecision.Launch
+}

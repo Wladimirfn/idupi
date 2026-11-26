@@ -17,6 +17,7 @@ class AssistDictationHostTest {
     @After
     fun tearDown() {
         AssistDictationHost.detach()
+        AssistDictationHost.consumeDeferred(nowMillis = 0)
     }
 
     @Test
@@ -37,6 +38,19 @@ class AssistDictationHostTest {
         assertFalse(AssistDictationHost.isAttached())
         assertFalse(AssistDictationHost.requestDictation())
         assertEquals(1, requests)
+    }
+
+    @Test
+    fun `a locked press opens the dictation only on an unlock inside the window`() {
+        assertFalse(AssistDictationHost.consumeDeferred(nowMillis = 1_000))
+
+        AssistDictationHost.deferUntilUnlock(nowMillis = 1_000)
+        assertTrue(AssistDictationHost.consumeDeferred(nowMillis = 1_000 + AssistDictationHost.UNLOCK_WINDOW_MS))
+        // Consumed: a second unlock does not reopen it.
+        assertFalse(AssistDictationHost.consumeDeferred(nowMillis = 2_000))
+
+        AssistDictationHost.deferUntilUnlock(nowMillis = 1_000)
+        assertFalse(AssistDictationHost.consumeDeferred(nowMillis = 1_001 + AssistDictationHost.UNLOCK_WINDOW_MS))
     }
 
     @Test

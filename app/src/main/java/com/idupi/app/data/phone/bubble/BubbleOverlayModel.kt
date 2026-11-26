@@ -15,6 +15,12 @@ enum class BubbleMode { COLLAPSED, EXPANDED }
  * system assistant shows the panel for that session even with the bubble icon
  * (and phone control) off. It never rewrites the persisted setting; the gate
  * returns to the owner's choice as soon as the session ends.
+ *
+ * [keyguardLocked] is the assistant-key T5 security gate: accessibility
+ * overlays draw ABOVE the lock screen, so nothing may be shown while the
+ * keyguard is showing — not even the temporary assistant session, because a
+ * bubble turn auto-approves messaging (phone-bubble T23) and a locked phone
+ * must not reach that.
  */
 object BubbleGate {
     fun shouldShow(
@@ -22,8 +28,10 @@ object BubbleGate {
         phoneControlEnabled: Boolean,
         accessibilityConnected: Boolean,
         temporarySessionActive: Boolean = false,
-    ): Boolean = temporarySessionActive ||
-        (bubbleEnabled && phoneControlEnabled && accessibilityConnected)
+        keyguardLocked: Boolean = false,
+    ): Boolean = !keyguardLocked &&
+        (temporarySessionActive ||
+            (bubbleEnabled && phoneControlEnabled && accessibilityConnected))
 }
 
 /**
