@@ -55,6 +55,16 @@ object BubbleWindowSpecs {
      */
     const val FLAG_NOT_FOCUSABLE = 0x00000008
 
+    /**
+     * `WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS` (0x00000200).
+     *
+     * A docked circle needs a negative `x` (or one past the screen width) and
+     * the window manager otherwise clamps the window into the display. Only the
+     * collapsed spec gets it: the expanded panel is always fully on screen and
+     * keeps the stricter layout, which is what ClipToPadding-free windows want.
+     */
+    const val FLAG_LAYOUT_NO_LIMITS = 0x00000200
+
     fun forMode(
         mode: BubbleMode,
         baseFlags: Int,
@@ -67,7 +77,7 @@ object BubbleWindowSpecs {
             BubbleWindowSpec(
                 width = size,
                 height = size,
-                flags = baseFlags or FLAG_NOT_FOCUSABLE,
+                flags = baseFlags or FLAG_NOT_FOCUSABLE or FLAG_LAYOUT_NO_LIMITS,
                 focusable = false,
             )
         }
@@ -76,7 +86,7 @@ object BubbleWindowSpecs {
             BubbleWindowSpec(
                 width = minOf(dp(PANEL_WIDTH_DP, density), (screenWidthPx - margin).coerceAtLeast(1)),
                 height = minOf(dp(PANEL_HEIGHT_DP, density), (screenHeightPx - margin).coerceAtLeast(1)),
-                flags = baseFlags and FLAG_NOT_FOCUSABLE.inv(),
+                flags = (baseFlags and FLAG_LAYOUT_NO_LIMITS.inv()) and FLAG_NOT_FOCUSABLE.inv(),
                 focusable = true,
             )
         }
@@ -128,4 +138,59 @@ object BubbleOverlayPosition {
 
     fun centeredX(width: Int, screenWidth: Int): Int =
         ((screenWidth - width) / 2).coerceAtLeast(0)
+
+    /**
+     * Which vertical edge [x] belongs to. The single predicate behind snapping,
+     * docking and undocking, so a dock always returns to the edge it left.
+     */
+    fun snapsLeft(x: Int, size: Int, screenWidth: Int): Boolean =
+        x <= (screenWidth - size).coerceAtLeast(0) / 2
+
+    /**
+     * The x of a docked circle: [peekFraction] of the circle stays on screen,
+     * the rest slides past the edge it is snapped to (T10).
+     *
+     * Left edge -> negative x; right edge -> `x + size` past the screen width.
+     * The collapsed window carries `FLAG_LAYOUT_NO_LIMITS` so the window manager
+     * accepts both. The edge is inferred from [x]'s half of the screen, so the
+     * caller can pass any position and get the dock of its nearest edge.
+     */
+    fun docked(x: Int, size: Int, screenWidth: Int, peekFraction: Float): Int {
+        val peek = (size * peekFraction.coerceIn(0f, 1f)).roundToInt()
+        val hidden = (size - peek).coerceAtLeast(0)
+        return if (snapsLeft(x, size, screenWidth)) -hidden else screenWidth - peek
+    }
+
+    /**
+     * The fully visible snapped x for a docked (or any) x: undocking springs
+     * back to the same edge, so a left dock returns 0 and a right dock returns
+     * `screenWidth - size`.
+     */
+    fun undocked(x: Int, size: Int, screenWidth: Int): Int {
+        val innerW = (screenWidth - size).coerceAtLeast(0)
+        return if (snapsLeft(x, size, screenWidth)) 0 else innerW
+    }
+}
+
+/**
+ * When the circle docks itself at the edge (T10).
+ *
+ * The accessibility service owns the timer; the decision is pure so the "idle
+ * long enough, not dragging, not expanded" rule is testable. A pending approval
+ * does not prevent docking (the badge stays visible either way).
+ */
+object BubbleDock {
+
+    /** How long the circle must rest untouched before it tucks itself away. */
+    const val IDLE_BEFORE_DOCK_MILLIS = 2_500L
+
+    /** Duration of the slide into and out of the dock. */
+    const val ANIMATION_MILLIS = 250L
+
+    fun shouldDock(
+        nowMillis: Long,
+        lastTouchMillis: Long,
+        dragging: Boolean,
+        expanded: Boolean,
+    ): Boolean = !dragging && !expanded && nowMillis - lastTouchMillis >= IDLE_BEFORE_DOCK_MILLIS
 }

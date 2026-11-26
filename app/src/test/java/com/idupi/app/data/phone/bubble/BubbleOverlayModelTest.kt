@@ -117,4 +117,69 @@ class BubbleOverlayModelTest {
         assertEquals((1080 - 640) / 2, BubbleOverlayPosition.centeredX(640, 1080))
         assertEquals(0, BubbleOverlayPosition.centeredX(640, 400))
     }
+
+    // --- edge docking (T10) -----------------------------------------------
+
+    @Test
+    fun `a docked circle hangs off its own edge by the peek fraction`() {
+        // 112 px wide at a 55% peek: 62 px stay visible, the other 50 run off.
+        assertEquals(-50, BubbleOverlayPosition.docked(0, 112, 1080, 0.55f))
+        assertEquals(1018, BubbleOverlayPosition.docked(968, 112, 1080, 0.55f))
+    }
+
+    @Test
+    fun `the dock keeps more than half the circle touchable`() {
+        val peek = 0.55f
+        val left = BubbleOverlayPosition.docked(0, 112, 1080, peek)
+        val right = BubbleOverlayPosition.docked(968, 112, 1080, peek)
+
+        val visibleLeft = left + 112
+        val visibleRight = 1080 - right
+        assertEquals(62, visibleLeft)
+        assertEquals(62, visibleRight)
+        assertTrue("a docked target must stay hittable", visibleLeft > 112 / 2)
+        assertTrue("a docked target must stay hittable", visibleRight > 112 / 2)
+    }
+
+    @Test
+    fun `a docked circle sits closer to its edge than the snapped position`() {
+        val snappedLeft = BubbleOverlayPosition.snapped(20, 500, 112, 112, 1080, 1920).first
+        val snappedRight = BubbleOverlayPosition.snapped(900, 500, 112, 112, 1080, 1920).first
+
+        assertTrue(BubbleOverlayPosition.docked(snappedLeft, 112, 1080, 0.55f) < snappedLeft)
+        assertTrue(BubbleOverlayPosition.docked(snappedRight, 112, 1080, 0.55f) > snappedRight)
+    }
+
+    @Test
+    fun `undocking returns the fully visible snapped position`() {
+        val dockLeft = BubbleOverlayPosition.docked(0, 112, 1080, 0.55f)
+        val dockRight = BubbleOverlayPosition.docked(968, 112, 1080, 0.55f)
+
+        assertEquals(0, BubbleOverlayPosition.undocked(dockLeft, 112, 1080))
+        assertEquals(1080 - 112, BubbleOverlayPosition.undocked(dockRight, 112, 1080))
+        // Undocking is idempotent: an already visible bubble snaps to itself.
+        assertEquals(0, BubbleOverlayPosition.undocked(0, 112, 1080))
+        assertEquals(1080 - 112, BubbleOverlayPosition.undocked(968, 112, 1080))
+    }
+
+    @Test
+    fun `the dock waits for the idle window before sliding`() {
+        assertEquals(2_500L, BubbleDock.IDLE_BEFORE_DOCK_MILLIS)
+        assertTrue("about two and a half seconds", BubbleDock.IDLE_BEFORE_DOCK_MILLIS in 2_000..3_000)
+        assertFalse("a fresh touch must not dock", BubbleDock.shouldDock(2_000, 1_000, false, false))
+        assertTrue("idle with the circle resting docks it", BubbleDock.shouldDock(3_500, 1_000, false, false))
+        assertFalse("a dragging finger must not dock", BubbleDock.shouldDock(9_000, 1_000, true, false))
+        assertFalse("the expanded panel never docks", BubbleDock.shouldDock(9_000, 1_000, false, true))
+    }
+
+    @Test
+    fun `docking marks the collapsed window as layout-no-limits`() {
+        // Negative x needs FLAG_LAYOUT_NO_LIMITS; the expanded panel keeps the
+        // plain flags because it is always fully on screen.
+        val collapsed = BubbleWindowSpecs.forMode(BubbleMode.COLLAPSED, 0, 1080, 1920, 2f)
+        val expanded = BubbleWindowSpecs.forMode(BubbleMode.EXPANDED, 0, 1080, 1920, 2f)
+
+        assertTrue(collapsed.flags and BubbleWindowSpecs.FLAG_LAYOUT_NO_LIMITS != 0)
+        assertEquals(0, expanded.flags and BubbleWindowSpecs.FLAG_LAYOUT_NO_LIMITS)
+    }
 }
