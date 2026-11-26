@@ -39,14 +39,23 @@ Motorola or any Android) opens the IDUPI floating chat already dictating.
 
 ## Tasks
 
-- [ ] T1 App: `AssistEntryActivity` + manifest filters + pure launch rule +
+- [x] T1 App: `AssistEntryActivity` + manifest filters + pure launch rule +
       bubble "open in dictation" signal (temporary panel when the bubble icon
       is off). Tests on the rule and the signal.
-- [ ] T2 App: Ajustes row "Asistente digital" with role status
+- [x] T2 App: Ajustes row "Asistente digital" with role status
       (`RoleManager.isRoleHeld(ROLE_ASSISTANT)`) opening the system screen.
       Pure summary tests.
 - [ ] T3 App (only if needed): `VoiceInteractionService` +
       `VoiceInteractionSessionService` + metadata so the role qualifies.
+- [x] T5 Security (found on device 2026-11-26): the ASSIST entry opened the
+      listening panel over the LOCK SCREEN, and bubble turns auto-approve
+      messaging (phone-bubble T13), so anyone holding the locked phone could
+      dictate "envía un mensaje a ...". Fix: (a) while the keyguard is locked
+      the entry calls `KeyguardManager.requestDismissKeyguard` and opens the
+      dictation only on `onDismissSucceeded` (cancel -> nothing opens); (b) the
+      bubble overlay is hidden while the keyguard is locked and comes back on
+      unlock (ACTION_USER_PRESENT / screen events), and an open panel collapses
+      and stops listening when the screen locks. Pure gate tests.
 - [ ] T4 Release: version bump, assembleRelease, install over adb, check
       `cmd role add-role-holder android.app.role.ASSISTANT com.idupi.app`,
       owner side-key check, PR.
@@ -74,6 +83,26 @@ precedent), one PR stacked on #30.
 - 2026-11-26: device evidence gathered; branch created on
   `feat/settings-redesign`.
 
+- 2026-11-26: T1+T2 done (writer idu-pi work-1): `AssistEntryActivity`
+  (ASSIST/VOICE_ASSIST), `AssistLaunchRule`, `AssistDictationHost`, session-only
+  panel via `BubbleGate.temporarySessionActive`, Ajustes "Asistente digital"
+  card with RoleManager status. Commit `cac72d2`; 1.60-asistente (versionCode
+  61, `4ed0bfb`) installed over adb. Device: ASSIST intent opened the panel
+  listening without the app behind it.
+- 2026-11-26: T5 found and fixed on device. The panel opened over the lock
+  screen. Writer work-1 added the keyguard gate (`BubbleGate.keyguardLocked`,
+  SCREEN_OFF/ON/USER_PRESENT receiver) and `requestDismissKeyguard`.
+  Orchestrator device iterations: request from onCreate failed at once
+  (moved to onResume); a translucent activity cannot occlude the keyguard
+  (`setTranslucent(false)` when locked); Samsung SystemUI still cancels the
+  dismiss right after showing the bouncer (`notifyDismissCancelled`) for an
+  adb-launched ASSIST, so a cancelled/failed unlock now defers the dictation to
+  the next unlock within 30 s (`AssistDictationHost.deferUntilUnlock`). Suite
+  137 suites, 1281 tests, 0 failures. Pending: owner check with a real side-key
+  press (locked and unlocked) once IDUPI is the assistant; T3 only if the role
+  does not list IDUPI.
+
 ## Next step
 
-T1 + T2.
+Owner picks IDUPI as the digital assistant and tests the side key; then T3 if
+needed, T4 PR.
