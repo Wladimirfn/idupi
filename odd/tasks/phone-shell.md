@@ -212,9 +212,9 @@ estamos siendo muy estrictos ... con tanta aprobación que no logra ejecutar".
 - [x] T5 Agent: phone-agent prompt uses `shell` for optimization (trim caches,
       stop heavy background apps, report freed space) and falls back to
       `settings` when the channel is unavailable.
-- [ ] T6 Self-recovery: on boot / Wi-Fi connect to the trusted network, the app
+- [x] T6 Self-recovery: on boot / Wi-Fi connect to the trusted network, the app
       re-enables wireless debugging and reconnects.
-- [ ] T7 Keep the bridge alive and recover it: detect loss (helper death,
+- [x] T7 Keep the bridge alive and recover it: detect loss (helper death,
       reboot) and re-bootstrap on Wi-Fi through T2/T3b.
 - [x] T7b Accessibility rebind safety net. CORRECTION 2026-11-27 11:00: the
       premise "an adb `install -r` leaves IDUPI's accessibility service
@@ -254,6 +254,7 @@ estamos siendo muy estrictos ... con tanta aprobación que no logra ejecutar".
 
 | Task | Commit | Checks |
 |------|--------|--------|
+| T6 reboot 2 | (docs commit) | Owner reboot ~13:04 with 1.75: boot receiver 13:05:13, adb_wifi on, adbd TLS up but mDNS -65563 again, 3 discoveries empty, re-toggle at 13:05:47, adbd re-advertised, helper adopted the shell identity at 13:05:52, `recovery(boot): recovered` 13:05:56, adb_wifi restored to 0 at 13:05:57 (`tls_server.enable changed to 0`). Bridge (pid 21080) still active at 13:11:55. Separate pre-existing gap: after the reboot the phone could not reach the server because the app targets the Tailscale host (100.73.94.118) and Tailscale was not reconnected (all pollers `ConnectTimeoutException`), so the owner thought the server was down; the server was up the whole time (pid 24236 since 12:20). |
 | T6 reboot 1 | 0a66204 | Owner reboot 12:56: boot receiver scheduled recovery, IDUPI set adb_wifi_enabled=1 at 12:56:54, adbd opened TLS port 44519 but logged `Could not register mDNS service _adb-tls-connect._tcp, error (-65563)` (mdnsd not running yet); 3 discoveries found nothing and the owner saw the wrong text "la autorización puede haber caducado". Fix: typed `AdbServiceNotFoundException`, bootstrap reports `serviceNotFound`, recovery re-toggles adb_wifi (0, 1.5 s, 1, 2 s) once and re-runs the bootstrap; honest text when the service never appears; policy test added. 1.75 (versionCode 76) installed. Reboot retest pending. |
 | T6/T7 | 3c42dfe | worker work-1: `ShellBridgeRecovery` (Mutex single-flight, 2 min cooldown unless forced, typed outcomes), pure `ShellBridgeRecoveryPolicy` (22 tests), Wi-Fi check/wait, unexported `BOOT_COMPLETED` receiver -> service `ACTION_RECOVER_BOOT` (waits up to 2 min for Wi-Fi), Wi-Fi `NetworkCallback` in `IduPiForegroundService`, executor recovers once + retries once on "puente no disponible", "Iniciar puente" = forced recovery; settings changed only when 0 and restored in a NonCancellable finally. `:app:testDebugUnitTest` 1513 ok. 1.74-autorrecuperacion (versionCode 75) installed. Live helper-death test 12:53:12: `am force-stop com.idupi.shell`, then `idupi-phone shell info storage` answered in 7 s (`recovery(command): recovered`, new helper pid adopted at 12:53:15). Reboot test pending. |
 | T4c live | (docs commit) | Owner 12:31 "desinstala las aplicaciones que menos uso con excepción de minimax": agent ran scan, ONE batch of 16 uninstalls, auto-approved `owner-request:pat-82c8be682f25`, 16/16 ok via PackageInstaller; it kept 4 with reasons (Hailuo = MiniMax, OpenCode 2 GB data, Wearable, Alerta Vehículo) as a numbered list. 12:33 "sí, desinstala OpenCode y GameHub ... bórralo todo": resolved against the previous turn, ONE batch of 2, auto-approved, both ok; free space 105 -> 158 GB of 238 GB. Bridge (helper 0.5) and IDUPI accessibility stayed up. Owner: "funcionó mejor, bastante mejor, logró el objetivo". Follow-ups seen: the agent opened GameHub to look before the batch (needless), and leftover game files in shared storage (Download, Android/obb) are not scanned yet. |
@@ -320,7 +321,7 @@ it runs).
 
 ## Next step
 
-T6/T7: bring the bridge back on its own after a reboot or helper death
-(re-enable wireless debugging with WRITE_SECURE_SETTINGS on the home Wi-Fi,
-reconnect with the paired key, restart the helper), then T8 release + PR.
+T8 release + PR (owner decides push/PR). Follow-ups outside this feature: the
+phone's server link after a reboot depends on Tailscale reconnecting (Always-on
+VPN, or a LAN fallback host at home).
 Candidate follow-up: scan large leftover files in shared storage.
