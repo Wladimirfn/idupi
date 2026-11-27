@@ -72,7 +72,7 @@ asking approval for anything it deletes.
       wipes data on its own initiative (playbook rule; the approval still
       applies). Money stays notification-only. Also: the server suite hung for
       20+ minutes after T3 (worker reported 16 s); find and fix the hang.
-- [ ] T7 Agent got lost (owner live check 2026-11-26, turn pat-9ee16fd0e46a:
+- [x] T7 Agent got lost (owner live check 2026-11-26, turn pat-9ee16fd0e46a:
       37 CLI calls, nothing optimized). Causes: `open "Cuidado del dispositivo"`
       fails (not a launcher app on Samsung) so it wandered Settings; the
       expanded bubble panel covered the screen and the agent tapped
@@ -137,7 +137,22 @@ precedent), one PR stacked on #31.
   `cf6c331` (server), `8d34df1` (app); 1.61-dashboard-telefono (versionCode
   62, `6c6758b`) installed over adb; server restarted 22:57 with the new rules.
 
+- 2026-11-27: T7 done (writer work-1): `settings` command (device-care,
+  storage, battery, apps, app <package>; server + CLI + phone executor, free
+  navigation), `PhoneWindowFilter` (dumps/taps ignore IDUPI overlays),
+  `BubbleTurnPanel` (panel collapses while a turn runs, reopens on answer,
+  failure, question or approval), playbook uses `settings`. Orchestrator
+  runs: server 1041/1041 in 14 s, app 144 suites / 1356 tests / 0 failures.
+  Commits `ab7ecd5`, `5d8f6b7`; 1.62-dashboard-telefono (versionCode 63,
+  `8d4479e`) installed over adb; server restart scheduled.
+- 2026-11-27: owner reported zombie node processes after app use (summaries,
+  requests); wants agent processes to die when done or resume where they
+  left off (Engram, like the idu-pi MCP). Snapshot: a hung `node --test`
+  server run from ~30 h ago (killed), an orphaned `opencode serve` and
+  `terminal-static-server` (~3 days, dead parents), MCP servers left by old
+  CLI sessions. Next feature, after T5.
+
 ## Next step
 
-T5: owner live check of the Dashboard phone page and "optimiza mi teléfono"
-(voice and text), then PR stacked on #31. Engram mirror still pending.
+T5: owner live check of 1.62 ("optimiza mi teléfono"), then PR stacked on #31.
+Then the agent process lifecycle feature (zombies / resume).
