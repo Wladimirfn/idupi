@@ -443,3 +443,35 @@ test("the grant never appears in turn steps or logs", async (t) => {
     assert.equal(serialized.includes(grant), false);
     assert.equal(lines.join("\n").includes(grant), false);
 });
+
+test("a later turn receives the earlier turns as context (T4c)", async (t) => {
+    const { base, runner } = await startHarness(t);
+
+    const first = (await (await postJson(base, "/api/v1/phone/agent/turns", {
+        text: "propone un plan de limpieza",
+    })).json()).turn;
+    await waitFor(() => runner.calls.length === 1);
+    const firstInput = runner.calls[0].input;
+    assert.equal(firstInput.currentTurnId, first.id);
+    // The store list includes the current turn; the prompt excludes it by id.
+    assert.equal(firstInput.recentTurns.some((turn) => turn.id === first.id), true);
+
+    runner.calls[0].resolve("1. Borrar caché 2. Desinstalar GameHub");
+    await (await fetch(`${base}/api/v1/phone/agent/turns/${first.id}?wait=5`)).json();
+
+    const second = (await (await postJson(base, "/api/v1/phone/agent/turns", {
+        text: "sí, todas menos MiniMax",
+    })).json()).turn;
+    await waitFor(() => runner.calls.length === 2);
+
+    const input = runner.calls[1].input;
+    assert.equal(input.currentTurnId, second.id);
+    const earlier = input.recentTurns.find((turn) => turn.id === first.id);
+    assert.equal(earlier.text, "propone un plan de limpieza");
+    assert.equal(earlier.answer, "1. Borrar caché 2. Desinstalar GameHub");
+    // The store list includes the current turn too; the prompt filters it by
+    // id. Passing it here keeps the "recent turns" input complete.
+    assert.equal(input.recentTurns.some((turn) => turn.id === second.id), true);
+
+    runner.calls[1].resolve("Listo.");
+});

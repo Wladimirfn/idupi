@@ -185,6 +185,12 @@ export function createPhoneAgentRoutes({
                 const grant = turnGrants?.secretFor(id) ?? null;
                 const answer = await runner.runPhoneTurn(runnerConfig(), {
                     text: queued.text,
+                    // T4c: earlier turns let a confirmation ("sí, todas menos
+                    // X") resolve against the proposal the owner saw. The store
+                    // is newest-first; the prompt selects the last 3 within
+                    // 15 minutes and excludes this turn by id.
+                    currentTurnId: id,
+                    recentTurns: store.list({ limit: 20 }),
                     signal: controller.signal,
                     grant,
                     onStep: (step) => {

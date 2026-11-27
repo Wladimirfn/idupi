@@ -483,6 +483,32 @@ export function normalizeCommandArgs(type, rawArgs) {
 }
 
 /**
+ * T4c: whether a running owner turn already consents to this gated command.
+ *
+ * `message` and `optimization` are the original auto-approved categories.
+ * Shell `plan` (a batch) and single destructive shell steps (`disable`,
+ * `uninstall`) join them because the owner's own shell request authorized the
+ * whole plan. Everything else keeps its gate: a tap-based destructive step,
+ * a data wipe, money, confirmation and sensitive-app taps are not covered.
+ *
+ * @param {{ gated: boolean, category?: string }} verdict
+ * @param {string} type
+ * @param {object} args normalized command args
+ * @returns {boolean}
+ */
+function ownerTurnApproves(verdict, type, args) {
+    if (!verdict || verdict.gated !== true) return false;
+    if (verdict.category === "message" || verdict.category === "optimization") {
+        return true;
+    }
+    if (type !== "shell") return false;
+    if (verdict.category === "plan") return true;
+    const action = args && typeof args === "object" ? args.action : undefined;
+    return verdict.category === "destructive" &&
+        (action === "disable" || action === "uninstall");
+}
+
+/**
  * @param {{
  *   dataDir: string,
  *   now?: (() => Date | number | string) | Date | number | string,
@@ -902,20 +928,26 @@ export function createPhoneStore({
                 ownerTurnId: turnId,
             });
             // An owner bubble turn is the approval for its messaging steps
-            // (owner rule 2026-11-26). Money, destructive, confirmation and
-            // sensitive-app steps keep the normal gate. An optimization step
-            // (phone-shell T4: clearing caches, stopping or background-limiting
-            // an app) is the one the owner asked for by name when they say
-            // "optimiza mi teléfono", so it is auto-approved the same way and
-            // leaves `message` untouched. The approval is marked approved
-            // before anyone can poll it, so no card or notification is shown
-            // and the command is delivered on the next poll carrying the same
-            // approvalId/approvedTarget a manual approval produces.
-            // T4b: a shell `batch` is category `plan` and is NEVER in this
-            // list. One approval for the whole plan always reaches the owner,
-            // even when the batch comes from an owner bubble turn.
-            const autoCategories = ["message", "optimization"];
-            if (turnId !== null && autoCategories.includes(verdict.category)) {
+            // (owner rule 2026-11-26). Money, confirmation and non-shell
+            // destructive/sensitive-app steps keep the normal gate. An
+            // optimization step (phone-shell T4: clearing caches, stopping or
+            // background-limiting an app) is the one the owner asked for by
+            // name when they say "optimiza mi teléfono", so it is auto-approved
+            // the same way and leaves `message` untouched.
+            //
+            // T4c: the owner's own request is also the consent for a shell
+            // `batch` plan and for single destructive shell actions (`disable`,
+            // `uninstall`). This is deliberately narrower than the category
+            // name: a tap-based delete/data wipe (category `destructive`) and
+            // money are NOT auto-approved, and a client field never grants it
+            // (only the server-resolved running turn id does). Outside an owner
+            // turn the same batch keeps its ONE `plan` approval.
+            //
+            // The approval is marked approved before anyone can poll it, so no
+            // card or notification is shown and the command is delivered on the
+            // next poll carrying the same approvalId/approvedTarget a manual
+            // approval produces.
+            if (turnId !== null && ownerTurnApproves(verdict, type, normalizedArgs)) {
                 const decided = approvalStore.decideApproval(approval.id, "approve", {
                     decidedBy: `owner-request:${turnId}`,
                 });

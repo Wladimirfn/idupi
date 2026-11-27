@@ -1159,7 +1159,7 @@ test("shell info, trim-caches, force-stop and background park for the owner", as
     assert.equal(enable.approvalId, undefined);
 });
 
-test("shell disable is a destructive gate that waits even in an owner turn", async (t) => {
+test("shell disable is auto-approved inside an owner turn and gated outside", async (t) => {
     const dir = await makeDir(t);
     const clock = makeClock();
     const { store, approvals } = approvalHarness(dir, clock);
@@ -1170,14 +1170,26 @@ test("shell disable is a destructive gate that waits even in an owner turn", asy
         ownerTurnId: OWNER_TURN,
     });
 
-    assert.equal(command.state, "awaiting_approval");
+    // T4c: the owner's own shell request is the consent.
+    assert.equal(command.state, "pending");
+    assert.equal(command.args.approvalCategory, "destructive");
+    assert.equal(command.args.ownerTurnId, OWNER_TURN);
     const approval = approvals.getApproval(command.approvalId);
-    assert.equal(approval.state, "pending");
+    assert.equal(approval.state, "approved");
+    assert.equal(approval.decidedBy, `owner-request:${OWNER_TURN}`);
     assert.equal(approval.ownerTurnId, OWNER_TURN);
     assert.deepEqual(approval.command, {
         type: "shell",
         args: { action: "disable", package: "com.facebook.katana" },
     });
+
+    // Without an owner turn the same step keeps its gate.
+    const gated = store.createCommand({
+        type: "shell",
+        args: { action: "disable", package: "com.facebook.katana" },
+    });
+    assert.equal(gated.state, "awaiting_approval");
+    assert.equal(approvals.getApproval(gated.approvalId).state, "pending");
 });
 
 test("shell scan is free: it reads what the batch will propose", async (t) => {
@@ -1192,7 +1204,7 @@ test("shell scan is free: it reads what the batch will propose", async (t) => {
     assert.equal(store.takeNext()?.id, scan.id);
 });
 
-test("shell uninstall is destructive and waits even in an owner turn", async (t) => {
+test("shell uninstall is auto-approved inside an owner turn and gated outside", async (t) => {
     const dir = await makeDir(t);
     const clock = makeClock();
     const { store, approvals } = approvalHarness(dir, clock);
@@ -1203,15 +1215,28 @@ test("shell uninstall is destructive and waits even in an owner turn", async (t)
         ownerTurnId: OWNER_TURN,
     });
 
-    assert.equal(command.state, "awaiting_approval");
+    // T4c: the owner's own request covers a single shell uninstall.
+    assert.equal(command.state, "pending");
     assert.equal(command.approvalReason, "shell_destructive");
+    assert.equal(command.args.approvalCategory, "destructive");
     const approval = approvals.getApproval(command.approvalId);
-    assert.equal(approval.state, "pending");
+    assert.equal(approval.state, "approved");
+    assert.equal(approval.decidedBy, `owner-request:${OWNER_TURN}`);
     assert.equal(approval.ownerTurnId, OWNER_TURN);
-    assert.equal(store.takeNext(), null, "an uninstall never runs unasked");
+    // It is deliverable now, unlike the gated one below.
+    assert.equal(store.takeNext()?.id, command.id);
+
+    // Outside an owner turn the uninstall never runs unasked.
+    const gated = store.createCommand({
+        type: "shell",
+        args: { action: "uninstall", package: "com.facebook.katana" },
+    });
+    assert.equal(gated.state, "awaiting_approval");
+    assert.equal(approvals.getApproval(gated.approvalId).state, "pending");
+    assert.equal(store.takeNext()?.id ?? null, null);
 });
 
-test("shell batch is ONE plan approval that is never auto-approved", async (t) => {
+test("shell batch is auto-approved inside an owner turn and one plan outside", async (t) => {
     const dir = await makeDir(t);
     const clock = makeClock();
     const { store, approvals } = approvalHarness(dir, clock);
@@ -1226,29 +1251,45 @@ test("shell batch is ONE plan approval that is never auto-approved", async (t) =
         ownerTurnId: OWNER_TURN,
     });
 
-    // An owner turn does not auto-approve a plan: the owner gets exactly one
-    // approval for the whole batch.
-    assert.equal(command.state, "awaiting_approval");
+    // T4c: the owner's own request is the consent for its plan.
+    assert.equal(command.state, "pending");
     assert.equal(command.approvalReason, "shell_plan");
-    assert.equal(command.args.approvalId, undefined);
+    assert.equal(command.args.approvalCategory, "plan");
+    assert.equal(command.args.ownerTurnId, OWNER_TURN);
     const approval = approvals.getApproval(command.approvalId);
-    assert.equal(approval.state, "pending");
+    assert.equal(approval.state, "approved");
+    assert.equal(approval.decidedBy, `owner-request:${OWNER_TURN}`);
     assert.equal(approval.ownerTurnId, OWNER_TURN);
     assert.equal(approval.riskKind, "batch_destructive");
-    assert.equal(store.takeNext(), null);
 
-    // A batch without uninstall/disable is still one plan approval, with no
-    // destructive kind (the phone uses a card instead of voice).
+    // A batch without uninstall/disable is auto-approved the same way and has
+    // no destructive kind.
     const safe = store.createCommand({
         type: "shell",
         args: { action: "batch", steps: [{ action: "trim-caches" }] },
         ownerTurnId: OWNER_TURN,
     });
-    assert.equal(safe.state, "awaiting_approval");
-    assert.equal(safe.approvalReason, "shell_plan");
+    assert.equal(safe.state, "pending");
+    assert.equal(safe.args.approvalCategory, "plan");
     const safeApproval = approvals.getApproval(safe.approvalId);
-    assert.equal(safeApproval.state, "pending");
+    assert.equal(safeApproval.state, "approved");
     assert.equal(safeApproval.riskKind ?? null, null);
+    // Both auto-approved plans are deliverable; drain them before proving the
+    // gated one is not.
+    assert.equal(store.takeNext()?.id, command.id);
+    assert.equal(store.takeNext()?.id, safe.id);
+
+    // Outside an owner turn the same batch waits as exactly ONE plan approval.
+    const gated = store.createCommand({
+        type: "shell",
+        args: { action: "batch", steps },
+    });
+    assert.equal(gated.state, "awaiting_approval");
+    assert.equal(gated.approvalReason, "shell_plan");
+    const gatedApproval = approvals.getApproval(gated.approvalId);
+    assert.equal(gatedApproval.state, "pending");
+    assert.equal(gatedApproval.riskKind, "batch_destructive");
+    assert.equal(store.takeNext(), null);
 });
 
 test("an owner turn auto-approves an optimization shell step like a message", async (t) => {
