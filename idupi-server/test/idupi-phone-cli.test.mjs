@@ -176,6 +176,20 @@ test("formatPhoneStatus prints the full summary", () => {
                 { label: "WhatsApp", minutes: 42 },
                 { label: "Chrome", minutes: 65 },
             ],
+            largestApps: [
+                {
+                    label: "WhatsApp",
+                    packageName: "com.whatsapp",
+                    totalBytes: 2 * 1024 ** 3,
+                    cacheBytes: 1024 ** 3,
+                },
+                {
+                    label: "Chrome",
+                    packageName: "com.android.chrome",
+                    totalBytes: 512 * 1024 ** 2,
+                    cacheBytes: 0,
+                },
+            ],
         },
     };
 
@@ -188,6 +202,8 @@ test("formatPhoneStatus prints the full summary", () => {
     assert.match(text, /^Almacenamiento: 48\.0 GB de 128\.0 GB \(38%\)$/m);
     assert.match(text, /^App en primer plano: WhatsApp \(com\.whatsapp\)$/m);
     assert.match(text, /Más usadas hoy:\n  - WhatsApp: 42 min\n  - Chrome: 1 h 5 min/);
+    // phone-dashboard T3: the largest apps with their cache, newest contract.
+    assert.match(text, /Apps que más ocupan:\n  - WhatsApp: 2\.0 GB \(caché 1\.0 GB\)\n  - Chrome: 512\.0 MB/);
 });
 
 test("formatPhoneStatus handles missing data and offline phones", () => {

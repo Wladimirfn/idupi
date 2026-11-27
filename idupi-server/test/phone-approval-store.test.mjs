@@ -77,6 +77,28 @@ test("createApproval stores a pending approval with a 10 min TTL", async (t) => 
     assert.equal(raw.approvals[0].id, approval.id);
 });
 
+test("riskKind is optional provenance the phone uses to word a destructive step", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const store = createPhoneApprovalStore({ dataDir: dir, now: clock.now, log: silentLog });
+
+    const plain = store.createApproval(approvalInput());
+    assert.equal(plain.riskKind, null);
+
+    const wipe = store.createApproval(approvalInput({
+        command: { type: "tap", args: { text: "Borrar datos" } },
+        target: "Borrar datos",
+        riskKind: "data_wipe",
+        commandId: "phc-000000000002",
+    }));
+    assert.equal(wipe.riskKind, "data_wipe");
+
+    // Additive and durable: an older server without the field still decodes.
+    const reloaded = createPhoneApprovalStore({ dataDir: dir, now: clock.now, log: silentLog });
+    assert.equal(reloaded.getApproval(wipe.id).riskKind, "data_wipe");
+    assert.equal(reloaded.getApproval(plain.id).riskKind, null);
+});
+
 test("listApprovals defaults to pending, newest first, with state and limit filters", async (t) => {
     const dir = await makeDir(t);
     const clock = makeClock();

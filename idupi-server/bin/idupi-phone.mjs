@@ -663,6 +663,24 @@ export function formatPhoneStatus(payload, nowMs = Date.now()) {
         }
     }
 
+    // phone-dashboard T3: the 8 largest apps with the cache a cleanup frees.
+    const largestApps = Array.isArray(latest.largestApps) ? latest.largestApps : [];
+    if (largestApps.length > 0) {
+        lines.push("Apps que más ocupan:");
+        for (const entry of largestApps) {
+            if (!entry || typeof entry !== "object") continue;
+            const label = typeof entry.label === "string" && entry.label
+                ? entry.label
+                : String(entry.packageName || "");
+            if (!label) continue;
+            const total = numberOrNull(entry.totalBytes);
+            let line = `  - ${label}: ${formatBytes(total)}`;
+            const cache = numberOrNull(entry.cacheBytes);
+            if (cache !== null && cache > 0) line += ` (caché ${formatBytes(cache)})`;
+            lines.push(line);
+        }
+    }
+
     return lines.join("\n");
 }
 

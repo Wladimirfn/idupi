@@ -15,8 +15,10 @@ export const RISKY_VERB_CATEGORIES = {
     message: ["enviar", "send", "compartir", "share", "publicar", "post"],
     // Money leaves the owner's account or changes a payment.
     money: ["pagar", "pay", "comprar", "buy", "transferir", "transfer"],
-    // Removes data or content for good.
-    destructive: ["eliminar", "borrar", "delete"],
+    // Removes data or content for good. Uninstalling an app (phone-dashboard
+    // T3) is irreversible too: without these words the agent could uninstall
+    // an app without the owner's approval.
+    destructive: ["eliminar", "borrar", "delete", "desinstalar", "desinstala", "uninstall"],
     // Confirms something the owner did not spell out; kept gated to be safe.
     confirmation: ["aprobar", "approve", "confirmar", "confirm"],
 };
@@ -73,6 +75,35 @@ export const RISK_REASONS = {
     sensitiveApp: "sensitive_app",
     phoneDetected: "phone_detected_risky_target",
 };
+
+/**
+ * Extra detail stored on an approval when the destructive step has a shape the
+ * phone must word differently (phone-dashboard, T6). `data_wipe` means the tap
+ * clears app data or storage: it is gated like any other destructive step and
+ * the bubble says what is lost before asking. The value is additive; older
+ * clients ignore it.
+ */
+export const RISK_KINDS = {
+    dataWipe: "data_wipe",
+};
+
+// A data wipe clears the app's data or the device storage; clearing the cache
+// never matches. Up to two filler words are allowed so the confirmation-sheet
+// variants ("borrar todos los datos", "clear app data") are caught too. This
+// only recognizes the phrase: the command is gated as any destructive step,
+// never refused (owner correction, phone-dashboard T6).
+const DATA_WIPE_PATTERN = new RegExp(
+    "(^|[^\\p{L}\\p{N}])(borrar|eliminar|clear)(?:\\s+[\\p{L}]+){0,2}\\s+" +
+    "(datos|almacenamiento|data|storage)(?=$|[^\\p{L}\\p{N}])",
+    "u",
+);
+
+/** True when the text asks to clear app data or storage, in Spanish or English. */
+export function isDataWipeText(value) {
+    const normalized = normalizeRiskText(value);
+    if (normalized.length === 0) return false;
+    return DATA_WIPE_PATTERN.test(normalized);
+}
 
 // Most restrictive first: "Confirmar pago" is money, not a confirmation, and
 // "Eliminar y confirmar" is destructive.
@@ -154,9 +185,12 @@ function targetOf(args) {
  * which steps its request already approves ("message") and which still wait
  * ("money", "destructive", "confirmation", "sensitive_app").
  *
+ * `riskKind` is optional and only present when the phone must word the
+ * destructive step differently (`data_wipe`, phone-dashboard T6).
+ *
  * @param {{type?: string, args?: object}} command
  * @param {{foregroundPackage?: string | null}} [context]
- * @returns {{gated: boolean, reason: string, target?: string, category?: string}}
+ * @returns {{gated: boolean, reason: string, target?: string, category?: string, riskKind?: string}}
  */
 export function classifyCommand(command, { foregroundPackage = null } = {}) {
     const type = command && typeof command === "object" ? command.type : undefined;
@@ -178,6 +212,18 @@ export function classifyCommand(command, { foregroundPackage = null } = {}) {
 
     if (type === "tap" || type === "long_press") {
         if (typeof args.text === "string") {
+            // A data wipe is destructive like any other delete, but the owner
+            // asked for a reasoned question, not a hard block: the approval
+            // carries the kind so the phone can say what is lost (T6).
+            if (isDataWipeText(args.text)) {
+                return {
+                    gated: true,
+                    reason: RISK_REASONS.riskyText,
+                    target: args.text,
+                    category: "destructive",
+                    riskKind: RISK_KINDS.dataWipe,
+                };
+            }
             const category = riskyTextCategory(args.text);
             if (category !== null) {
                 return {

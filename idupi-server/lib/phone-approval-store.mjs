@@ -241,6 +241,14 @@ export function createPhoneApprovalStore({
             !isPlainObject(input.foregroundApp)) {
             throw typedError("INVALID_APPROVAL", "foregroundApp must be a JSON object");
         }
+        if (input.ownerTurnId !== undefined && input.ownerTurnId !== null &&
+            typeof input.ownerTurnId !== "string") {
+            throw typedError("INVALID_APPROVAL", "ownerTurnId must be a string");
+        }
+        if (input.riskKind !== undefined && input.riskKind !== null &&
+            typeof input.riskKind !== "string") {
+            throw typedError("INVALID_APPROVAL", "riskKind must be a string");
+        }
 
         const createdAt = clockIso();
         const approval = {
@@ -251,6 +259,12 @@ export function createPhoneApprovalStore({
                 args: { ...input.command.args },
             },
             reason: clip(input.reason.trim(), MAX_REASON_CHARS),
+            // Additive detail for the phone (phone-dashboard T6): "data_wipe"
+            // makes the bubble say what the wipe destroys before asking.
+            // Null for every other approval, so older clients see no change.
+            riskKind: typeof input.riskKind === "string" && input.riskKind.trim().length > 0
+                ? clip(input.riskKind.trim(), MAX_REASON_CHARS)
+                : null,
             target: typeof input.target === "string" && input.target.length > 0
                 ? clip(input.target, MAX_TARGET_CHARS)
                 : null,
@@ -273,6 +287,12 @@ export function createPhoneApprovalStore({
             // owner bubble turn ("owner-request:<turnId>"); null when the
             // owner decided it on the phone or the PC.
             decidedBy: null,
+            // The bubble turn that created the command, when there was one.
+            // The phone keeps a destructive approval in the bubble only while
+            // that exact turn is still active (phone-dashboard T4 + T6).
+            ownerTurnId: typeof input.ownerTurnId === "string" && input.ownerTurnId.trim().length > 0
+                ? clip(input.ownerTurnId.trim(), MAX_REQUESTER_CHARS)
+                : null,
             commandId: clip(input.commandId.trim(), MAX_COMMAND_ID_CHARS),
             resultCommandId: null,
         };

@@ -40,11 +40,22 @@ function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function startHarness(t) {
+async function startHarness(t, { approvals = false } = {}) {
     const dir = await mkdtemp(join(tmpdir(), "idupi-phone-routes-"));
     t.after(() => rm(dir, { recursive: true, force: true }));
     const clock = makeClock();
-    const store = createPhoneStore({ dataDir: dir, now: clock.now, log: silentLog });
+    // Without an approval store the queue keeps its historical free-write
+    // behaviour, which most route tests rely on; the destructive tests wire
+    // the real gate.
+    const approvalStore = approvals
+        ? createPhoneApprovalStore({ dataDir: dir, now: clock.now, log: silentLog })
+        : null;
+    const store = createPhoneStore({
+        dataDir: dir,
+        now: clock.now,
+        log: silentLog,
+        ...(approvalStore ? { approvalStore } : {}),
+    });
     const handle = createPhoneRoutes({ store });
 
     const server = http.createServer(async (req, res) => {
@@ -168,6 +179,41 @@ test("POST commands validates every type and returns 201", async (t) => {
 
     const malformed = await postJson(base, "/api/v1/phone/commands", []);
     assert.equal(malformed.status, 400);
+});
+
+test("a data wipe tap creates a gated destructive approval, not a hard block", async (t) => {
+    const { base } = await startHarness(t, { approvals: true });
+
+    for (const type of ["tap", "long_press"]) {
+        const { res, body } = await postCommand(base, type, { text: "Borrar datos" });
+        assert.equal(res.status, 201);
+        assert.equal(body.command.state, "awaiting_approval");
+        assert.equal(body.command.approvalReason, "risky_text");
+        assert.equal(body.command.approvalTarget, "Borrar datos");
+    }
+
+    const listed = await (await fetch(base + "/api/v1/phone/approvals?state=all")).json();
+    assert.equal(listed.approvals.length, 2);
+    for (const approval of listed.approvals) {
+        assert.equal(approval.state, "pending");
+        assert.equal(approval.target, "Borrar datos");
+        assert.equal(approval.riskKind, "data_wipe");
+    }
+
+    // The cache clear keeps its ordinary destructive gate, without the kind.
+    const cache = await postCommand(base, "tap", { text: "Borrar caché" });
+    assert.equal(cache.res.status, 201);
+    const cacheApproval = (await (await fetch(
+        base + `/api/v1/phone/approvals/${cache.body.command.approvalId}`,
+    )).json()).approval;
+    assert.equal(cacheApproval.state, "pending");
+    assert.equal(cacheApproval.riskKind, null);
+
+    // Without approvals wired the queue stays free, as before: no hard block.
+    const free = await startHarness(t);
+    const unguarded = await postCommand(free.base, "tap", { text: "Borrar datos" });
+    assert.equal(unguarded.res.status, 201);
+    assert.equal(unguarded.body.command.state, "pending");
 });
 
 test("phone long-poll delivers a queued command immediately", async (t) => {

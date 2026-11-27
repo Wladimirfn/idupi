@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 
 import {
     classifyCommand,
+    isDataWipeText,
     isMessagingPackage,
     isMoneyPackage,
     isRiskyText,
@@ -72,6 +73,11 @@ test("risk text matches risky verbs as whole words, ignoring case and accents", 
         "Post",
         "Share",
         "Compartir",
+        // phone-dashboard T3: uninstalling an app is irreversible.
+        "Desinstalar",
+        "desinstala",
+        "Uninstall",
+        "UNINSTALL",
     ];
     for (const text of risky) {
         assert.equal(isRiskyText(text), true, `"${text}" should be risky`);
@@ -84,6 +90,7 @@ test("risk text matches risky verbs as whole words, ignoring case and accents", 
         "Aceptar",
         "Responder",
         "Cancelar",
+        "Desinstalado",
         "",
         null,
         undefined,
@@ -206,7 +213,13 @@ test("risky verbs carry the category an owner turn uses to decide", () => {
     const cases = {
         message: ["Enviar", "Send", "Enviar ahora", "Compartir", "Share", "Publicar", "Post"],
         money: ["Pagar", "pagar la cuenta", "Pay", "Comprar", "Buy now", "Transferir", "Transfer funds"],
-        destructive: ["Eliminar chat", "Borrar", "Delete message"],
+        destructive: [
+            "Eliminar chat",
+            "Borrar",
+            "Delete message",
+            "Desinstalar WhatsApp",
+            "Uninstall app",
+        ],
         confirmation: ["Aprobar", "Approve request", "Confirmar", "Confirm"],
     };
     for (const [category, texts] of Object.entries(cases)) {
@@ -217,10 +230,83 @@ test("risky verbs carry the category an owner turn uses to decide", () => {
     }
     assert.equal(riskyTextCategory("Reenviar"), null);
     assert.equal(riskyTextCategory("Aceptar"), null);
+    assert.equal(riskyTextCategory("Desinstalado"), null);
 
     // The most restrictive verb wins when a phrase carries two.
     assert.equal(riskyTextCategory("Pagar y confirmar"), "money");
     assert.equal(riskyTextCategory("Eliminar y confirmar"), "destructive");
+});
+
+// --- data wipe is destructive and gated (phone-dashboard, T3 + T6) --------
+
+test("clearing data or storage is recognized as a data wipe", () => {
+    const wipes = [
+        "Borrar datos",
+        "BORRAR DATOS",
+        "Borrar datos de la app",
+        "Borrar los datos",
+        "Borrar almacenamiento",
+        "borrar el almacenamiento",
+        "Eliminar datos",
+        "eliminar los datos de la app",
+        "Clear data",
+        "clear app data",
+        "Clear storage",
+        "CLEAR STORAGE",
+    ];
+    for (const text of wipes) {
+        assert.equal(isDataWipeText(text), true, `"${text}" should be a data wipe`);
+    }
+
+    const safe = [
+        "Borrar caché",
+        "Borrar cache",
+        "Clear cache",
+        "Eliminar chat",
+        "Borrar",
+        "Almacenamiento",
+        "Caché 1,2 GB",
+        "",
+        null,
+        undefined,
+        42,
+    ];
+    for (const text of safe) {
+        assert.equal(isDataWipeText(text), false, `"${text}" is not a data wipe`);
+    }
+});
+
+test("a data wipe tap is gated as a destructive step, not a hard block", () => {
+    const wipes = [
+        "Borrar datos",
+        "Borrar los datos",
+        "Borrar almacenamiento",
+        "Eliminar datos",
+        "Clear data",
+        "clear app data",
+        "Clear storage",
+    ];
+    for (const type of ["tap", "long_press"]) {
+        for (const text of wipes) {
+            const verdict = classifyCommand({ type, args: { text } });
+            assert.equal(verdict.gated, true, `${type} "${text}" is gated`);
+            assert.equal(verdict.category, "destructive", `"${text}" is destructive`);
+            assert.equal(verdict.reason, "risky_text", `"${text}" keeps the destructive reason`);
+            assert.equal(verdict.riskKind, "data_wipe", `"${text}" carries the data-wipe kind`);
+            assert.equal(verdict.target, text);
+        }
+    }
+
+    // "clear" alone never becomes a risky verb: only the full data-wipe
+    // phrase is gated, so an English cache clear stays a free tap.
+    const clearCache = classifyCommand({ type: "tap", args: { text: "Clear cache" } });
+    assert.equal(clearCache.gated, false);
+
+    // A cache clear keeps its ordinary destructive gate, without the kind.
+    const cache = classifyCommand({ type: "tap", args: { text: "Borrar caché" } });
+    assert.equal(cache.gated, true);
+    assert.equal(cache.category, "destructive");
+    assert.equal(cache.riskKind, undefined);
 });
 
 test("messaging and money apps are distinguished inside the sensitive set", () => {
