@@ -152,6 +152,17 @@ precedent), one PR stacked on #31.
   `terminal-static-server` (~3 days, dead parents), MCP servers left by old
   CLI sessions. Next feature, after T5.
 
+- 2026-11-27: owner retest (turn pat-f741174ac8c6, 38 calls) failed again for
+  two reasons: the scheduled server restart never ran (server still the 22:57
+  process with the old prompt, no `settings`), and the Dashboard's session-only
+  panel never collapsed (T7 skipped session-only panels). Fix `84cfc09`:
+  session-only panels shrink to the circle while the turn runs without ending
+  their session. 1.63 (versionCode 64, `e9bd628`) installed; app 144 suites /
+  1356 tests / 0 failures. Server restart rescheduled from a script file.
+  Owner asked whether the agent can work "inside a terminal" on the phone: adb
+  shell (uid 2000) supports `pm trim-caches`, `pm disable-user`,
+  `pm uninstall --user 0`, `cmd appops set`; Shizuku/Termux not installed.
+
 ## Next step
 
 T5: owner live check of 1.62 ("optimiza mi teléfono"), then PR stacked on #31.
