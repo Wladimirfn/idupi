@@ -105,4 +105,14 @@ class ShellOutputParserTest {
     fun `an empty stream has no marker`() {
         assertEquals(ShellResult(-1, ""), ShellOutputParser.parse(""))
     }
+
+    @Test
+    fun `isComplete waits for the whole marker line`() {
+        assertEquals(false, ShellOutputParser.isComplete(""))
+        assertEquals(false, ShellOutputParser.isComplete("output\n__IDUPI_EX"))
+        assertEquals(false, ShellOutputParser.isComplete("output\n__IDUPI_EXIT__1"))
+        assertEquals(true, ShellOutputParser.isComplete("\n__IDUPI_EXIT__1\n"))
+        assertEquals(true, ShellOutputParser.isComplete("Success\r\n__IDUPI_EXIT__0\r\n"))
+        assertEquals(true, ShellOutputParser.isComplete("__IDUPI_EXIT__255\n"))
+    }
 }

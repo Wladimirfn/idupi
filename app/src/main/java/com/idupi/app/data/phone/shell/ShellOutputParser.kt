@@ -29,6 +29,17 @@ object ShellOutputParser {
     private const val UNKNOWN_EXIT_CODE = -1
     private const val MAX_EXIT_DIGITS = 3
 
+    private val COMPLETE_MARKER = Regex(EXIT_MARKER + """\d{1,""" + MAX_EXIT_DIGITS + """}\r?\n""")
+
+    /**
+     * True once [raw] holds the full marker line (`__IDUPI_EXIT__<code>` and
+     * its line break). The reader stops there instead of waiting for the peer
+     * to close the stream: libadb 3.1.1 never wakes a reader when the close
+     * arrives while data is still queued (`AdbStream.notifyClose` sets only
+     * `mPendingClose`, and `read` then waits forever on an empty queue).
+     */
+    fun isComplete(raw: String): Boolean = COMPLETE_MARKER.containsMatchIn(raw)
+
     fun parse(raw: String): ShellResult {
         val markerIndex = raw.lastIndexOf(EXIT_MARKER)
         if (markerIndex < 0) return ShellResult(UNKNOWN_EXIT_CODE, raw)

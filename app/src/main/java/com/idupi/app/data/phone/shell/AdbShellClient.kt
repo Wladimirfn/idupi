@@ -259,6 +259,9 @@ class AdbShellClient private constructor(private val appContext: Context) {
             }
             if (read < 0) break
             output.write(buffer, 0, read)
+            // Every command carries the exit marker; stop at it rather than
+            // wait for the close (see ShellOutputParser.isComplete).
+            if (ShellOutputParser.isComplete(output.toString(Charsets.UTF_8.name()))) break
         }
         return output.toString(Charsets.UTF_8.name())
     }
