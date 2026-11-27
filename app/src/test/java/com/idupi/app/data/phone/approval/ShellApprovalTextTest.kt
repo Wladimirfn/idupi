@@ -1,13 +1,16 @@
 package com.idupi.app.data.phone.approval
 
+import com.idupi.app.data.phone.bubble.ApprovalVoiceCopy
 import com.idupi.app.domain.model.PhoneApproval
 import com.idupi.app.domain.model.PhoneApprovalCommand
 import com.idupi.app.domain.model.PhoneApprovalReason
 import com.idupi.app.domain.model.PhoneApprovalState
 import java.time.Instant
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -46,7 +49,7 @@ class ShellApprovalTextTest {
     @Test
     fun `the card names each shell action`() {
         assertEquals(
-            "Liberar la caché de todas las apps",
+            "Borrar la caché de todas las apps",
             ApprovalCardText.actionLine(shellApproval("trim-caches")),
         )
         assertEquals(
@@ -110,7 +113,7 @@ class ShellApprovalTextTest {
         val approval = shellApproval(
             "disable",
             "com.example.app",
-            reason = PhoneApprovalReason.DESTRUCTIVE,
+            reason = PhoneApprovalReason.SHELL_DESTRUCTIVE,
             ownerTurnId = "pat-0123456789ab",
         )
 
@@ -127,18 +130,137 @@ class ShellApprovalTextTest {
         assertEquals("desactivar", ApprovalVoiceRouting.destructiveAction(approval))
     }
 
+    private fun batchApproval(
+        steps: List<Pair<String, String?>>,
+        reason: String = PhoneApprovalReason.SHELL_PLAN,
+        ownerTurnId: String? = null,
+    ): PhoneApproval {
+        val args = buildJsonObject {
+            put("action", "batch")
+            put(
+                "steps",
+                buildJsonArray {
+                    steps.forEach { (action, packageName) ->
+                        add(buildJsonObject {
+                            put("action", action)
+                            packageName?.let { put("package", it) }
+                        })
+                    }
+                }
+            )
+        }
+        return PhoneApproval(
+            id = "apr-shell-plan-123456",
+            state = PhoneApprovalState.PENDING,
+            command = PhoneApprovalCommand(type = "shell", args = args),
+            reason = reason,
+            expiresAt = Instant.ofEpochMilli(now + 600_000L).toString(),
+            ownerTurnId = ownerTurnId,
+        )
+    }
+
+    private val labels = mapOf(
+        "com.example.a" to "App A",
+        "com.example.b" to "App B",
+        "com.example.c" to "App C",
+        "com.example.d" to "App D",
+        "com.example.e" to "App E",
+    )
+    private val labelFor: (String) -> String? = { labels[it] }
+
     @Test
-    fun `a disable without a turn keeps the notification`() {
-        val approval = shellApproval("disable", "com.example.app", reason = "destructive")
+    fun `the card names an uninstall`() {
+        assertEquals(
+            "Desinstalar la app «com.example.app»",
+            ApprovalCardText.actionLine(shellApproval("uninstall", "com.example.app")),
+        )
+    }
+
+    @Test
+    fun `a plan lists every step, grouped, with labels`() {
+        val plan = batchApproval(
+            listOf(
+                "uninstall" to "com.example.c",
+                "trim-caches" to null,
+                "force-stop" to "com.example.a",
+                "force-stop" to "com.example.b",
+                "uninstall" to "com.example.d",
+                "uninstall" to "com.example.e",
+            )
+        )
+        val expected = "Borrar la caché de todas las apps; detener 2 apps: App A, App B; " +
+            "desinstalar 3 apps: App C, App D, App E"
+
+        assertEquals(expected, ApprovalCardText.actionLine(plan, labelFor))
+        assertEquals(expected, ApprovalNotificationText.describe(plan, labelFor))
+        assertEquals("Plan de optimización", ApprovalCardText.reasonLabel(plan))
+    }
+
+    @Test
+    fun `the plan detail numbers every step`() {
+        val plan = batchApproval(
+            listOf(
+                "trim-caches" to null,
+                "background" to "com.example.a",
+                "uninstall" to "com.example.b",
+            )
+        )
+        val lines = ApprovalCardText.detailLines(plan)
+
+        assertTrue(lines.contains("1. Borrar la caché de todas las apps"))
+        assertTrue(lines.contains("2. Cambiar el segundo plano de com.example.a"))
+        assertTrue(lines.contains("3. Desinstalar com.example.b"))
+    }
+
+    @Test
+    fun `a plan is asked in the bubble and voiced as a plan`() {
+        val plan = batchApproval(
+            listOf("trim-caches" to null, "uninstall" to "com.example.app"),
+            ownerTurnId = "pat-0123456789ab",
+        )
+
+        assertEquals(
+            ApprovalVoiceRoute.Voice,
+            ApprovalVoiceRouting.decide(
+                approval = plan,
+                ownerTurnActive = true,
+                bubbleAttached = true,
+                nowMillis = now,
+            ),
+        )
+        assertEquals(ApprovalVoiceKind.PLAN, ApprovalVoiceRouting.voiceKind(plan))
+        assertTrue(ApprovalVoiceRouting.planContainsDestructive(plan))
+    }
+
+    @Test
+    fun `the plan prompt lists the steps and warns about the irreversible ones`() {
+        val destructive = ApprovalVoiceCopy.planPrompt(
+            "Borrar la caché de todas las apps; desinstalar 1 app: App A",
+            destructive = true,
+        )
+        assertTrue(destructive.startsWith("Voy a ejecutar este plan:"))
+        assertTrue(destructive.contains("Borrar la caché de todas las apps"))
+        assertTrue(destructive.contains("Incluye acciones que no se pueden deshacer."))
+
+        val safe = ApprovalVoiceCopy.planPrompt(
+            "Borrar la caché de todas las apps",
+            destructive = false,
+        )
+        assertFalse(safe.contains("no se pueden deshacer"))
+    }
+
+    @Test
+    fun `a plan without an owner turn keeps the notification`() {
+        val plan = batchApproval(listOf("trim-caches" to null))
         assertEquals(
             ApprovalVoiceRoute.Notification,
             ApprovalVoiceRouting.decide(
-                approval = approval,
+                approval = plan,
                 ownerTurnActive = false,
                 bubbleAttached = true,
                 nowMillis = now,
             ),
         )
-        assertNull(ApprovalVoiceRouting.voiceKind(shellApproval("trim-caches")))
+        assertFalse(ApprovalVoiceRouting.planContainsDestructive(plan))
     }
 }

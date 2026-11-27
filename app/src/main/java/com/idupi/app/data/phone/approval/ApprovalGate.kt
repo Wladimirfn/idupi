@@ -107,14 +107,15 @@ object ApprovalGate {
     }
 
     /**
-     * Checks a typed `shell` command (phone-shell T4).
+     * Checks a typed `shell` command (phone-shell T4/T4b).
      *
-     * The phone classifies the risk itself: info/enable are free, trim-caches/
-     * force-stop/background are optimization, disable is destructive. Free
-     * runs. Optimization accepts an owner-turn auto-approval exactly like a
-     * `message` step (active turn, `optimization` category, future expiry) or a
-     * local grant the owner gave. Destructive only accepts a local grant: it is
-     * never auto-approved from the wire.
+     * The phone classifies the risk itself: info/scan/enable are free,
+     * trim-caches/force-stop/background are optimization, disable/uninstall are
+     * destructive, and a batch is a plan. Free runs. Optimization accepts an
+     * owner-turn auto-approval exactly like a `message` step (active turn,
+     * `optimization` category, future expiry) or a local grant the owner gave.
+     * Destructive and plan only accept a local grant: a plan is never
+     * auto-approved, not even in an owner turn.
      */
     suspend fun checkShell(
         approval: CommandApproval?,

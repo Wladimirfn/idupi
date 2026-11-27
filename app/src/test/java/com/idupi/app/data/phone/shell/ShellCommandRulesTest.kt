@@ -19,6 +19,7 @@ class ShellCommandRulesTest {
             ShellRisk.FREE,
             ShellCommandRules.riskOf(ShellOperation.Enable("com.example.app")),
         )
+        assertEquals(ShellRisk.FREE, ShellCommandRules.riskOf(ShellOperation.Scan))
     }
 
     @Test
@@ -37,10 +38,26 @@ class ShellCommandRulesTest {
     }
 
     @Test
-    fun `disable is destructive`() {
+    fun `disable and uninstall are destructive`() {
         assertEquals(
             ShellRisk.DESTRUCTIVE,
             ShellCommandRules.riskOf(ShellOperation.Disable("com.example.app")),
+        )
+        assertEquals(
+            ShellRisk.DESTRUCTIVE,
+            ShellCommandRules.riskOf(ShellOperation.Uninstall("com.example.app")),
+        )
+    }
+
+    @Test
+    fun `a batch is a single plan risk`() {
+        assertEquals(
+            ShellRisk.PLAN,
+            ShellCommandRules.riskOf(
+                ShellOperation.Batch(
+                    listOf(ShellOperation.TrimCaches, ShellOperation.Uninstall("com.example.app"))
+                )
+            ),
         )
     }
 

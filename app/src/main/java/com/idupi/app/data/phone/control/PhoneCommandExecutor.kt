@@ -17,8 +17,12 @@ import com.idupi.app.data.phone.PhoneStatusReporting
 import com.idupi.app.data.phone.approval.ApprovalGate
 import com.idupi.app.data.phone.approval.ApprovalGateResult
 import com.idupi.app.data.phone.approval.ApprovalLedger
+import com.idupi.app.data.phone.shell.BatchStepOutcome
+import com.idupi.app.data.phone.shell.PhoneBatchSummary
+import com.idupi.app.data.phone.shell.PhoneScanCollector
 import com.idupi.app.data.phone.shell.ShellBridgeClient
 import com.idupi.app.data.phone.shell.ShellCommandRules
+import com.idupi.app.data.phone.shell.ShellOperation
 import com.idupi.app.data.phone.shell.ShellRisk
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -42,6 +46,7 @@ class PhoneCommandExecutor(
     private val nowMillis: () -> Long = System::currentTimeMillis,
     private val reportStatusNow: suspend () -> Boolean = { PhoneStatusReporting.reportNow() },
     private val shellBridge: ShellBridgeClient = ShellBridgeClient.get(service),
+    private val scanCollector: PhoneScanCollector = PhoneScanCollector(service),
 ) {
 
     suspend fun execute(command: PhoneCommand): CommandOutcome = try {
@@ -450,7 +455,50 @@ class PhoneCommandExecutor(
             }
         }
 
-        val result = shellBridge.execute(command.operation)
+        return when (val operation = command.operation) {
+            is ShellOperation.Scan -> scan()
+            is ShellOperation.Batch -> batch(operation)
+            else -> executeShellOperation(operation)
+        }
+    }
+
+    /**
+     * `shell scan` runs entirely in the app (phone-shell T4b): sizes, usage and
+     * candidates; the text carries the JSON block the agent reads.
+     */
+    private suspend fun scan(): CommandOutcome = scanCollector.scan().fold(
+        onSuccess = { text ->
+            CommandOutcome.success(buildJsonObject { put("text", text) })
+        },
+        onFailure = { error ->
+            CommandOutcome.failure(error.message ?: "no se pudo analizar el teléfono")
+        },
+    )
+
+    /**
+     * Runs a plan in order through the helper, continuing past a failed step.
+     * Each step is a normal `shell` call, so the helper re-validates it at the
+     * execution boundary. The command result carries one Spanish summary plus
+     * the per-step JSON.
+     */
+    private suspend fun batch(operation: ShellOperation.Batch): CommandOutcome {
+        val outcomes = operation.steps.map { step ->
+            val result = shellBridge.execute(step)
+            val bridge = result.getOrNull()
+            BatchStepOutcome(
+                step = step,
+                ok = bridge?.ok == true,
+                text = bridge?.text ?: SHELL_UNAVAILABLE,
+            )
+        }
+        return CommandOutcome.success(buildJsonObject {
+            put("text", PhoneBatchSummary.render(outcomes))
+            put("steps", PhoneBatchSummary.json(outcomes))
+        })
+    }
+
+    private suspend fun executeShellOperation(operation: ShellOperation): CommandOutcome {
+        val result = shellBridge.execute(operation)
         return result.fold(
             onSuccess = { bridge ->
                 if (!bridge.ok) {

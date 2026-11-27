@@ -48,6 +48,9 @@ class ShellExecutor(private val context: Context) {
             ShellAction.ENABLE -> enable(
                 request.packageName ?: return failure("falta el paquete")
             )
+            ShellAction.UNINSTALL -> uninstall(
+                request.packageName ?: return failure("falta el paquete")
+            )
         }
     }
 
@@ -271,6 +274,18 @@ class ShellExecutor(private val context: Context) {
             ShellExecution(true, "App activada: $packageName.", "exec")
         } else {
             failure("No se pudo activar $packageName." + shortSuffix(exec.output), "exec")
+        }
+    }
+
+    private fun uninstall(packageName: String): ShellExecution {
+        val exec = run(
+            listOf("/system/bin/pm", "uninstall", "--user", "0", packageName),
+            TIMEOUT_MS,
+        )
+        return if (exec.ok) {
+            ShellExecution(true, "App desinstalada: $packageName.", "exec")
+        } else {
+            failure("No se pudo desinstalar $packageName." + shortSuffix(exec.output), "exec")
         }
     }
 

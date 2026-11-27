@@ -77,6 +77,7 @@ import com.idupi.app.data.inbox.InboxConversationGroup
 import com.idupi.app.data.inbox.InboxConversationGroups
 import com.idupi.app.data.inbox.InboxNotifier
 import com.idupi.app.data.calendar.CalendarEventBuilder
+import com.idupi.app.data.phone.approval.AppLabels
 import com.idupi.app.data.phone.approval.ApprovalCardText
 import com.idupi.app.domain.model.InboxDigest
 import com.idupi.app.domain.model.InboxDigestStatus
@@ -1577,6 +1578,8 @@ private fun PendingApprovalCard(
     onReject: () -> Unit,
 ) {
     var expanded by rememberSaveable(approval.id) { mutableStateOf(false) }
+    val context = LocalContext.current
+    val appLabels = remember(context) { AppLabels.resolver(context) }
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -1610,7 +1613,7 @@ private fun PendingApprovalCard(
             }
 
             Text(
-                text = ApprovalCardText.actionLine(approval),
+                text = ApprovalCardText.actionLine(approval, appLabels),
                 style = AppTypography.bodyLarge.copy(fontWeight = FontWeight.Bold),
                 color = TextPrimary
             )

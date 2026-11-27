@@ -1,10 +1,11 @@
 package com.idupi.shell
 
 /**
- * Typed shell request the helper accepts (phone-shell T4 contract).
+ * Typed shell request the helper accepts (phone-shell T4/T4b contract).
  *
  * Mirrors the app-side `ShellOperation`: info topic, trim-caches, force-stop,
- * background allow/ignore, disable and enable. Nothing else is reachable.
+ * background allow/ignore, disable, enable and uninstall. Nothing else is
+ * reachable.
  */
 enum class ShellAction(val wire: String) {
     INFO("info"),
@@ -13,6 +14,7 @@ enum class ShellAction(val wire: String) {
     BACKGROUND("background"),
     DISABLE("disable"),
     ENABLE("enable"),
+    UNINSTALL("uninstall"),
 }
 
 enum class ShellMode(val wire: String) {
@@ -103,6 +105,7 @@ object ShellRequestValidator {
             }
             ShellAction.FORCE_STOP,
             ShellAction.DISABLE,
+            ShellAction.UNINSTALL,
             -> packageOnly(requested, pkg, modeValue, topicValue, refuseProtected = true)
             ShellAction.ENABLE ->
                 packageOnly(requested, pkg, modeValue, topicValue, refuseProtected = false)

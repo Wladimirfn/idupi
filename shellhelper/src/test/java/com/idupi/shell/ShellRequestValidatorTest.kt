@@ -57,6 +57,10 @@ class ShellRequestValidatorTest {
             valid("enable", "com.example.app"),
         )
         assertEquals(
+            ShellRequest(ShellAction.UNINSTALL, packageName = "com.example.app"),
+            valid("uninstall", "com.example.app"),
+        )
+        assertEquals(
             ShellRequest(ShellAction.INFO, topic = ShellTopic.MEMORY),
             valid("info", topic = "memory"),
         )
@@ -92,6 +96,7 @@ class ShellRequestValidatorTest {
         assertEquals("falta el paquete", invalid("force-stop"))
         assertEquals("falta el paquete", invalid("disable"))
         assertEquals("falta el paquete", invalid("enable"))
+        assertEquals("falta el paquete", invalid("uninstall"))
         assertEquals("paquete inválido", invalid("force-stop", "whatsapp"))
         assertEquals("paquete inválido", invalid("force-stop", "com..app"))
         assertEquals("paquete inválido", invalid("force-stop", "com.2app"))
@@ -120,6 +125,7 @@ class ShellRequestValidatorTest {
             assertEquals("paquete protegido", invalid("force-stop", pkg))
             assertEquals("paquete protegido", invalid("background", pkg, mode = "ignore"))
             assertEquals("paquete protegido", invalid("disable", pkg))
+            assertEquals("paquete protegido", invalid("uninstall", pkg))
             // enable is the undo and stays allowed for real package ids.
             if (pkg == "android") {
                 // One segment: not a valid package id even for enable.

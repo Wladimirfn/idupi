@@ -31,8 +31,11 @@ object ApprovalCardText {
     const val LABEL_SHOW_DETAIL = "Ver detalle"
     const val LABEL_HIDE_DETAIL = "Ocultar detalle"
 
-    /** One line describing the action: tap, long press or write-and-send. */
-    fun actionLine(approval: PhoneApproval): String {
+    /** One line describing the action: tap, long press, write-and-send or shell. */
+    fun actionLine(
+        approval: PhoneApproval,
+        labelFor: (String) -> String? = { null },
+    ): String {
         val args = approval.command.args
         return when (approval.command.type) {
             "type" -> {
@@ -42,7 +45,7 @@ object ApprovalCardText {
             }
             "long_press" -> tapLine("Mantener presionado", targetOf(approval))
             "tap" -> tapLine("Tocar", targetOf(approval))
-            "shell" -> shellLine(args)
+            "shell" -> ShellPlanText.actionLine(args, labelFor)
             else -> GENERIC_ACTION
         }
     }
@@ -61,14 +64,24 @@ object ApprovalCardText {
     }
 
     /** Why the server gated the command. */
-    fun reasonLabel(approval: PhoneApproval): String = when (approval.reason) {
-        PhoneApprovalReason.RISKY_TEXT -> "Acción riesgosa"
-        PhoneApprovalReason.TYPE_SUBMIT -> "Envío de un mensaje"
-        PhoneApprovalReason.SENSITIVE_APP -> "App sensible en primer plano"
-        PhoneApprovalReason.PHONE_DETECTED -> "Riesgo detectado en el teléfono"
-        PhoneApprovalReason.OPTIMIZATION -> "Optimización del teléfono"
-        PhoneApprovalReason.DESTRUCTIVE -> "Acción destructiva"
-        else -> "Pendiente de tu aprobación"
+    fun reasonLabel(approval: PhoneApproval): String {
+        if (approval.command.type == "shell") {
+            return when (approval.reason) {
+                PhoneApprovalReason.SHELL_OPTIMIZATION -> "Optimización del teléfono"
+                PhoneApprovalReason.SHELL_DESTRUCTIVE -> "Acción destructiva"
+                PhoneApprovalReason.SHELL_PLAN -> "Plan de optimización"
+                // Older shell approvals carried `risky_text`; derive the label
+                // from the typed action instead of showing a generic risk word.
+                else -> ShellPlanText.reasonLabel(approval.command.args)
+            }
+        }
+        return when (approval.reason) {
+            PhoneApprovalReason.RISKY_TEXT -> "Acción riesgosa"
+            PhoneApprovalReason.TYPE_SUBMIT -> "Envío de un mensaje"
+            PhoneApprovalReason.SENSITIVE_APP -> "App sensible en primer plano"
+            PhoneApprovalReason.PHONE_DETECTED -> "Riesgo detectado en el teléfono"
+            else -> "Pendiente de tu aprobación"
+        }
     }
 
     /** "La pidió: cli", or null when the server did not say. */
@@ -111,12 +124,16 @@ object ApprovalCardText {
             lines += "Presionar enviar: ${if (args.booleanValue("submit")) "sí" else "no"}"
         }
         if (type == "shell") {
-            args.textValue("action")?.let { lines += "Acción: $it" }
-            args.textValue("package")?.let { lines += "App: $it" }
-            args.textValue("mode")?.let {
-                lines += "Modo: ${if (it == "allow") "permitir" else "ignorar"}"
+            if (ShellPlanText.isBatch(args)) {
+                lines += ShellPlanText.stepLines(args)
+            } else {
+                args.textValue("action")?.let { lines += "Acción: $it" }
+                args.textValue("package")?.let { lines += "App: $it" }
+                args.textValue("mode")?.let {
+                    lines += "Modo: ${if (it == "allow") "permitir" else "ignorar"}"
+                }
+                args.textValue("topic")?.let { lines += "Tema: $it" }
             }
-            args.textValue("topic")?.let { lines += "Tema: $it" }
         }
         args.textValue("id")?.let { viewId -> lines += "Id de vista: $viewId" }
         val x = args.intValue("x")
@@ -132,24 +149,6 @@ object ApprovalCardText {
         is TargetArg.TextArg -> "$verb «${target.value}»"
         is TargetArg.IdArg -> "$verb el control ${target.value}"
         is TargetArg.PointArg -> "$verb en (${target.x}, ${target.y})"
-    }
-
-    /** One line for a typed `shell` approval (phone-shell T4). */
-    private fun shellLine(args: JsonObject): String {
-        val pkg = args.textValue("package")
-        return when (args.textValue("action")) {
-            "trim-caches" -> "Liberar la caché de todas las apps"
-            "force-stop" -> pkg?.let { "Detener la app «$it»" } ?: GENERIC_ACTION
-            "background" -> when {
-                pkg == null -> GENERIC_ACTION
-                args.textValue("mode") == "allow" -> "Permitir el segundo plano de «$pkg»"
-                else -> "Limitar el segundo plano de «$pkg»"
-            }
-            "disable" -> pkg?.let { "Desactivar la app «$it»" } ?: GENERIC_ACTION
-            "enable" -> pkg?.let { "Activar la app «$it»" } ?: GENERIC_ACTION
-            "info" -> "Consultar información del teléfono"
-            else -> GENERIC_ACTION
-        }
     }
 
     /**

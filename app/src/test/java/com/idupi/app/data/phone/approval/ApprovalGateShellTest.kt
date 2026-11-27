@@ -162,6 +162,36 @@ class ApprovalGateShellTest {
         assertEquals(ApprovalGateResult.Allowed, check(manual, ShellRisk.OPTIMIZATION))
     }
 
+    @Test
+    fun `a plan always needs the owner grant, never an owner-turn auto-approval`() = runTest {
+        OwnerTurnRegistry.register(OWNER_TURN)
+        val plan = approval(
+            id = "apr-shell-plan",
+            category = "plan",
+            reason = "shell_plan",
+        )
+
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
+            check(plan, ShellRisk.PLAN),
+        )
+
+        ledger.record(grant("apr-shell-plan", reason = "shell_plan"))
+        assertEquals(ApprovalGateResult.Allowed, check(plan, ShellRisk.PLAN))
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
+            check(plan, ShellRisk.PLAN),
+        )
+    }
+
+    @Test
+    fun `a plan without an approval is refused`() = runTest {
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.APPROVAL_REQUIRED),
+            check(null, ShellRisk.PLAN),
+        )
+    }
+
     private companion object {
         const val OWNER_TURN = "pat-0123456789ab"
     }

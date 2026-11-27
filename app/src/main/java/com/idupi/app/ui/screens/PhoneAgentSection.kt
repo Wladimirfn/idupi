@@ -52,6 +52,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.idupi.app.data.phone.PhoneStatusReporting
+import com.idupi.app.data.phone.approval.AppLabels
 import com.idupi.app.data.phone.approval.ApprovalNotificationText
 import com.idupi.app.data.phone.bubble.MicPermission
 import com.idupi.app.data.phone.control.PhoneCommandLogEntry
@@ -276,12 +277,14 @@ private fun PendingApprovalRow(
     onApprove: () -> Unit,
     onReject: () -> Unit,
 ) {
+    val context = LocalContext.current
+    val appLabels = remember(context) { AppLabels.resolver(context) }
     Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
     ) {
         Text(
-            text = ApprovalNotificationText.describe(approval),
+            text = ApprovalNotificationText.describe(approval, appLabels),
             style = AppTypography.bodyLarge,
             color = TextPrimary
         )
