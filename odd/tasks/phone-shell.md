@@ -110,6 +110,33 @@ of navigating Settings by taps.
   holds the shell identity (a helper process started by a provider call
   without instrumentation reports `inactive`).
 
+## T4b contract: scan -> propose -> one approval -> execute (owner, 2026-11-27 11:15)
+
+Owner: "hace un scan luego propone, luego ejecuta" with ONE approval for the
+whole set, never one per app.
+
+- `{ "action": "scan" }` (free, runs in the app, no helper needed): third-party
+  apps with `cacheBytes`, `appBytes`, `dataBytes`, `lastUsed` (UsageStats, the
+  app already holds usage access), total reclaimable cache, and candidates:
+  `unused` (not opened in 30+ days, launchable, not protected), `heavyCache`
+  (top cache holders). Returns Spanish text plus a JSON block the agent reads.
+- `{ "action": "uninstall", "package": "<pkg>" }` -> `pm uninstall --user 0
+  <pkg>`; destructive (voice), protected packages refused.
+- `{ "action": "batch", "steps": [ ... ] }`: 1-30 steps, each one of
+  trim-caches | force-stop | background | disable | enable | uninstall (no
+  info/scan/batch inside, no duplicate step). ALWAYS gated as ONE approval with
+  category `plan`: the approval card/notification/voice prompt lists every
+  step in Spanish (e.g. "Borrar la caché de todas las apps; desinstalar 3
+  apps: A, B, C"). In an owner turn it is asked in the bubble (voice when it
+  contains uninstall/disable), never auto-approved. On approval the phone runs
+  the steps in order through the helper, continues past a failed step, and
+  returns one summary (per step ok/fail, freed space for trim-caches).
+- Approval reasons: shell commands get their own reason labels instead of
+  "texto riesgoso" (`shell_optimization`, `shell_destructive`, `shell_plan`).
+- Agent (T5): for "optimiza mi teléfono" the phone agent runs `shell scan`,
+  replies with the proposal list, then sends ONE `shell batch`; falls back to
+  `settings` navigation only when the bridge is unavailable.
+
 ## Tasks
 
 - [x] T1 Device spike over PC adb on the S24 (see evidence). Result: plain
@@ -136,6 +163,7 @@ of navigating Settings by taps.
       + validation (`phone-store.mjs`), risk (`phone-risk.mjs`), CLI
       (`idupi-phone.mjs`), app parser/model/executor calling the helper,
       approval gate; tests on both sides.
+- [ ] T4b Scan, uninstall and one-approval batch (contract above).
 - [ ] T5 Agent: phone-agent prompt uses `shell` for optimization (trim caches,
       stop heavy background apps, report freed space) and falls back to
       `settings` when the channel is unavailable.
@@ -181,6 +209,7 @@ of navigating Settings by taps.
 
 | Task | Commit | Checks |
 |------|--------|--------|
+| T4 live | (helper fix commit) | 11:06-11:09 via `idupi-phone shell ...`: info storage/memory/battery ok; `enable com.sec.android.app.sbrowser` first failed "Unknown package" (package visibility for the helper uid; the shell permission itself passed, PackageManager logged the call), fixed with `QUERY_ALL_PACKAGES` in helper 0.3 -> enable ok, packages = 150. So child processes of the helper DO carry the shell identity. trim-caches queued an approval labeled "texto riesgoso" (wrong label). Owner's "Optimiza mi teléfono" (pat-4bd2ba9df7f1, 11:11) still navigated Settings for 40 steps with per-app approvals: the agent does not know `shell` yet (T5). |
 | T4+T7b | 82bb581, c779011, (revert commit) | Server worker work-2 (commandcode): `shell` in COMMAND_TYPES + validation, risk (`optimization` auto in owner turn like `message`, `disable` destructive), CLI `idupi-phone shell ...`, docs; 105 server tests ok. Android worker work-1: helper 0.2 (signature permission `com.idupi.shell.permission.BRIDGE`, call-only `BridgeProvider`, `BridgeState`, `ShellRequestValidator`, `ShellExecutor` fixed argv + API fallbacks, `kick-accessibility`), app `ShellBridgeClient`, `PhoneCommand.Shell`, gate/voice routing, bootstrap decides by helper `status`; `:shellhelper:testDebugUnitTest` 8 ok, `:app:testDebugUnitTest` 1449 ok. 1.69-comandos-shell (versionCode 70) installed 10:58; T7b net logged `kick skipped: enabled=true connected=true` (correct). Live shell commands pending (needs helper 0.2 via "Iniciar puente"). |
 | T3/T3b live | (docs commit) | Owner tapped "Iniciar puente" at 10:17:31 with no PC involved: `pm path` (helper missing) -> streamed `exec:cmd package install -r -t -S 2104902` done in 1.6 s -> detached `setsid ... am instrument` -> helper pid 24526 `adopted flags=1 uid=10501`, probes ok every 5 s; IDUPI's accessibility service stayed bound. Pairing (10:09) + bootstrap now proven end to end on the S24. |
 | T3 fix 2-3 | 815ae7c, d4813f8 | Owner retry 10:09: mDNS found the pairing service (192.168.1.8:46079) and pairing succeeded over loopback (`paired via 127.0.0.1:46079`, adbd persisted the key). Connect ok, `pm grant` ok (`WRITE_SECURE_SETTINGS: granted=true`), then `pm path com.idupi.shell` hung 10 s: libadb 3.1.1 bug, a peer CLSE that arrives while data is still queued only sets `mPendingClose`, so the next `read` waits forever. Reader now stops at the exit-marker line (`ShellOutputParser.isComplete`, tested). Failures are now logged under tag `IdupiPhoneShell` (code masked). 1.68 (versionCode 69) installed. |
