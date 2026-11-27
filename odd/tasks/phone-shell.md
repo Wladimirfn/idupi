@@ -55,15 +55,22 @@ of navigating Settings by taps.
   on by itself (`adb_wifi_enabled`) on the trusted home Wi-Fi and reconnect with
   the already-paired key, so after a reboot the owner does nothing. Shizuku
   cannot do this.
-- **Shell bridge (decided after T1, replaces the option B helper):** one adb
-  call starts `am instrument -w com.idupi.app/.data.phone.shell.ShellBridgeInstrumentation`;
-  the instrumentation runs inside the IDUPI process (app cgroup, not adbd's)
-  and adopts the shell permission identity via
-  `UiAutomation.adoptShellPermissionIdentity()` (FLAG_DONT_USE_ACCESSIBILITY so
-  the owner's accessibility services are untouched). The identity survives `am`
-  dying and adbd restarting, so it keeps working away from Wi-Fi until the
-  process dies or the phone reboots. Bootstrap needs adb once (in-app wireless
-  pairing at home, or the PC).
+- **Shell bridge in an own helper package (decided after T1):** the bridge is
+  `ShellBridgeInstrumentation` inside `com.idupi.shell` (module
+  `:shellhelper`, same release signature, no launcher activity). One adb call
+  starts `am instrument -w com.idupi.shell/.ShellBridgeInstrumentation`; the
+  instrumentation runs in the helper's own process and adopts the shell
+  permission identity with `UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES`
+  (FLAG_DONT_USE_ACCESSIBILITY left every accessibility service unbound). The
+  force-stop that `am instrument` performs hits only the helper, never
+  com.idupi.app. The identity survives `am` dying and adbd restarting, so it
+  keeps working away from Wi-Fi until the helper dies or the phone reboots.
+- **Helper delivery:** the helper APK is embedded in the IDUPI APK (assets);
+  during bootstrap IDUPI installs or updates it over its own adb session
+  (`pm install`), so the owner installs nothing by hand.
+- **App <-> helper channel:** the helper exposes a bound service protected by
+  a signature-level permission; only com.idupi.app (same key) can call it.
+  The typed allowlist is enforced inside the helper (execution boundary).
 - **Strict command surface:** no free-form shell. A typed `shell` phone command
   with fixed actions: `trim-caches`, `force-stop <pkg>`,
   `background <pkg> allow|ignore`, `disable <pkg>`, `enable <pkg>`,
@@ -79,7 +86,11 @@ of navigating Settings by taps.
 - [x] T1 Device spike over PC adb on the S24 (see evidence). Result: plain
       uid-2000 processes (Shizuku's model) die on this phone when the owner
       leaves Wi-Fi; the self-instrumentation shell bridge (plan C) survives.
-- [ ] T2 App adb core: add libadb-android (Apache-2.0), key store, mDNS
+- [x] T1b Helper spike: `:shellhelper` module (`com.idupi.shell`) with the
+      bridge; verified on device (evidence 8). In-app bridge removed from
+      com.idupi.app.
+- [ ] T2 App adb core: add libadb-android (Apache-2.0, JitPack
+      `com.github.MuntashirAkon:libadb-android:3.1.1`), key store, mDNS
       discovery, pairing client, connect, `shell:` exec with timeout and exit
       status; pure parts unit-tested (command builder, package validation,
       output parsing).
@@ -87,20 +98,24 @@ of navigating Settings by taps.
       status (no vinculado / vinculado / conectado / no disponible), "Vincular"
       opens Wireless debugging and posts a notification with a `RemoteInput`
       for the 6-digit code; after pairing, grants WRITE_SECURE_SETTINGS.
-- [ ] T4 `shell` phone command end to end: server `COMMAND_TYPES` +
-      validation (`phone-store.mjs`), risk (`phone-risk.mjs`), CLI
-      (`idupi-phone.mjs`), app parser/model/executor, phone-side allowlist and
+- [ ] T3b Bootstrap: embed the helper APK in IDUPI's assets at build time;
+      over the adb session install/update it (`pm install -r`) and start the
+      bridge (`am instrument`); "Iniciar puente" action and status in the
+      same Ajustes row.
+- [ ] T4 `shell` phone command end to end: helper bound service
+      (signature permission) with the typed allowlist, server `COMMAND_TYPES`
+      + validation (`phone-store.mjs`), risk (`phone-risk.mjs`), CLI
+      (`idupi-phone.mjs`), app parser/model/executor calling the helper,
       approval gate; tests on both sides.
 - [ ] T5 Agent: phone-agent prompt uses `shell` for optimization (trim caches,
       stop heavy background apps, report freed space) and falls back to
       `settings` when the channel is unavailable.
 - [ ] T6 Self-recovery: on boot / Wi-Fi connect to the trusted network, the app
-      re-enables wireless debugging and reconnects (needs T1 green).
-- [ ] T7 Keep the bridge alive and recover it: foreground service in the
-      bridge process, detect loss (process death, reboot) and re-bootstrap on
-      Wi-Fi through T2.
-- [ ] T8 Release: version bump, assembleRelease, push to phone, live check,
-      docs (`idupi-server/docs/phone.md`, README), PR.
+      re-enables wireless debugging and reconnects.
+- [ ] T7 Keep the bridge alive and recover it: detect loss (helper death,
+      reboot) and re-bootstrap on Wi-Fi through T2/T3b.
+- [ ] T8 Release: version bump, assembleRelease (app + helper), push to
+      phone, live check, docs (`idupi-server/docs/phone.md`, README), PR.
 
 ## Acceptance criteria
 
@@ -126,7 +141,7 @@ of navigating Settings by taps.
 
 | Task | Commit | Checks |
 |------|--------|--------|
-| T1 | (this commit) | Device evidence 2026-11-27 below. `assembleRelease` ok; 1.64-puente-shell (versionCode 65) installed by adb. |
+| T1 | 6dbb709, a846217, 91c161c | Device evidence 2026-11-27 below. `assembleRelease` ok; 1.64-puente-shell (versionCode 65) installed by adb. |
 
 T1 evidence (S24 Ultra, One UI / Android 16):
 
@@ -168,7 +183,14 @@ bootstrap and reached through a signature-protected Binder, and its
 UiAutomation must not suppress accessibility (verify `Bound services` while
 it runs).
 
+8. Helper spike (09:05): `com.idupi.shell` 0.1-spike installed by adb;
+   `am instrument -e flags 1` (FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
+   adopted the shell identity, IDUPI kept its process (pid 31355) and its
+   accessibility service stayed bound. Killing `am` (09:05:38) did not stop
+   the probe; `am force-stop com.idupi.shell` left IDUPI's accessibility
+   bound (no stuck suppression); restarting the bridge worked.
+
 ## Next step
 
-T2: in-app adb client so IDUPI can start the bridge itself (no PC), then turn
-the bridge into a typed executor (T4) kept alive by the foreground service.
+T2: in-app adb client so IDUPI can pair, install the helper and start the
+bridge by itself (no PC), then the typed executor in the helper (T4).

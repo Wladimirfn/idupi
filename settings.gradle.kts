@@ -24,4 +24,5 @@ dependencyResolutionManagement {
 
 rootProject.name = "IDUPI"
 include(":app")
+include(":shellhelper")
  

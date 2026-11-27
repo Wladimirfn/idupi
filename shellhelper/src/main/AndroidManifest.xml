@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- IDUPI shell helper (phone-shell). No launcher activity: the owner never
+         opens it. It exists so the shell bridge runs in its own package:
+         `am instrument` force-stops the whole target package, and targeting
+         com.idupi.app killed IDUPI's accessibility service. -->
+    <application
+        android:allowBackup="false"
+        android:label="IDUPI ayudante" />
+
+    <!-- Only adb (uid 2000) can start an instrumentation; it runs in this
+         package's own process and adopts the shell permission identity. -->
+    <instrumentation
+        android:name=".ShellBridgeInstrumentation"
+        android:label="IDUPI shell bridge"
+        android:targetPackage="com.idupi.shell" />
+
+</manifest>
