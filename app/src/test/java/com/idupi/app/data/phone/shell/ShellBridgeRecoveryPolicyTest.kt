@@ -301,4 +301,20 @@ class ShellBridgeRecoveryPolicyTest {
             )
         )
     }
+
+    @Test
+    fun `re-toggles wireless debugging only when the adb service was not advertised`() {
+        org.junit.Assert.assertTrue(
+            ShellBridgeRecoveryPolicy.shouldRetoggleAdbWifi(
+                ShellBootstrapException("x", connectFailed = true, serviceNotFound = true)
+            )
+        )
+        org.junit.Assert.assertFalse(
+            ShellBridgeRecoveryPolicy.shouldRetoggleAdbWifi(
+                ShellBootstrapException("x", connectFailed = true)
+            )
+        )
+        org.junit.Assert.assertFalse(ShellBridgeRecoveryPolicy.shouldRetoggleAdbWifi(ShellBootstrapException("x")))
+        org.junit.Assert.assertFalse(ShellBridgeRecoveryPolicy.shouldRetoggleAdbWifi(null))
+    }
 }

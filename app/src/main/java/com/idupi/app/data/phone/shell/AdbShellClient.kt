@@ -20,6 +20,13 @@ import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
+/**
+ * mDNS returned no `_adb-tls-connect._tcp` service. Distinct from a rejected
+ * key: right after boot adbd may fail to register it (mdnsd not running yet,
+ * error -65563), while the TLS port itself is up.
+ */
+class AdbServiceNotFoundException(message: String) : IOException(message)
+
 /** The adb operation did not finish inside its deadline. */
 class AdbTimeoutException(message: String) : IOException(message)
 
@@ -234,7 +241,7 @@ class AdbShellClient private constructor(private val appContext: Context) {
         discovery.start()
         try {
             if (!resolved.await(DISCOVERY_TIMEOUT_MS, TimeUnit.MILLISECONDS) || port.get() <= 0) {
-                throw IOException(
+                throw AdbServiceNotFoundException(
                     "No wireless-debugging adb service found. Turn on Wireless debugging and try again."
                 )
             }

@@ -12,6 +12,8 @@ class ShellBootstrapException(
     message: String,
     /** True when the adb connection itself failed (T6: the key may have expired). */
     val connectFailed: Boolean = false,
+    /** True when every connect attempt found no advertised adb service. */
+    val serviceNotFound: Boolean = false,
 ) : Exception(message)
 
 /**
@@ -50,10 +52,12 @@ class ShellBridgeBootstrap(
 
     private suspend fun bootstrap(): Outcome {
         onStep("Conectando con la depuración inalámbrica…")
-        if (!connectWithRetry()) {
+        val connectError = connectWithRetry()
+        if (connectError != null) {
             throw ShellBootstrapException(
                 "No se pudo conectar. Abre Depuración inalámbrica y vuelve a intentarlo.",
                 connectFailed = true,
+                serviceNotFound = connectError is AdbServiceNotFoundException,
             )
         }
 
@@ -91,14 +95,17 @@ class ShellBridgeBootstrap(
         )
     }
 
-    private suspend fun connectWithRetry(): Boolean {
+    /** Returns null when connected, otherwise the last connect error. */
+    private suspend fun connectWithRetry(): Throwable? {
+        var lastError: Throwable? = null
         repeat(CONNECT_ATTEMPTS) { attempt ->
             val result = client.connect()
-            if (result.isSuccess) return true
-            Log.w(TAG, "connect attempt ${attempt + 1} failed: ${result.exceptionOrNull()}")
+            if (result.isSuccess) return null
+            lastError = result.exceptionOrNull()
+            Log.w(TAG, "connect attempt ${attempt + 1} failed: $lastError")
             if (attempt < CONNECT_ATTEMPTS - 1) delay(CONNECT_RETRY_MS)
         }
-        return false
+        return lastError ?: IllegalStateException("connect failed")
     }
 
     /**

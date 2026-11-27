@@ -9,6 +9,7 @@ import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -33,6 +34,8 @@ object ShellBridgeRecovery {
 
     private const val TAG = "IdupiPhoneShell"
     private const val ADB_WIFI_ENABLED = "adb_wifi_enabled"
+    private const val RETOGGLE_OFF_MS = 1_500L
+    private const val RETOGGLE_ON_MS = 2_000L
     private const val DEVELOPMENT_SETTINGS_ENABLED = "development_settings_enabled"
 
     private val mutex = Mutex()
@@ -115,7 +118,21 @@ object ShellBridgeRecovery {
                 // The bootstrap's connect retry and mDNS discovery are what wait
                 // for adbd to publish its TLS service after the toggle flips
                 // (up to ~20 s); no separate sleep is needed.
-                val result = ShellBridgeBootstrap(context, onStep = onStep).run()
+                var result = ShellBridgeBootstrap(context, onStep = onStep).run()
+                if (ShellBridgeRecoveryPolicy.shouldRetoggleAdbWifi(result.exceptionOrNull())) {
+                    // Right after boot adbd opens its TLS port but cannot
+                    // advertise it (mdnsd not running yet, error -65563), so
+                    // discovery finds nothing (owner reboot 2026-11-27 12:56).
+                    // Our failed discovery has started mdnsd by now: flipping
+                    // the toggle makes adbd register the service again.
+                    Log.i(TAG, "recovery: adb service not advertised, re-toggling wireless debugging")
+                    withContext(Dispatchers.IO) { writeGlobal(resolver, ADB_WIFI_ENABLED, 0) }
+                    delay(RETOGGLE_OFF_MS)
+                    withContext(Dispatchers.IO) { writeGlobal(resolver, ADB_WIFI_ENABLED, 1) }
+                    delay(RETOGGLE_ON_MS)
+                    AdbShellClient.get(context).disconnect()
+                    result = ShellBridgeBootstrap(context, onStep = onStep).run()
+                }
                 result.fold(
                     onSuccess = { ShellBridgeRecoveryOutcome.Recovered },
                     onFailure = { error -> ShellBridgeRecoveryOutcome.Failed(failureText(error)) },
@@ -147,7 +164,9 @@ object ShellBridgeRecovery {
      * expired, so the owner has to pair again.
      */
     private fun failureText(error: Throwable): String =
-        if (error is ShellBootstrapException && error.connectFailed) {
+        if (error is ShellBootstrapException && error.serviceNotFound) {
+            "La depuración inalámbrica no apareció en la red. Vuelve a intentarlo en un momento."
+        } else if (error is ShellBootstrapException && error.connectFailed) {
             "No se pudo conectar. La autorización puede haber caducado: " +
                 "vuelve a vincular en Ajustes > Acceso avanzado del teléfono."
         } else {

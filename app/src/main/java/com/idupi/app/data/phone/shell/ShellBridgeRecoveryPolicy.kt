@@ -159,6 +159,14 @@ object ShellBridgeRecoveryPolicy {
         ShellBridgeRecoverySkip.COOLDOWN ->
             "El puente se está recuperando. Espera un momento."
     }
+
+    /**
+     * Re-toggle wireless debugging once when the bootstrap found no advertised
+     * adb service (adbd's TLS port is up but its mDNS registration failed);
+     * never for a rejected key or any other failure.
+     */
+    fun shouldRetoggleAdbWifi(error: Throwable?): Boolean =
+        error is ShellBootstrapException && error.serviceNotFound
 }
 
 /**
@@ -178,4 +186,5 @@ object ShellBridgeAvailability {
         val bridge = result.getOrNull() ?: return true
         return !bridge.ok && bridge.text.startsWith(NOT_ACTIVE_PREFIX)
     }
+
 }
