@@ -81,6 +81,35 @@ of navigating Settings by taps.
   optimization (auto in an owner turn); `disable` destructive (asked by voice
   in an owner turn); `enable` free (undo).
 
+## T4 contract (decided 2026-11-27)
+
+- Phone command `{ "type": "shell", "args": { ... } }`, args by action:
+  - `{ "action": "info", "topic": "storage"|"memory"|"battery"|"packages" }`
+  - `{ "action": "trim-caches" }`
+  - `{ "action": "force-stop", "package": "<pkg>" }`
+  - `{ "action": "background", "package": "<pkg>", "mode": "allow"|"ignore" }`
+  - `{ "action": "disable", "package": "<pkg>" }`
+  - `{ "action": "enable", "package": "<pkg>" }`
+  No other key or action is accepted (both sides reject unknown args).
+- Package names: same regex as `PackageNames.isValid`, max 200 chars.
+  Protected packages (force-stop/background/disable refused on both sides):
+  `com.idupi.app`, `com.idupi.shell`, `android`, `com.android.systemui`,
+  `com.android.settings`, `com.android.phone`, `com.android.providers.settings`,
+  `com.google.android.gms`, `com.sec.android.app.launcher`,
+  `com.samsung.android.honeyboard`.
+- Risk: `info`, `enable` free; `trim-caches`, `force-stop`, `background`
+  gated with category `optimization` (auto-approved in an owner turn exactly
+  like `message`, otherwise asked); `disable` gated `destructive` (voice).
+- Execution: IDUPI calls the helper through its ContentProvider
+  `content://com.idupi.shell.bridge` (`ContentResolver.call(method, arg, extras)`),
+  protected by the signature permission `com.idupi.shell.permission.BRIDGE`
+  plus a calling-package/signature check. The helper re-validates the
+  allowlist before running anything. Result: human-readable Spanish text plus
+  `ok` boolean; `trim-caches` reports free space before/after.
+- Bridge status method `status` -> `active` only when the instrumentation
+  holds the shell identity (a helper process started by a provider call
+  without instrumentation reports `inactive`).
+
 ## Tasks
 
 - [x] T1 Device spike over PC adb on the S24 (see evidence). Result: plain
