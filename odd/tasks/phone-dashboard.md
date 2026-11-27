@@ -59,12 +59,12 @@ asking approval for anything it deletes.
 - [x] T2 App: Dashboard "PC · Teléfono" chips + `HorizontalPager`; phone page
       cards (storage, RAM, battery, network, largest apps, most used today);
       "Optimizar" button starting the bubble turn; pure state tests.
-- [ ] T3 Server: phone status gains largest apps; optimization playbook in the
+- [x] T3 Server: phone status gains largest apps; optimization playbook in the
       phone agent prompt; CLI budget per turn raised for optimization; tests.
-- [ ] T4 App: bubble approval for owner-turn cache/uninstall steps (voice,
+- [x] T4 App: bubble approval for owner-turn cache/uninstall steps (voice,
       naming app and size) + Aprobar/Rechazar buttons on every bubble approval
       prompt; money never voiced; tests.
-- [ ] T6 Owner correction (2026-11-26): no deterministic hard block for data
+- [x] T6 Owner correction (2026-11-26): no deterministic hard block for data
       wipes. "Borrar datos", "Borrar almacenamiento", deleting files/photos or
       the Downloads folder are allowed when the owner asks for it, through an
       approval that names what is erased and what is lost ("¿Estás seguro?"),
@@ -113,6 +113,18 @@ precedent), one PR stacked on #31.
   gated by the risk classifier (only eliminar/borrar/delete); added to T3 with a
   hard block for "Borrar datos"/"Borrar almacenamiento".
 
+- 2026-11-26: T3+T4 (writer work-1) and T6 (writer work-1, owner correction:
+  no hard block; data wipe = gated destructive approval with riskKind
+  data_wipe, allowed only when the owner asked). Uninstall now gated (was not).
+  Approvals carry ownerTurnId; all destructive approvals in an owner turn are
+  asked in the bubble (voice + Aprobar/Rechazar), money notification-only.
+  Server suite hang: two runner tests relied on the real 10-minute timer;
+  injected short clocks + 5 s per-test timeouts. Orchestrator runs: server
+  1037/1037 in 14 s, app 142 suites / 1340 tests / 0 failures. Commits
+  `cf6c331` (server), `8d34df1` (app); 1.61-dashboard-telefono (versionCode
+  62, `6c6758b`) installed over adb; server restarted 22:57 with the new rules.
+
 ## Next step
 
-T3 + T4 (writer running), then T5.
+T5: owner live check of the Dashboard phone page and "optimiza mi teléfono"
+(voice and text), then PR stacked on #31. Engram mirror still pending.
