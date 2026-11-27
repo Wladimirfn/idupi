@@ -131,7 +131,7 @@ of navigating Settings by taps.
       over the adb session install/update it (`pm install -r`) and start the
       bridge (`am instrument`); "Iniciar puente" action and status in the
       same Ajustes row.
-- [ ] T4 `shell` phone command end to end: helper bound service
+- [~] T4 `shell` phone command end to end: helper bound service
       (signature permission) with the typed allowlist, server `COMMAND_TYPES`
       + validation (`phone-store.mjs`), risk (`phone-risk.mjs`), CLI
       (`idupi-phone.mjs`), app parser/model/executor calling the helper,
@@ -143,15 +143,17 @@ of navigating Settings by taps.
       re-enables wireless debugging and reconnects.
 - [ ] T7 Keep the bridge alive and recover it: detect loss (helper death,
       reboot) and re-bootstrap on Wi-Fi through T2/T3b.
-- [ ] T7b Accessibility rebind kick: on this phone IDUPI's accessibility
-      service is not rebound after an adb `install -r` of IDUPI, after the
-      helper bridge dies, nor after toggling `enabled_accessibility_services`;
-      only a fresh UiAutomation connect/disconnect (`uiautomator dump`) forces
-      the rebind (2026-11-27 09:50-09:55, three repeats). Add a "kick" the app
-      can trigger when its service is enabled but not running: over adb
-      (`uiautomator dump /dev/null`) or inside the helper (reconnect its
-      UiAutomation with flags 0 then 1 and re-adopt the identity). Also make
-      the PC push flow (idupi-push) run the kick after installing.
+- [x] T7b Accessibility rebind safety net. CORRECTION 2026-11-27 11:00: the
+      premise "an adb `install -r` leaves IDUPI's accessibility service
+      unbound" was wrong. `dumpsys accessibility` prints one bound service per
+      line and the checks at 09:50-09:55 read only the first line; after the
+      1.69 install IDUPI, LG and Microsoft were all bound (ServiceRecord
+      alive). The only real loss was the morning one (`Bound services:{}`,
+      stale UiAutomation from the in-app bridge). Kept: the app-side net
+      (`AccessibilityKick` on start and `MY_PACKAGE_REPLACED`, acts only when
+      the service is enabled but not connected; helper `kick-accessibility`
+      first, adb `uiautomator dump` fallback). Removed: the PC push-flow kick
+      (it suppressed accessibility on every install for nothing).
 - [ ] T8 Release: version bump, assembleRelease (app + helper), push to
       phone, live check, docs (`idupi-server/docs/phone.md`, README), PR.
 
@@ -179,6 +181,7 @@ of navigating Settings by taps.
 
 | Task | Commit | Checks |
 |------|--------|--------|
+| T4+T7b | 82bb581, c779011, (revert commit) | Server worker work-2 (commandcode): `shell` in COMMAND_TYPES + validation, risk (`optimization` auto in owner turn like `message`, `disable` destructive), CLI `idupi-phone shell ...`, docs; 105 server tests ok. Android worker work-1: helper 0.2 (signature permission `com.idupi.shell.permission.BRIDGE`, call-only `BridgeProvider`, `BridgeState`, `ShellRequestValidator`, `ShellExecutor` fixed argv + API fallbacks, `kick-accessibility`), app `ShellBridgeClient`, `PhoneCommand.Shell`, gate/voice routing, bootstrap decides by helper `status`; `:shellhelper:testDebugUnitTest` 8 ok, `:app:testDebugUnitTest` 1449 ok. 1.69-comandos-shell (versionCode 70) installed 10:58; T7b net logged `kick skipped: enabled=true connected=true` (correct). Live shell commands pending (needs helper 0.2 via "Iniciar puente"). |
 | T3/T3b live | (docs commit) | Owner tapped "Iniciar puente" at 10:17:31 with no PC involved: `pm path` (helper missing) -> streamed `exec:cmd package install -r -t -S 2104902` done in 1.6 s -> detached `setsid ... am instrument` -> helper pid 24526 `adopted flags=1 uid=10501`, probes ok every 5 s; IDUPI's accessibility service stayed bound. Pairing (10:09) + bootstrap now proven end to end on the S24. |
 | T3 fix 2-3 | 815ae7c, d4813f8 | Owner retry 10:09: mDNS found the pairing service (192.168.1.8:46079) and pairing succeeded over loopback (`paired via 127.0.0.1:46079`, adbd persisted the key). Connect ok, `pm grant` ok (`WRITE_SECURE_SETTINGS: granted=true`), then `pm path com.idupi.shell` hung 10 s: libadb 3.1.1 bug, a peer CLSE that arrives while data is still queued only sets `mPendingClose`, so the next `read` waits forever. Reader now stops at the exit-marker line (`ShellOutputParser.isComplete`, tested). Failures are now logged under tag `IdupiPhoneShell` (code masked). 1.68 (versionCode 69) installed. |
 | T3 fix | (this commit) | Owner's first try crashed at 09:57:47 ("IDUPI se cerró"): `PhoneShellService` resolved `NotificationManagerCompat.from(this)` in a property initializer, before the Service has a base context (NPE in `ContextWrapper.getSystemService`). Now lazy. 1.66-acceso-avanzado (versionCode 67) installed; accessibility rebound with the uiautomator kick (T7b). |

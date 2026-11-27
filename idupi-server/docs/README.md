@@ -76,16 +76,6 @@ Snapshots live in `idupi-server/deliveries/` (index plus `dlv-*.apk`); the newes
 10 entries are kept. The hash is computed while copying, so later rebuilds do not
 change the bytes of an already-published delivery.
 
-`idupi-push <apk> --install` (phone-shell, T7b) additionally installs the
-published APK over the already-paired wireless adb (`adb -s <serial> install
--r`), then runs one throwaway `uiautomator dump` as an accessibility rebind
-kick: on the owner's phone an `install -r` of IDUPI leaves its accessibility
-service enabled but unbound until a UiAutomation client connects and
-disconnects. The dump is deleted in the same adb shell call. Both steps are
-best effort: an unreachable phone, a missing adb or a failed install is
-reported and the already-published delivery still stands for the
-notification-and-tap path. Source: [`lib/accessibility-kick.mjs`](../lib/accessibility-kick.mjs).
-
 ### PC observability
 
 | Method | Path | Auth | Purpose |
@@ -290,7 +280,7 @@ not use them.
 | Tool | Usage |
 |------|-------|
 | [`bin/idupi-term.mjs`](../bin/idupi-term.mjs) (`idupi-term.cmd`) | `idupi-term` lists/attaches (creates if none), `ls`, `new [--cwd DIR]`, `attach <ref>`, `web`; `Ctrl+]` detaches without killing |
-| [`bin/idupi-push.mjs`](../bin/idupi-push.mjs) (`idupi-push.cmd`) | `idupi-push <archivo.apk>` publishes an APK, `idupi-push <archivo.apk> --install` also installs it over the paired wireless adb (then runs the accessibility rebind kick), `idupi-push ls` lists deliveries |
+| [`bin/idupi-push.mjs`](../bin/idupi-push.mjs) (`idupi-push.cmd`) | `idupi-push <archivo.apk>` publishes an APK, `idupi-push ls` lists deliveries |
 | [`bin/idupi-phone.mjs`](../bin/idupi-phone.mjs) (`idupi-phone.cmd`) | `idupi-phone status`, `screen`, `tap`, `long-press`, `type`, `scroll`, `back`/`home`/`recents`/`notifications`, `open`, `wait`, `calendar [agenda\|free\|propose\|proposals]`, `log`; see [`phone.md`](phone.md) |
 
 Both CLIs read the token from `.idupi-token` or `IDUPI_TOKEN`, use `IDUPI_PORT`
