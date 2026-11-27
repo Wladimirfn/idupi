@@ -236,7 +236,7 @@
             android:name="com.idupi.app.data.phone.bubble.AssistEntryActivity"
             android:exported="true"
             android:taskAffinity=""
-            android:excludeFromRecents="true"
+            android:excludeFromRecents="true"
             android:launchMode="singleTask"
             android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <intent-filter>
@@ -250,5 +250,13 @@
         </activity>
 
     </application>
+
+    <!-- Phone shell (phone-shell T1, plan C): only adb (uid 2000) can start an
+         instrumentation, which runs inside this app's own process and adopts
+         the shell permission identity. -->
+    <instrumentation
+        android:name=".data.phone.shell.ShellBridgeInstrumentation"
+        android:label="IDUPI shell bridge"
+        android:targetPackage="com.idupi.app" />
 
 </manifest>
