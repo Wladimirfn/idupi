@@ -1,6 +1,7 @@
 package com.idupi.app.data.phone.shell
 
 import android.content.Context
+import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -86,7 +87,9 @@ class ShellBridgeBootstrap(
 
     private suspend fun connectWithRetry(): Boolean {
         repeat(CONNECT_ATTEMPTS) { attempt ->
-            if (client.connect().isSuccess) return true
+            val result = client.connect()
+            if (result.isSuccess) return true
+            Log.w(TAG, "connect attempt ${attempt + 1} failed: ${result.exceptionOrNull()}")
             if (attempt < CONNECT_ATTEMPTS - 1) delay(CONNECT_RETRY_MS)
         }
         return false
@@ -192,7 +195,8 @@ class ShellBridgeBootstrap(
     private suspend fun exec(
         command: String,
         timeoutMs: Long = DEFAULT_EXEC_TIMEOUT_MS,
-    ): ShellResult = client.exec(command, timeoutMs).getOrElse {
+    ): ShellResult = client.exec(command, timeoutMs).getOrElse { error ->
+        Log.w(TAG, "exec '${command.substringBefore(' ')}' failed: $error")
         throw ShellBootstrapException("El teléfono no respondió a tiempo.")
     }
 
@@ -202,6 +206,7 @@ class ShellBridgeBootstrap(
     )
 
     private companion object {
+        private const val TAG = "IdupiPhoneShell"
         const val HELPER_PACKAGE = "com.idupi.shell"
         const val PROBE_KEY = "idupi_shell_probe"
 

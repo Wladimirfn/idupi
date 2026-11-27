@@ -12,6 +12,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.RemoteInput
@@ -57,6 +58,7 @@ class PhoneShellService : Service() {
     private var codeChannel: Channel<String>? = null
     private var notificationTitle: String = PAIR_TITLE
     private var flowFinished = false
+    @Volatile private var pairingHost: String? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -157,6 +159,7 @@ class PhoneShellService : Service() {
             bootstrap.fold(
                 onSuccess = { FlowResult.Success },
                 onFailure = { error ->
+                    Log.w(TAG, "bootstrap failed: ${describe(error, "")}")
                     FlowResult.Failure(
                         message = error.message ?: GENERIC_ERROR,
                         stage = PhoneShellStage.PAIRED,
@@ -166,6 +169,7 @@ class PhoneShellService : Service() {
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            Log.w(TAG, "pairing flow failed: ${describe(e, "")}")
             FlowResult.Failure(GENERIC_ERROR, PhoneShellStage.NOT_PAIRED)
         } finally {
             discovery.cancel()
@@ -197,7 +201,7 @@ class PhoneShellService : Service() {
             val pairingPort = port.await()
             PhoneShellStatus.working("Vinculando…")
             updateNotification("Vinculando…", withCode = false)
-            if (AdbShellClient.get(this).pair(pairingPort, code).isSuccess) {
+            if (pairOnAnyHost(pairingPort, code)) {
                 PhoneShellStore(this).paired = true
                 return
             }
@@ -208,6 +212,34 @@ class PhoneShellService : Service() {
             PhoneShellStatus.working(WRONG_CODE_TEXT)
             updateNotification(WRONG_CODE_TEXT, withCode = true)
         }
+    }
+
+    /**
+     * Pairs over loopback first (Shizuku's model), then over the address mDNS
+     * resolved, in case this adbd's pairing server does not accept loopback.
+     * Each failure is logged with its exception chain so a device report says
+     * why; the code itself is masked out of every message.
+     */
+    private suspend fun pairOnAnyHost(port: Int, code: String): Boolean {
+        val client = AdbShellClient.get(this)
+        val hosts = listOfNotNull(IdupiAdbConnectionManager.LOOPBACK_ADDRESS, pairingHost).distinct()
+        for (host in hosts) {
+            val result = client.pair(port, code, host)
+            if (result.isSuccess) {
+                Log.i(TAG, "paired via $host:$port")
+                return true
+            }
+            Log.w(TAG, "pair via $host:$port failed: ${describe(result.exceptionOrNull(), code)}")
+        }
+        return false
+    }
+
+    private fun describe(error: Throwable?, secret: String): String {
+        val parts = generateSequence(error) { it.cause }.take(6).map { e ->
+            "${e.javaClass.name}: ${e.message.orEmpty()}"
+        }
+        val text = parts.joinToString(" <- ")
+        return if (secret.isEmpty()) text else text.replace(secret, "******")
     }
 
     /**
@@ -234,8 +266,12 @@ class PhoneShellService : Service() {
         val discovery = AtomicReference<AdbMdns?>(null)
         try {
             return suspendCancellableCoroutine { continuation ->
-                val mdns = AdbMdns(this, AdbMdns.SERVICE_TYPE_TLS_PAIRING) { _, port ->
-                    if (port > 0 && continuation.isActive) continuation.resume(port)
+                val mdns = AdbMdns(this, AdbMdns.SERVICE_TYPE_TLS_PAIRING) { host, port ->
+                    if (port > 0 && continuation.isActive) {
+                        pairingHost = host?.hostAddress
+                        Log.i(TAG, "pairing service found at ${host?.hostAddress}:$port")
+                        continuation.resume(port)
+                    }
                 }
                 discovery.set(mdns)
                 continuation.invokeOnCancellation { runCatching { mdns.stop() } }
@@ -437,6 +473,7 @@ class PhoneShellService : Service() {
         @Volatile
         private var active: PhoneShellService? = null
 
+        private const val TAG = "IdupiPhoneShell"
         private const val CHANNEL_ID = "idupi_phone_shell"
         private const val NOTIFICATION_ID = 8790
         private const val REQUEST_OPEN = 8791

@@ -53,14 +53,18 @@ class AdbShellClient private constructor(private val appContext: Context) {
      * Pairing exists only from Android 11 (API 30); older phones fail with a
      * clear message instead of an obscure TLS error.
      */
-    suspend fun pair(port: Int, code: String): Result<Unit> = resultOf {
+    suspend fun pair(
+        port: Int,
+        code: String,
+        host: String = IdupiAdbConnectionManager.LOOPBACK_ADDRESS,
+    ): Result<Unit> = resultOf {
         requireApi30("pairing")
         requirePort(port)
         if (!PairingCode.isValid(code)) {
             throw IllegalArgumentException("The pairing code must be exactly six digits.")
         }
         blocking(PAIR_TIMEOUT_MS, "adb pair") {
-            val paired = manager().pair(IdupiAdbConnectionManager.LOOPBACK_ADDRESS, port, code)
+            val paired = manager().pair(host, port, code)
             if (!paired) throw IOException("The phone rejected the adb pairing.")
         }
     }
