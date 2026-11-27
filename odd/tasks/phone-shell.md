@@ -151,6 +151,22 @@ T1 evidence (S24 Ultra, One UI / Android 16):
    probes 07:18:50-08:47:46, all ok, no failure. Intervals stretched to
    8-33 s while dozing (CPU sleep pauses `Thread.sleep`), never a stop. adbd
    restarted again at 08:47:18 and the probe kept succeeding.
+7. Side effect found 08:50: starting the bridge broke IDUPI's accessibility
+   service (the bubble) from 07:11. `am instrument` force-stops the whole
+   target package (One UI 16 `am` has no `--no-restart`), and while the
+   bridge's UiAutomation was registered the system bound no accessibility
+   service at all (`Bound services:{}`, `accessibility_enabled` kept dropping
+   to 0). The suppression outlived the force-stopped bridge; settings
+   re-toggles and a reinstall did not help. A fresh UiAutomation
+   connect/disconnect (`adb shell uiautomator dump`) cleared it and IDUPI
+   bound again at 09:02.
+
+Design consequence: the bridge cannot run inside `com.idupi.app`. It moves to
+a small own helper package (instrumentation targets the helper, so the
+force-stop hits only the helper), installed by IDUPI over adb during
+bootstrap and reached through a signature-protected Binder, and its
+UiAutomation must not suppress accessibility (verify `Bound services` while
+it runs).
 
 ## Next step
 
