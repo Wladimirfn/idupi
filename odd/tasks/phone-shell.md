@@ -181,6 +181,27 @@ estamos siendo muy estrictos ... con tanta aprobación que no logra ejecutar".
 - The adb key authorization can expire after 7 days unused; every recovery
   uses it, and a failed connect is reported as "vuelve a vincular".
 
+## T9 design: the server link comes back alone (owner, 2026-11-27 13:35)
+
+Owner: "debemos hacer que inicie automáticamente el Tailscale, que el sistema lo
+ubique y lo encienda y haga el proceso completo ... automático todo y funcione
+al 100%". Evidence: after both reboots the app (host 100.73.94.118) timed out
+on every poll until the owner opened Tailscale; the pollers themselves start at
+boot with the accessibility service.
+
+- Verified on the S24 (Tailscale 1.104.6): `com.tailscale.ipn/.IPNReceiver`
+  handles `com.tailscale.ipn.CONNECT_VPN` / `DISCONNECT_VPN`; a disconnect +
+  connect by broadcast took ~6 s.
+- `TailscaleLink` (app): if Tailscale is installed (package query) and no VPN
+  network is up, send the explicit `CONNECT_VPN` broadcast; cooldown 60 s;
+  logged under `IdupiPhoneShell`. Triggers: process/boot start (accessibility
+  service connect, boot receiver), any network becoming available, and
+  repeated server timeouts when the configured host is in 100.64.0.0/10.
+- Boot without IDUPI: if Settings.Secure `always_on_vpn_app` is empty, IDUPI
+  sets it to `com.tailscale.ipn` (lockdown stays off) with WRITE_SECURE_SETTINGS
+  so Android itself starts Tailscale on the next boot. Never overrides another
+  app's always-on VPN.
+
 ## Tasks
 
 - [x] T1 Device spike over PC adb on the S24 (see evidence). Result: plain
@@ -227,6 +248,7 @@ estamos siendo muy estrictos ... con tanta aprobación que no logra ejecutar".
       the service is enabled but not connected; helper `kick-accessibility`
       first, adb `uiautomator dump` fallback). Removed: the PC push-flow kick
       (it suppressed accessibility on every install for nothing).
+- [ ] T9 Server link self-recovery (Tailscale auto-connect, design above).
 - [ ] T8 Release: version bump, assembleRelease (app + helper), push to
       phone, live check, docs (`idupi-server/docs/phone.md`, README), PR.
 
