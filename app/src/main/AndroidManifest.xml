@@ -79,6 +79,9 @@
         <package android:name="com.strava" />
         <package android:name="com.huawei.health" />
         <package android:name="com.hihonor.health" />
+        <!-- Phone shell (phone-shell T3b): the app checks the helper's install
+             state and version through PackageManager. -->
+        <package android:name="com.idupi.shell" />
     </queries>
 
     <!-- Phone status reporting (phone-agent T2): usage minutes per app and the
@@ -89,6 +92,14 @@
          and lint flags it as protected. -->
     <uses-permission
         android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
+
+    <!-- Phone shell (phone-shell T3): shell (uid 2000) grants this to the app
+         over the app's own adb session right after pairing, so T6 can turn
+         wireless debugging back on after a reboot. Declaring it is what makes
+         `pm grant` succeed; the app never receives it from the system. -->
+    <uses-permission
+        android:name="android.permission.WRITE_SECURE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
 
     <application
@@ -183,6 +194,20 @@
              targets this component explicitly, so it stays unexported. -->
         <receiver
             android:name="com.idupi.app.data.install.InstallResultReceiver"
+            android:exported="false" />
+
+        <!-- Phone shell (phone-shell T3/T3b). Short-lived foreground service:
+             pair over Wireless debugging, then install/start the helper. It is
+             started from Ajustes and stopped when done or after five minutes. -->
+        <service
+            android:name="com.idupi.app.data.phone.shell.PhoneShellService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- RemoteInput reply for the pairing code. Explicit and unexported;
+             only IDUPI's own notification PendingIntent can reach it. -->
+        <receiver
+            android:name="com.idupi.app.data.phone.shell.PhoneShellPairingReceiver"
             android:exported="false" />
 
         <!-- Phone approval notification actions (phone-approvals T2). The

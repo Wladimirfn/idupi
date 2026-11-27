@@ -28,12 +28,39 @@ object ShellCommands {
         "pm grant com.idupi.app android.permission.WRITE_SECURE_SETTINGS"
 
     /**
+     * Starts the helper bridge detached (phone-shell T3b).
+     *
+     * `am instrument -w` never returns by design: the instrumentation keeps
+     * running in the helper process after `am` detaches. Running it through a
+     * blocking `shell:` exec would hit the exec timeout every time, so the
+     * command backgrounds itself with `setsid`, and the outer redirects keep
+     * the adb stream from waiting on the still-open child stdout.
+     */
+    fun startBridgeDetached(): String =
+        "setsid sh -c 'am instrument -w -r com.idupi.shell/.ShellBridgeInstrumentation > /dev/null 2>&1' < /dev/null > /dev/null 2>&1 &"
+
+    /**
+     * Streams an APK over stdin into `cmd package install`, the same service
+     * `adb install` uses. `-S` tells the package manager exactly how many bytes
+     * to read from the stream before it commits.
+     */
+    fun installStreamed(sizeBytes: Long): String {
+        require(sizeBytes > 0) { "apk size must be positive" }
+        return "cmd package install -r -t -S $sizeBytes"
+    }
+
+    /**
      * Appends the exit-status probe used by [AdbShellClient.exec]. The marker
      * is parsed back by [ShellOutputParser].
+     *
+     * A command ending in `&` cannot be followed by `;` (that is a shell
+     * syntax error), so the probe is separated by a space there: the marker
+     * still runs after the background job is launched.
      */
     fun withExitStatus(command: String): String {
         require(command.isNotBlank()) { "command must not be blank" }
-        return "$command; echo ${ShellOutputParser.EXIT_MARKER}\$?"
+        val separator = if (command.trimEnd().endsWith("&")) " " else "; "
+        return "$command$separator" + "echo ${ShellOutputParser.EXIT_MARKER}\$?"
     }
 
     /**

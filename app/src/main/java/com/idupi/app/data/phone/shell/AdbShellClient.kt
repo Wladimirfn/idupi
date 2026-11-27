@@ -130,6 +130,74 @@ class AdbShellClient private constructor(private val appContext: Context) {
         }
     }
 
+    /**
+     * Installs or updates an APK by streaming it into `cmd package install`,
+     * the same stdin protocol `adb install` uses (phone-shell T3b).
+     *
+     * The command runs on the raw `exec:` service so adbd wires our stream to
+     * the process stdin. `-S <size>` makes the package manager read exactly
+     * [apkBytes] and commit, so no half-close is needed. The stream is written
+     * in negotiated max-data chunks: libadb waits for the peer's OKAY at the
+     * start of every [AdbStream.write], which keeps each WRTE legal.
+     *
+     * The returned [ShellResult.output] is the package manager's verdict
+     * (`Success` / `Failure [REASON]`), parsed by [InstallResultParser].
+     */
+    suspend fun installPackage(
+        apkBytes: ByteArray,
+        timeoutMs: Long = DEFAULT_INSTALL_TIMEOUT_MS,
+    ): Result<ShellResult> = resultOf {
+        require(apkBytes.isNotEmpty()) { "apk must not be empty" }
+        require(timeoutMs > 0) { "timeout must be positive" }
+        val connection = manager()
+        if (!connection.isConnected) {
+            throw IOException("Not connected to the phone's adb daemon.")
+        }
+        val command = ShellCommands.withExitStatus(
+            ShellCommands.installStreamed(apkBytes.size.toLong())
+        )
+        val streamOnWorker = AtomicReference<AdbStream?>(null)
+        blocking(
+            timeoutMs = timeoutMs,
+            label = "adb install",
+            onTimeout = { streamOnWorker.get()?.let { stream -> runCatching { stream.close() } } },
+        ) {
+            val stream = connection.openStream("exec:$command")
+            streamOnWorker.set(stream)
+            try {
+                val chunkSize = runCatching { connection.adbConnection?.maxData }
+                    .getOrNull()
+                    ?.coerceIn(MIN_STREAM_CHUNK, MAX_STREAM_CHUNK)
+                    ?: DEFAULT_STREAM_CHUNK
+                var offset = 0
+                var writeError: IOException? = null
+                while (offset < apkBytes.size) {
+                    val length = minOf(chunkSize, apkBytes.size - offset)
+                    try {
+                        stream.write(apkBytes, offset, length)
+                    } catch (e: IOException) {
+                        // The package manager can reject the APK before the
+                        // last byte; its verdict is still on the stream.
+                        writeError = e
+                        break
+                    }
+                    offset += length
+                }
+                val raw = try {
+                    readAll(stream)
+                } catch (e: IOException) {
+                    if (writeError == null) throw e
+                    ""
+                }
+                if (writeError != null && raw.isBlank()) throw writeError
+                ShellOutputParser.parse(raw)
+            } finally {
+                streamOnWorker.set(null)
+                runCatching { stream.close() }
+            }
+        }
+    }
+
     suspend fun isConnected(): Boolean = withContext(Dispatchers.IO) {
         try {
             manager().isConnected
@@ -245,7 +313,11 @@ class AdbShellClient private constructor(private val appContext: Context) {
         private const val PAIR_TIMEOUT_MS = 30_000L
         private const val CONNECT_TIMEOUT_MS = 20_000L
         private const val DISCOVERY_TIMEOUT_MS = 10_000L
+        private const val DEFAULT_INSTALL_TIMEOUT_MS = 120_000L
         private const val READ_BUFFER_BYTES = 4096
+        private const val DEFAULT_STREAM_CHUNK = 32 * 1024
+        private const val MIN_STREAM_CHUNK = 4 * 1024
+        private const val MAX_STREAM_CHUNK = 64 * 1024
         private val LOCK = Any()
 
         @Volatile

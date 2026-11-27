@@ -16,6 +16,7 @@ enum class SettingsRoute {
     AlertAnalyst,
     CaptureStatus,
     PhoneAssistant,
+    PhoneShell,
     Calendar,
     Health,
     Actions;
@@ -40,6 +41,7 @@ fun parent(route: SettingsRoute): SettingsRoute? = when (route) {
     SettingsRoute.AlertAnalyst -> SettingsRoute.Alerts
     SettingsRoute.CaptureStatus -> SettingsRoute.Alerts
     SettingsRoute.PhoneAssistant -> SettingsRoute.Hub
+    SettingsRoute.PhoneShell -> SettingsRoute.Hub
     SettingsRoute.Calendar -> SettingsRoute.Hub
     SettingsRoute.Health -> SettingsRoute.Hub
     SettingsRoute.Actions -> SettingsRoute.Hub

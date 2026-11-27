@@ -1,4 +1,13 @@
+import java.io.File
 import java.util.Properties
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.OutputDirectory
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.TaskAction
 
 plugins {
     alias(libs.plugins.android.application)
@@ -32,8 +41,8 @@ android {
         // "which APK am I running" is answerable from the system settings.
         // Same-versionCode installs get silently skipped by some phone
         // installers -- that is how a stale build masqueraded as the new one.
-        versionCode = 65
-        versionName = "1.64-puente-shell"
+        versionCode = 66
+        versionName = "1.65-acceso-avanzado"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -73,6 +82,28 @@ android {
             // this makes calls like Log.w(...) return defaults instead of throwing.
             isReturnDefaultValues = true
         }
+    }
+}
+
+// Phone shell (phone-shell T3b): the helper APK shipped inside IDUPI's assets.
+// The helper is release-signed; a debug IDUPI build does not share that
+// signature. That is fine here: adb (shell) installs the helper, and the
+// signature-protected Binder that will care about the match arrives in T4.
+val copyShellHelperApk = tasks.register<CopyShellHelperApkTask>("copyShellHelperApk") {
+    dependsOn(":shellhelper:assembleRelease")
+    helperApk.set(
+        project(":shellhelper").layout.buildDirectory.file(
+            "outputs/apk/release/shellhelper-release.apk"
+        )
+    )
+}
+
+androidComponents {
+    onVariants { variant ->
+        variant.sources.assets?.addGeneratedSourceDirectory(
+            copyShellHelperApk,
+            CopyShellHelperApkTask::outputDir
+        )
     }
 }
 
@@ -119,4 +150,29 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
+}
+
+/**
+ * Copies the helper's release APK into a generated assets directory. AGP wires
+ * this directory into the variant's asset sources; the asset name is what
+ * HelperApk reads at runtime.
+ */
+abstract class CopyShellHelperApkTask : DefaultTask() {
+
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.NAME_ONLY)
+    abstract val helperApk: RegularFileProperty
+
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
+
+    @TaskAction
+    fun copyApk() {
+        val output = outputDir.get().asFile
+        output.mkdirs()
+        helperApk.get().asFile.copyTo(
+            File(output, "idupi-shell-helper.apk"),
+            overwrite = true
+        )
+    }
 }

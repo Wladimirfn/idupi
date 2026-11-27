@@ -94,11 +94,11 @@ of navigating Settings by taps.
       discovery, pairing client, connect, `shell:` exec with timeout and exit
       status; pure parts unit-tested (command builder, package validation,
       output parsing).
-- [ ] T3 App pairing UX: Ajustes > "Acceso avanzado del teléfono" row with
+- [~] T3 App pairing UX: Ajustes > "Acceso avanzado del teléfono" row with
       status (no vinculado / vinculado / conectado / no disponible), "Vincular"
       opens Wireless debugging and posts a notification with a `RemoteInput`
       for the 6-digit code; after pairing, grants WRITE_SECURE_SETTINGS.
-- [ ] T3b Bootstrap: embed the helper APK in IDUPI's assets at build time;
+- [~] T3b Bootstrap: embed the helper APK in IDUPI's assets at build time;
       over the adb session install/update it (`pm install -r`) and start the
       bridge (`am instrument`); "Iniciar puente" action and status in the
       same Ajustes row.
@@ -114,6 +114,15 @@ of navigating Settings by taps.
       re-enables wireless debugging and reconnects.
 - [ ] T7 Keep the bridge alive and recover it: detect loss (helper death,
       reboot) and re-bootstrap on Wi-Fi through T2/T3b.
+- [ ] T7b Accessibility rebind kick: on this phone IDUPI's accessibility
+      service is not rebound after an adb `install -r` of IDUPI, after the
+      helper bridge dies, nor after toggling `enabled_accessibility_services`;
+      only a fresh UiAutomation connect/disconnect (`uiautomator dump`) forces
+      the rebind (2026-11-27 09:50-09:55, three repeats). Add a "kick" the app
+      can trigger when its service is enabled but not running: over adb
+      (`uiautomator dump /dev/null`) or inside the helper (reconnect its
+      UiAutomation with flags 0 then 1 and re-adopt the identity). Also make
+      the PC push flow (idupi-push) run the kick after installing.
 - [ ] T8 Release: version bump, assembleRelease (app + helper), push to
       phone, live check, docs (`idupi-server/docs/phone.md`, README), PR.
 
@@ -141,7 +150,8 @@ of navigating Settings by taps.
 
 | Task | Commit | Checks |
 |------|--------|--------|
-| T2 | (this commit) | worker work-1 (opencode, deepseek-v4.1-flash). `:app:testDebugUnitTest --tests com.idupi.app.data.phone.shell.*` 36 tests ok; `:app:assembleDebug` ok. Deps: libadb-android 3.1.1 (JitPack, filtered), conscrypt-android 2.5.3, bcpkix/bcprov 1.81. Not device-verified yet (pairing, mDNS, loopback connect, exec): checked live in T3. Note for T3b: `am instrument -w` never returns, so launch it detached (`setsid sh -c '...' &`) instead of through a blocking `exec`. |
+| T3+T3b | (this commit) | worker work-1. Ajustes > "Acceso avanzado del teléfono" (`SettingsRoute.PhoneShell`), `PhoneShellService` (FGS dataSync: mDNS pairing port, RemoteInput code, pair, bootstrap, 5 min cap), `ShellBridgeBootstrap` (connect, pm grant WRITE_SECURE_SETTINGS, streamed `cmd package install -S` with file fallback, detached `setsid am instrument`, pidof + probe check), helper APK embedded as `assets/idupi-shell-helper.apk`. `:app:testDebugUnitTest` 1413 ok (57 in phone.shell); `:app:assembleRelease` ok; 1.65-acceso-avanzado (versionCode 66) installed by adb, helper uninstalled first so the app installs it itself. Live pairing pending (owner). |
+| T2 | 68de31d | worker work-1 (opencode, deepseek-v4.1-flash). `:app:testDebugUnitTest --tests com.idupi.app.data.phone.shell.*` 36 tests ok; `:app:assembleDebug` ok. Deps: libadb-android 3.1.1 (JitPack, filtered), conscrypt-android 2.5.3, bcpkix/bcprov 1.81. Not device-verified yet (pairing, mDNS, loopback connect, exec): checked live in T3. Note for T3b: `am instrument -w` never returns, so launch it detached (`setsid sh -c '...' &`) instead of through a blocking `exec`. |
 | T1b | bfe580d | Helper 0.1-spike `assembleRelease` ok, installed by adb; device evidence 8. App `compileReleaseKotlin` ok after removing the in-app bridge. |
 | T1 | 6dbb709, a846217, 91c161c | Device evidence 2026-11-27 below. `assembleRelease` ok; 1.64-puente-shell (versionCode 65) installed by adb. |
 

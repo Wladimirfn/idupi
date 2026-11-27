@@ -14,6 +14,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Adb
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Dns
@@ -44,6 +45,7 @@ import com.idupi.app.IduPiApp
 import com.idupi.app.data.IduPiClientProvider
 import com.idupi.app.data.connection.ConnectionStorage
 import com.idupi.app.data.inbox.isInboxListenerEnabled
+import com.idupi.app.data.phone.shell.phoneShellStatusLabel
 import com.idupi.app.domain.model.MIN_READABLE_CONTRAST_RATIO
 import com.idupi.app.domain.model.ThemeColors
 import com.idupi.app.domain.model.ThemeMode
@@ -82,6 +84,7 @@ import com.idupi.app.viewmodel.MainViewModel
 import com.idupi.app.viewmodel.CalendarSettingsViewModel
 import com.idupi.app.viewmodel.HealthSettingsViewModel
 import com.idupi.app.viewmodel.PhoneAgentSettingsViewModel
+import com.idupi.app.viewmodel.PhoneShellViewModel
 import java.util.Locale
 
 /**
@@ -94,6 +97,7 @@ fun SettingsScreen(
     mainViewModel: MainViewModel,
     inboxViewModel: InboxSettingsViewModel,
     phoneAgentViewModel: PhoneAgentSettingsViewModel,
+    phoneShellViewModel: PhoneShellViewModel,
     calendarViewModel: CalendarSettingsViewModel,
     healthViewModel: HealthSettingsViewModel,
     onMenuClick: () -> Unit,
@@ -131,6 +135,7 @@ fun SettingsScreen(
             savedProfileHost = savedProfile?.let { "${it.host}:${it.port}" },
             inboxViewModel = inboxViewModel,
             phoneAgentViewModel = phoneAgentViewModel,
+            phoneShellViewModel = phoneShellViewModel,
             calendarViewModel = calendarViewModel,
             healthViewModel = healthViewModel,
             onMenuClick = onMenuClick,
@@ -161,6 +166,12 @@ fun SettingsScreen(
             onBack = goBack,
         ) {
             PhoneAgentSection(phoneAgentViewModel)
+        }
+        SettingsRoute.PhoneShell -> SettingsSubScreen(
+            title = "Acceso avanzado del teléfono",
+            onBack = goBack,
+        ) {
+            PhoneShellSection(phoneShellViewModel)
         }
         SettingsRoute.Calendar -> SettingsSubScreen("Calendario", onBack = goBack) {
             CalendarSection(calendarViewModel)
@@ -199,6 +210,7 @@ private fun SettingsHub(
     savedProfileHost: String?,
     inboxViewModel: InboxSettingsViewModel,
     phoneAgentViewModel: PhoneAgentSettingsViewModel,
+    phoneShellViewModel: PhoneShellViewModel,
     calendarViewModel: CalendarSettingsViewModel,
     healthViewModel: HealthSettingsViewModel,
     onMenuClick: () -> Unit,
@@ -209,10 +221,15 @@ private fun SettingsHub(
     val inboxSettings by inboxViewModel.inboxSettings.collectAsState()
     val phoneControlEnabled by phoneAgentViewModel.phoneControlEnabled.collectAsState()
     val pendingApprovals by phoneAgentViewModel.approvals.collectAsState()
+    val phoneShellState by phoneShellViewModel.state.collectAsState()
     val calendarShareEnabled by calendarViewModel.shareEnabled.collectAsState()
     val calendarPermission by calendarViewModel.permission.collectAsState()
     val healthState by healthViewModel.state.collectAsState()
     val notificationAccess = rememberNotificationAccess()
+
+    // The summary is read from the process-wide holder; this only refreshes it
+    // when Ajustes opens (no connection is started by the read).
+    LaunchedEffect(Unit) { phoneShellViewModel.refresh() }
 
     Scaffold(
         topBar = {
@@ -262,6 +279,13 @@ private fun SettingsHub(
                 title = "Asistente del teléfono",
                 summary = phoneAssistantSummary(phoneControlEnabled, pendingApprovals.pending.size),
                 onClick = { onOpenRoute(SettingsRoute.PhoneAssistant) },
+            )
+
+            SettingsCategoryRow(
+                icon = Icons.Default.Adb,
+                title = "Acceso avanzado del teléfono",
+                summary = phoneShellStatusLabel(phoneShellState.stage),
+                onClick = { onOpenRoute(SettingsRoute.PhoneShell) },
             )
 
             SettingsCategoryRow(

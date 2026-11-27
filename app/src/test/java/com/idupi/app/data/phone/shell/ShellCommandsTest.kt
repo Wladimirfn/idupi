@@ -79,4 +79,42 @@ class ShellCommandsTest {
             ShellCommands.withExitStatus(" ")
         }
     }
+
+    @Test
+    fun `startBridgeDetached runs the instrumentation in its own session`() {
+        assertEquals(
+            "setsid sh -c 'am instrument -w -r com.idupi.shell/.ShellBridgeInstrumentation " +
+                "> /dev/null 2>&1' < /dev/null > /dev/null 2>&1 &",
+            ShellCommands.startBridgeDetached(),
+        )
+    }
+
+    @Test
+    fun `installStreamed declares the exact stdin size`() {
+        assertEquals(
+            "cmd package install -r -t -S 2104902",
+            ShellCommands.installStreamed(2_104_902L),
+        )
+    }
+
+    @Test
+    fun `installStreamed rejects a non-positive size`() {
+        assertThrows(IllegalArgumentException::class.java) {
+            ShellCommands.installStreamed(0L)
+        }
+    }
+
+    @Test
+    fun `a background command keeps a valid exit probe separator`() {
+        // `;` after a trailing `&` is a shell syntax error; the marker must be
+        // separated by whitespace so the detached bridge can still report.
+        assertEquals(
+            "true & echo __IDUPI_EXIT__\$?",
+            ShellCommands.withExitStatus("true &"),
+        )
+        assertEquals(
+            "${ShellCommands.startBridgeDetached()} echo __IDUPI_EXIT__\$?",
+            ShellCommands.withExitStatus(ShellCommands.startBridgeDetached()),
+        )
+    }
 }
