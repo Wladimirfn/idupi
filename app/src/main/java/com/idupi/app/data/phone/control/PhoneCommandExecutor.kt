@@ -17,6 +17,9 @@ import com.idupi.app.data.phone.PhoneStatusReporting
 import com.idupi.app.data.phone.approval.ApprovalGate
 import com.idupi.app.data.phone.approval.ApprovalGateResult
 import com.idupi.app.data.phone.approval.ApprovalLedger
+import com.idupi.app.data.phone.shell.ShellBridgeClient
+import com.idupi.app.data.phone.shell.ShellCommandRules
+import com.idupi.app.data.phone.shell.ShellRisk
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -38,6 +41,7 @@ class PhoneCommandExecutor(
     private val ledger: ApprovalLedger,
     private val nowMillis: () -> Long = System::currentTimeMillis,
     private val reportStatusNow: suspend () -> Boolean = { PhoneStatusReporting.reportNow() },
+    private val shellBridge: ShellBridgeClient = ShellBridgeClient.get(service),
 ) {
 
     suspend fun execute(command: PhoneCommand): CommandOutcome = try {
@@ -51,6 +55,7 @@ class PhoneCommandExecutor(
             is PhoneCommand.Global -> global(command.action)
             is PhoneCommand.OpenApp -> open(command.app)
             is PhoneCommand.Settings -> settings(command.screen, command.packageName)
+            is PhoneCommand.Shell -> shell(command)
             is PhoneCommand.Wait -> {
                 delay(command.millis.toLong())
                 CommandOutcome.success()
@@ -427,6 +432,42 @@ class PhoneCommandExecutor(
         }
     }
 
+    // --- shell (phone-shell, T4) --------------------------------------------
+
+    /**
+     * Runs one typed shell operation through the helper (phone-shell T4).
+     *
+     * The phone classifies the risk and applies its own gate before the helper
+     * sees the request; the helper re-validates the allowlist at the execution
+     * boundary. The helper's text is the command result the PC displays.
+     */
+    private suspend fun shell(command: PhoneCommand.Shell): CommandOutcome {
+        val risk = ShellCommandRules.riskOf(command.operation)
+        if (risk != ShellRisk.FREE) {
+            when (val gate = ApprovalGate.checkShell(command.approval, risk, ledger, nowMillis())) {
+                is ApprovalGateResult.Refused -> return CommandOutcome.failure(gate.error)
+                ApprovalGateResult.Allowed -> Unit
+            }
+        }
+
+        val result = shellBridge.execute(command.operation)
+        return result.fold(
+            onSuccess = { bridge ->
+                if (!bridge.ok) {
+                    CommandOutcome.failure(bridge.text.ifBlank { SHELL_FAILED })
+                } else {
+                    CommandOutcome.success(buildJsonObject {
+                        put("text", bridge.text)
+                        bridge.path?.let { put("path", it) }
+                        bridge.freeBefore?.let { put("freeBefore", it) }
+                        bridge.freeAfter?.let { put("freeAfter", it) }
+                    })
+                }
+            },
+            onFailure = { CommandOutcome.failure(SHELL_UNAVAILABLE) },
+        )
+    }
+
     // --- settings (phone-dashboard, T7) -------------------------------------
 
     /**
@@ -559,6 +600,8 @@ class PhoneCommandExecutor(
         private const val INTERNAL_ERROR = "error interno"
         private const val PACKAGE_INVALID = "paquete inválido"
         private const val SETTINGS_UNAVAILABLE = "no se pudo abrir el ajuste"
+        private const val SHELL_UNAVAILABLE = "puente no disponible"
+        private const val SHELL_FAILED = "no se pudo ejecutar"
 
         /** Samsung Device Care dashboard (phone-dashboard T7, verified on the owner's phone). */
         private const val SAMSUNG_DEVICE_CARE_ACTION = "com.samsung.android.sm.ACTION_DASHBOARD"

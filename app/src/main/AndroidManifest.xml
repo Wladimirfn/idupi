@@ -102,6 +102,10 @@
         android:name="android.permission.WRITE_SECURE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
 
+    <!-- Phone shell (phone-shell T4): the helper provider is protected by a
+         signature permission; only an app with the same key can call it. -->
+    <uses-permission android:name="com.idupi.shell.permission.BRIDGE" />
+
     <application
         android:name=".IduPiApp"
         android:allowBackup="false"
@@ -209,6 +213,17 @@
         <receiver
             android:name="com.idupi.app.data.phone.shell.PhoneShellPairingReceiver"
             android:exported="false" />
+
+        <!-- Phone shell T7b: after an update the accessibility grant may stay
+             recorded while the service never rebinds. The system sends this
+             explicit broadcast; the receiver runs the kick after a grace. -->
+        <receiver
+            android:name="com.idupi.app.data.phone.control.PackageReplacedReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Phone approval notification actions (phone-approvals T2). The
              Aprobar / Rechazar PendingIntents are immutable and target this

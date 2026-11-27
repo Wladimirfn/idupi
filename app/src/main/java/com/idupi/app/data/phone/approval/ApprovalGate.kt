@@ -1,6 +1,8 @@
 package com.idupi.app.data.phone.approval
 
 import com.idupi.app.data.phone.control.CommandApproval
+import com.idupi.app.data.phone.shell.SHELL_OPTIMIZATION_CATEGORY
+import com.idupi.app.data.phone.shell.ShellRisk
 import com.idupi.app.domain.model.PhoneApprovalReason
 import java.time.Instant
 
@@ -102,6 +104,64 @@ object ApprovalGate {
             )
         }
         return ApprovalGateResult.Allowed
+    }
+
+    /**
+     * Checks a typed `shell` command (phone-shell T4).
+     *
+     * The phone classifies the risk itself: info/enable are free, trim-caches/
+     * force-stop/background are optimization, disable is destructive. Free
+     * runs. Optimization accepts an owner-turn auto-approval exactly like a
+     * `message` step (active turn, `optimization` category, future expiry) or a
+     * local grant the owner gave. Destructive only accepts a local grant: it is
+     * never auto-approved from the wire.
+     */
+    suspend fun checkShell(
+        approval: CommandApproval?,
+        risk: ShellRisk,
+        ledger: ApprovalLedger,
+        nowMillis: Long,
+    ): ApprovalGateResult {
+        if (risk == ShellRisk.FREE) return ApprovalGateResult.Allowed
+        if (approval == null) return ApprovalGateResult.Refused(APPROVAL_REQUIRED)
+
+        if (risk == ShellRisk.OPTIMIZATION) {
+            acceptOwnerShellRequest(approval, ledger, nowMillis)
+        }
+        ledger.consume(approval.approvalId, nowMillis)
+            ?: return ApprovalGateResult.Refused(NOT_GRANTED_ON_PHONE)
+        return ApprovalGateResult.Allowed
+    }
+
+    /**
+     * Materializes the grant an owner-turn optimization approval carries. Fail
+     * closed on anything the server would not send for such a step: no turn id,
+     * a category other than `optimization`, an inactive turn, a missing or
+     * expired deadline, or a replayed approval id.
+     */
+    private suspend fun acceptOwnerShellRequest(
+        approval: CommandApproval,
+        ledger: ApprovalLedger,
+        nowMillis: Long,
+    ) {
+        if (approval.category != SHELL_OPTIMIZATION_CATEGORY) return
+        val turnId = approval.ownerTurnId?.trim().orEmpty()
+        if (turnId.isEmpty()) return
+        if (!OwnerTurnRegistry.isActive(turnId)) return
+        val expiresAt = runCatching { Instant.parse(approval.expiresAt.orEmpty()) }
+            .getOrNull() ?: return
+        val expiresAtMillis = expiresAt.toEpochMilli()
+        if (expiresAtMillis <= nowMillis) return
+        if (!OwnerTurnRegistry.claimOwnerApproval(approval.approvalId)) return
+        ledger.record(
+            ApprovalGrant(
+                approvalId = approval.approvalId,
+                reason = approval.reason,
+                target = null,
+                expiresAtMillis = expiresAtMillis,
+                grantedAtMillis = nowMillis,
+            )
+        )
     }
 
     /**

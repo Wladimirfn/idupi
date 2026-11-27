@@ -1,5 +1,10 @@
 package com.idupi.app.data.phone.control
 
+import com.idupi.app.data.phone.shell.PackageNames
+import com.idupi.app.data.phone.shell.ShellCommandRules
+import com.idupi.app.data.phone.shell.ShellMode
+import com.idupi.app.data.phone.shell.ShellOperation
+import com.idupi.app.data.phone.shell.ShellTopic
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -139,6 +144,7 @@ object CommandParser {
                     PhoneCommand.Settings(id, expiresAt, screen, packageName)
                 )
             }
+            "shell" -> shellCommand(id, expiresAt, args, approval)
             "wait" -> {
                 unknownArg(args, setOf("ms"))?.let { return invalid(id, type, it) }
                 val millis = args.int("ms")?.takeIf { it in 0..MAX_WAIT_MS }
@@ -150,8 +156,78 @@ object CommandParser {
         }
     }
 
-    private fun target(
-        type: String,
+    /**
+     * Typed `shell` command (phone-shell T4 contract): exactly one of the six
+     * actions, its exact arguments, a valid package and the protected list.
+     * Unknown keys/actions and irrelevant arguments are rejected, never guessed.
+     */
+    private fun shellCommand(
+        id: String,
+        expiresAt: String?,
+        args: JsonObject,
+        approval: CommandApproval?,
+    ): CommandParseResult {
+        unknownArg(args, SHELL_ARG_KEYS)?.let { return invalid(id, "shell", it) }
+        val action = args.string("action")?.takeIf { it.isNotBlank() }
+            ?: return invalid(id, "shell", "falta la acción")
+        val packageName = args.string("package")?.takeIf { it.isNotBlank() }
+        val mode = args.string("mode")?.takeIf { it.isNotBlank() }
+        val topic = args.string("topic")?.takeIf { it.isNotBlank() }
+
+        fun valid(operation: ShellOperation) =
+            CommandParseResult.Valid(PhoneCommand.Shell(id, expiresAt, operation, approval))
+
+        fun invalidShell(reason: String) = invalid(id, "shell", reason)
+
+        return when (action) {
+            "info" -> {
+                if (packageName != null || mode != null) {
+                    return invalidShell("argumento no permitido")
+                }
+                val requestedTopic = ShellTopic.fromWire(topic)
+                    ?: return invalidShell("tema inválido")
+                valid(ShellOperation.Info(requestedTopic))
+            }
+            "trim-caches" -> {
+                if (packageName != null || mode != null || topic != null) {
+                    return invalidShell("argumento no permitido")
+                }
+                valid(ShellOperation.TrimCaches)
+            }
+            "force-stop", "disable", "enable" -> {
+                if (mode != null || topic != null) {
+                    return invalidShell("argumento no permitido")
+                }
+                val pkg = packageName ?: return invalidShell("falta el paquete")
+                if (action != "enable" && ShellCommandRules.isProtected(pkg)) {
+                    return invalidShell("paquete protegido")
+                }
+                if (!isShellPackage(pkg)) return invalidShell("paquete inválido")
+                when (action) {
+                    "force-stop" -> valid(ShellOperation.ForceStop(pkg))
+                    "disable" -> valid(ShellOperation.Disable(pkg))
+                    else -> valid(ShellOperation.Enable(pkg))
+                }
+            }
+            "background" -> {
+                if (topic != null) return invalidShell("argumento no permitido")
+                val pkg = packageName ?: return invalidShell("falta el paquete")
+                if (ShellCommandRules.isProtected(pkg)) {
+                    return invalidShell("paquete protegido")
+                }
+                if (!isShellPackage(pkg)) return invalidShell("paquete inválido")
+                val requestedMode = ShellMode.fromWire(mode)
+                    ?: return invalidShell("modo inválido")
+                valid(ShellOperation.Background(pkg, requestedMode))
+            }
+            else -> invalidShell("acción inválida")
+        }
+    }
+
+    private fun isShellPackage(value: String): Boolean =
+        value.length <= ShellCommandRules.MAX_PACKAGE_CHARS && PackageNames.isValid(value)
+
+    private fun target(        type: String,
         args: JsonObject,
         id: String,
         expiresAt: String?,
@@ -258,4 +334,7 @@ object CommandParser {
         "approvalCategory",
         "approvalExpiresAt",
     )
+
+    /** `shell` keys plus the common approval hints; each action rejects the rest. */
+    private val SHELL_ARG_KEYS = setOf("action", "package", "mode", "topic") + APPROVAL_ARG_KEYS
 }

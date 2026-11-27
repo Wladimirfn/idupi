@@ -89,6 +89,7 @@ class IdupiAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        AccessibilityControlState.update(true)
         PhoneStatusReporting.start(this)
         CalendarReporting.start(this)
         HealthReporting.start(this)
@@ -174,6 +175,7 @@ class IdupiAccessibilityService : AccessibilityService() {
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
+        AccessibilityControlState.update(false)
         stopControlLoop()
         PhoneApprovalReporting.stop()
         // assistant-key T1: no launch may reach a dead service.
@@ -192,6 +194,7 @@ class IdupiAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        AccessibilityControlState.update(false)
         stopControlLoop()
         PhoneApprovalReporting.stop()
         AssistDictationHost.detach()

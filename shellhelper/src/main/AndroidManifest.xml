@@ -1,13 +1,32 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Only IDUPI (same signing key) may call the bridge provider. The
+         provider repeats the check in code; this is the platform-enforced
+         first gate. -->
+    <permission
+        android:name="com.idupi.shell.permission.BRIDGE"
+        android:protectionLevel="signature" />
+
     <!-- IDUPI shell helper (phone-shell). No launcher activity: the owner never
          opens it. It exists so the shell bridge runs in its own package:
          `am instrument` force-stops the whole target package, and targeting
          com.idupi.app killed IDUPI's accessibility service. -->
     <application
         android:allowBackup="false"
-        android:label="IDUPI ayudante" />
+        android:label="IDUPI ayudante">
+
+        <!-- Typed command surface (phone-shell T4). Only com.idupi.app with the
+             same signature reaches it; the provider re-validates every request
+             before running a fixed argv. A process started this way without
+             the instrumentation reports inactive and runs nothing. -->
+        <provider
+            android:name=".BridgeProvider"
+            android:authorities="com.idupi.shell.bridge"
+            android:exported="true"
+            android:permission="com.idupi.shell.permission.BRIDGE" />
+
+    </application>
 
     <!-- Only adb (uid 2000) can start an instrumentation; it runs in this
          package's own process and adopts the shell permission identity. -->

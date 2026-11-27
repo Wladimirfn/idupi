@@ -4,6 +4,7 @@ import android.app.Application
 import com.idupi.app.data.IduPiClientProvider
 import com.idupi.app.data.connection.ConnectionStorage
 import com.idupi.app.data.notification.DeliveryWatcher
+import com.idupi.app.data.phone.control.AccessibilityKick
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -16,6 +17,10 @@ class IduPiApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        // phone-shell T7b: after an app start the accessibility service may be
+        // enabled in Settings but not bound. The request waits a short grace so
+        // the system can bind it first, then the kick only runs if it did not.
+        AccessibilityKick.request(this)
     }
 
     /**

@@ -61,14 +61,9 @@ object PhoneShellStatus {
     private suspend fun connectedStage(context: Context): PhoneShellStage {
         val client = AdbShellClient.get(context)
         if (!client.isConnected()) return PhoneShellStage.PAIRED
-        val pid = client.exec("pidof $HELPER_PACKAGE", BRIDGE_CHECK_TIMEOUT_MS)
-            .getOrNull()
-            ?.output
-            ?.trim()
-            .orEmpty()
-        return if (pid.isNotEmpty()) PhoneShellStage.BRIDGE_ACTIVE else PhoneShellStage.CONNECTED
+        // The helper's own status is authoritative: a live process started by a
+        // provider call without the instrumentation is not a bridge.
+        val active = ShellBridgeClient.get(context).status().getOrNull()?.active == true
+        return if (active) PhoneShellStage.BRIDGE_ACTIVE else PhoneShellStage.CONNECTED
     }
-
-    private const val HELPER_PACKAGE = "com.idupi.shell"
-    private const val BRIDGE_CHECK_TIMEOUT_MS = 5_000L
 }

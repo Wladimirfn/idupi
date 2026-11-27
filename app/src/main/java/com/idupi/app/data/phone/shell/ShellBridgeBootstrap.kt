@@ -24,6 +24,7 @@ class ShellBootstrapException(message: String) : Exception(message)
 class ShellBridgeBootstrap(
     private val context: Context,
     private val client: AdbShellClient = AdbShellClient.get(context),
+    private val bridge: ShellBridgeClient = ShellBridgeClient.get(context),
     private val store: PhoneShellStore = PhoneShellStore(context),
     private val onStep: (String) -> Unit = {},
 ) {
@@ -156,19 +157,24 @@ class ShellBridgeBootstrap(
         )
     }
 
-    /** Starts the detached instrumentation unless the helper is already alive. */
+    /**
+     * Starts the detached instrumentation unless the helper reports `active`.
+     *
+     * A live pid is not enough: a provider call can start the helper process
+     * without the instrumentation, and that process must be restarted by `am
+     * instrument` (which force-stops and relaunches it). [BridgeState] only
+     * reports active after the instrumentation holds the shell identity. When
+     * the provider is unavailable (for example a signature mismatch in a debug
+     * build), the start is attempted anyway and the probe below is the verdict.
+     */
     private suspend fun startBridgeIfNeeded(): Boolean {
-        if (pidOfHelper().isNotEmpty()) return false
+        if (bridge.status().getOrNull()?.active == true) return false
         onStep("Iniciando el puente…")
         val started = client.exec(ShellCommands.startBridgeDetached(), START_TIMEOUT_MS)
         if (started.isFailure) {
             throw ShellBootstrapException("No se pudo iniciar el puente.")
         }
-        repeat(PID_POLLS) {
-            if (pidOfHelper().isNotEmpty()) return true
-            delay(PID_POLL_MS)
-        }
-        throw ShellBootstrapException("El puente no arrancó. Vuelve a intentarlo.")
+        return true
     }
 
     private suspend fun verifyBridge(baseline: String?): Boolean {
@@ -178,13 +184,6 @@ class ShellBridgeBootstrap(
         }
         return false
     }
-
-    private suspend fun pidOfHelper(): String =
-        client.exec("pidof $HELPER_PACKAGE", QUERY_TIMEOUT_MS)
-            .getOrNull()
-            ?.output
-            ?.trim()
-            .orEmpty()
 
     private suspend fun readProbe(): String? =
         client.exec("settings get global $PROBE_KEY", PROBE_TIMEOUT_MS)
@@ -216,8 +215,6 @@ class ShellBridgeBootstrap(
         const val QUERY_TIMEOUT_MS = 10_000L
         const val INSTALL_TIMEOUT_MS = 120_000L
         const val START_TIMEOUT_MS = 15_000L
-        const val PID_POLLS = 10
-        const val PID_POLL_MS = 1_000L
         const val PROBE_POLLS = 6
         const val PROBE_POLL_MS = 2_000L
         const val PROBE_TIMEOUT_MS = 5_000L

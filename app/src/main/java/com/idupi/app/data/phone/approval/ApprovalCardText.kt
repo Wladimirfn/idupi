@@ -42,6 +42,7 @@ object ApprovalCardText {
             }
             "long_press" -> tapLine("Mantener presionado", targetOf(approval))
             "tap" -> tapLine("Tocar", targetOf(approval))
+            "shell" -> shellLine(args)
             else -> GENERIC_ACTION
         }
     }
@@ -65,6 +66,8 @@ object ApprovalCardText {
         PhoneApprovalReason.TYPE_SUBMIT -> "Envío de un mensaje"
         PhoneApprovalReason.SENSITIVE_APP -> "App sensible en primer plano"
         PhoneApprovalReason.PHONE_DETECTED -> "Riesgo detectado en el teléfono"
+        PhoneApprovalReason.OPTIMIZATION -> "Optimización del teléfono"
+        PhoneApprovalReason.DESTRUCTIVE -> "Acción destructiva"
         else -> "Pendiente de tu aprobación"
     }
 
@@ -107,6 +110,14 @@ object ApprovalCardText {
         if (type == "type") {
             lines += "Presionar enviar: ${if (args.booleanValue("submit")) "sí" else "no"}"
         }
+        if (type == "shell") {
+            args.textValue("action")?.let { lines += "Acción: $it" }
+            args.textValue("package")?.let { lines += "App: $it" }
+            args.textValue("mode")?.let {
+                lines += "Modo: ${if (it == "allow") "permitir" else "ignorar"}"
+            }
+            args.textValue("topic")?.let { lines += "Tema: $it" }
+        }
         args.textValue("id")?.let { viewId -> lines += "Id de vista: $viewId" }
         val x = args.intValue("x")
         val y = args.intValue("y")
@@ -121,6 +132,24 @@ object ApprovalCardText {
         is TargetArg.TextArg -> "$verb «${target.value}»"
         is TargetArg.IdArg -> "$verb el control ${target.value}"
         is TargetArg.PointArg -> "$verb en (${target.x}, ${target.y})"
+    }
+
+    /** One line for a typed `shell` approval (phone-shell T4). */
+    private fun shellLine(args: JsonObject): String {
+        val pkg = args.textValue("package")
+        return when (args.textValue("action")) {
+            "trim-caches" -> "Liberar la caché de todas las apps"
+            "force-stop" -> pkg?.let { "Detener la app «$it»" } ?: GENERIC_ACTION
+            "background" -> when {
+                pkg == null -> GENERIC_ACTION
+                args.textValue("mode") == "allow" -> "Permitir el segundo plano de «$pkg»"
+                else -> "Limitar el segundo plano de «$pkg»"
+            }
+            "disable" -> pkg?.let { "Desactivar la app «$it»" } ?: GENERIC_ACTION
+            "enable" -> pkg?.let { "Activar la app «$it»" } ?: GENERIC_ACTION
+            "info" -> "Consultar información del teléfono"
+            else -> GENERIC_ACTION
+        }
     }
 
     /**

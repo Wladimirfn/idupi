@@ -185,6 +185,9 @@ object ApprovalVoiceRouting {
         // path already knows how to show it.
         val expiry = expiryMillis(approval) ?: return ApprovalVoiceRoute.Notification
         if (expiry <= nowMillis) return ApprovalVoiceRoute.Notification
+        // phone-shell T4: disabling an app is destructive and may be voiced
+        // during the owner's own turn, exactly like a delete.
+        if (isShellDestructive(approval)) return ApprovalVoiceRoute.Voice
         val category = ApprovalVoiceClassifier.classify(texts(approval))
         return when {
             // T23: only the phone-detected refusal of a messaging step.
@@ -224,6 +227,7 @@ object ApprovalVoiceRouting {
         if (approval.riskKind == PhoneApprovalRiskKind.DATA_WIPE) {
             return ApprovalVoiceKind.DATA_WIPE
         }
+        if (isShellDestructive(approval)) return ApprovalVoiceKind.DESTRUCTIVE
         return when (ApprovalVoiceClassifier.classify(texts(approval))) {
             ApprovalVoiceCategory.MESSAGING -> ApprovalVoiceKind.MESSAGE
             ApprovalVoiceCategory.CACHE_CLEAR -> ApprovalVoiceKind.CACHE
@@ -236,11 +240,19 @@ object ApprovalVoiceRouting {
 
     /** The destructive verb the bubble should say ("eliminar", "borrar"), or null. */
     fun destructiveAction(approval: PhoneApproval): String? {
+        if (isShellDestructive(approval)) return "desactivar"
         val candidates = buildList {
             approval.target?.let(::add)
             addAll(commandTexts(approval))
         }
         return candidates.firstNotNullOfOrNull(ApprovalVoiceClassifier::destructiveVerb)
+    }
+
+    /** A typed `shell` disable is the destructive shell step (phone-shell T4). */
+    private fun isShellDestructive(approval: PhoneApproval): Boolean {
+        if (approval.command.type != "shell") return false
+        val action = (approval.command.args["action"] as? JsonPrimitive)?.contentOrNull
+        return action == "disable"
     }
 
     /** True when the approval carries a readable deadline that already passed. */

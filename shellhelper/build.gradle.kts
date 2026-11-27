@@ -27,8 +27,8 @@ android {
         applicationId = "com.idupi.shell"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1-spike"
+        versionCode = 2
+        versionName = "0.2"
     }
 
     signingConfigs {
@@ -51,4 +51,8 @@ android {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
+}
+
+dependencies {
+    testImplementation(libs.junit)
 }

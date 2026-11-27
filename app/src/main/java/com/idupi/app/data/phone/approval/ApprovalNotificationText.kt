@@ -16,6 +16,7 @@ object ApprovalNotificationText {
     private const val FALLBACK = "Acción pendiente en el teléfono"
 
     fun describe(approval: PhoneApproval): String {
+        if (approval.command.type == "shell") return ApprovalCardText.actionLine(approval)
         val app = approval.foregroundApp?.label?.takeIf { it.isNotBlank() }
         return when (approval.reason) {
             PhoneApprovalReason.TYPE_SUBMIT ->

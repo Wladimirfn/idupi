@@ -1,5 +1,6 @@
 package com.idupi.app.data.phone.control
 
+import com.idupi.app.data.phone.shell.ShellOperation
 import java.time.Instant
 
 /**
@@ -67,6 +68,17 @@ sealed interface PhoneCommand {
         override val expiresAt: String?,
         val screen: SettingsScreen,
         val packageName: String? = null,
+    ) : PhoneCommand
+
+    /**
+     * One typed shell operation (phone-shell T4). The operation is the
+     * allowlist; there is no free-form command string on the wire.
+     */
+    data class Shell(
+        override val id: String,
+        override val expiresAt: String?,
+        val operation: ShellOperation,
+        val approval: CommandApproval? = null,
     ) : PhoneCommand
 
     data class Wait(
