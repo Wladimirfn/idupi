@@ -103,11 +103,20 @@ object PhoneApprovalReporting {
         if (job?.isActive == true) return
         val appContext = context.applicationContext
         val notifier = ApprovalNotifier(appContext)
+        // T23: a phone-detected messaging approval goes to the bubble by voice
+        // while a bubble turn started here is active; everything else keeps the
+        // notification. The bubble only claims rows it can own.
+        val dispatcher = ApprovalVoiceDispatcher(
+            isOwnerTurnActive = OwnerTurnRegistry::hasActiveTurn,
+            isBubbleAttached = ApprovalVoiceHost::isAttached,
+            deliverToBubble = ApprovalVoiceHost::offer,
+            notifyFallback = notifier::show,
+        )
         val poller = PhoneApprovalPoller(
             clientSource = IduPiClientProvider,
             isEnabled = { SettingsProvider.repository.phoneControlEnabled.first() },
             canPoll = { IduPiClientProvider.configureFromStorage(appContext) },
-            onNewApprovals = { approvals -> approvals.forEach(notifier::show) },
+            onNewApprovals = { approvals -> approvals.forEach(dispatcher::handle) },
             onResolved = { ids -> ids.forEach(notifier::cancel) },
             onPending = PhoneApprovals.pendingStore::replace,
         )

@@ -77,11 +77,21 @@ sealed interface PhoneCommand {
  *
  * @property approvedTarget node text the approved action is bound to; null for
  *   `type_submit` and for sensitive-app taps.
+ * @property ownerTurnId set only when a bubble turn started ON THIS PHONE
+ *   auto-approved the step (`pat-…`). [ApprovalGate] accepts such a grant only
+ *   while that turn is still active here (phone-bubble, T18).
+ * @property category risk category the server classified (`message` for every
+ *   owner-request approval); null on a manual approval.
+ * @property expiresAt ISO-8601 approval deadline, or null when the wire omitted
+ *   it. A manual grant already carries its own expiry in the ledger.
  */
 data class CommandApproval(
     val approvalId: String,
     val approvedTarget: String? = null,
     val reason: String = "",
+    val ownerTurnId: String? = null,
+    val category: String? = null,
+    val expiresAt: String? = null,
 )
 
 /** Target of tap / long_press: the server already enforced exactly-one-of. */

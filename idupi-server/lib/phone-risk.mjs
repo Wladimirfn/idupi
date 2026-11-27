@@ -9,34 +9,31 @@
 // "Pagaré mañana" is a plan, not a payment. Diacritics are stripped before
 // matching so "enviár" behaves like "enviar".
 
-/** Verbs that turn a tap into an outbound or irreversible action. */
-export const RISKY_VERBS = [
-    "enviar",
-    "send",
-    "pagar",
-    "pay",
-    "eliminar",
-    "borrar",
-    "delete",
-    "aprobar",
-    "approve",
-    "confirmar",
-    "confirm",
-    "comprar",
-    "buy",
-    "transferir",
-    "transfer",
-    "publicar",
-    "post",
-    "share",
-    "compartir",
-];
+/** Verbs that turn a tap into an outbound or irreversible action, by kind. */
+export const RISKY_VERB_CATEGORIES = {
+    // Outbound text to another person: a bubble request already approves these.
+    message: ["enviar", "send", "compartir", "share", "publicar", "post"],
+    // Money leaves the owner's account or changes a payment.
+    money: ["pagar", "pay", "comprar", "buy", "transferir", "transfer"],
+    // Removes data or content for good.
+    destructive: ["eliminar", "borrar", "delete"],
+    // Confirms something the owner did not spell out; kept gated to be safe.
+    confirmation: ["aprobar", "approve", "confirmar", "confirm"],
+};
+
+/** Every risky verb, flattened; kept for callers that only need the set. */
+export const RISKY_VERBS = Object.values(RISKY_VERB_CATEGORIES).flat();
 
 // Messaging, email, payment and banking apps where a blind tap or a typed
 // message is one confirmation away from leaving the phone. Exact package names
 // where the app id is stable, plus substring prefixes for the long tail: any
 // package containing "bank", "banco", "pay" or "wallet" is treated as money.
-export const SENSITIVE_PACKAGE_NAMES = [
+export const MONEY_PACKAGE_NAMES = [
+    "com.mercadopago.wallet",
+    "com.paypal.android.p2pmobile",
+];
+
+export const MESSAGING_PACKAGE_NAMES = [
     "com.whatsapp",
     "com.whatsapp.w4b",
     "org.telegram.messenger",
@@ -48,19 +45,26 @@ export const SENSITIVE_PACKAGE_NAMES = [
     "com.samsung.android.messaging",
     "com.google.android.apps.messaging",
     "org.thoughtcrime.securesms",
-    "com.mercadopago.wallet",
-    "com.paypal.android.p2pmobile",
 ];
 
-export const SENSITIVE_PACKAGE_TOKENS = ["bank", "banco", "pay", "wallet"];
+export const SENSITIVE_PACKAGE_NAMES = [
+    ...MESSAGING_PACKAGE_NAMES,
+    ...MONEY_PACKAGE_NAMES,
+];
+
+// Substring tokens that make any package money. `pay` also covers Google Pay
+// and wallet ids that do not use the exact names above.
+export const MONEY_PACKAGE_TOKENS = ["bank", "banco", "pay", "wallet"];
+export const SENSITIVE_PACKAGE_TOKENS = MONEY_PACKAGE_TOKENS;
 
 // Chilean banks whose package id does not carry a token above.
-export const SENSITIVE_PACKAGE_PREFIXES = [
+export const MONEY_PACKAGE_PREFIXES = [
     "cl.santander",
     "com.santander",
     "cl.bci.",
     "com.bci.",
 ];
+export const SENSITIVE_PACKAGE_PREFIXES = MONEY_PACKAGE_PREFIXES;
 
 /** Reason codes stored in an approval and printed by the CLI. */
 export const RISK_REASONS = {
@@ -69,6 +73,18 @@ export const RISK_REASONS = {
     sensitiveApp: "sensitive_app",
     phoneDetected: "phone_detected_risky_target",
 };
+
+// Most restrictive first: "Confirmar pago" is money, not a confirmation, and
+// "Eliminar y confirmar" is destructive.
+const CATEGORY_PRECEDENCE = ["destructive", "money", "confirmation", "message"];
+
+const CATEGORY_PATTERNS = Object.fromEntries(CATEGORY_PRECEDENCE.map((category) => [
+    category,
+    new RegExp(
+        `(^|[^\\p{L}\\p{N}])(${RISKY_VERB_CATEGORIES[category].join("|")})(?=$|[^\\p{L}\\p{N}])`,
+        "u",
+    ),
+]));
 
 const RISKY_TEXT_PATTERN = new RegExp(
     `(^|[^\\p{L}\\p{N}])(${RISKY_VERBS.join("|")})(?=$|[^\\p{L}\\p{N}])`,
@@ -84,6 +100,20 @@ export function normalizeRiskText(value) {
         .toLowerCase();
 }
 
+/**
+ * Category of the risky verb in `text` ("message", "money", "destructive" or
+ * "confirmation"), or null when the text is not risky. The most restrictive
+ * category wins when a phrase carries more than one verb.
+ */
+export function riskyTextCategory(text) {
+    const normalized = normalizeRiskText(text);
+    if (normalized.length === 0) return null;
+    for (const category of CATEGORY_PRECEDENCE) {
+        if (CATEGORY_PATTERNS[category].test(normalized)) return category;
+    }
+    return null;
+}
+
 /** True when the text is, or contains as a whole word, a risky verb. */
 export function isRiskyText(text) {
     const normalized = normalizeRiskText(text);
@@ -91,13 +121,24 @@ export function isRiskyText(text) {
     return RISKY_TEXT_PATTERN.test(normalized);
 }
 
-/** True for messaging, email, payment and banking packages. */
-export function isSensitivePackage(packageName) {
+/** True for bank, wallet and payment packages. */
+export function isMoneyPackage(packageName) {
     if (typeof packageName !== "string" || packageName.length === 0) return false;
     const name = packageName.toLowerCase();
-    if (SENSITIVE_PACKAGE_NAMES.includes(name)) return true;
-    if (SENSITIVE_PACKAGE_TOKENS.some((token) => name.includes(token))) return true;
-    return SENSITIVE_PACKAGE_PREFIXES.some((prefix) => name.startsWith(prefix));
+    if (MONEY_PACKAGE_NAMES.includes(name)) return true;
+    if (MONEY_PACKAGE_TOKENS.some((token) => name.includes(token))) return true;
+    return MONEY_PACKAGE_PREFIXES.some((prefix) => name.startsWith(prefix));
+}
+
+/** True for messaging, chat and email packages. */
+export function isMessagingPackage(packageName) {
+    if (typeof packageName !== "string" || packageName.length === 0) return false;
+    return MESSAGING_PACKAGE_NAMES.includes(packageName.toLowerCase());
+}
+
+/** True for messaging, email, payment and banking packages. */
+export function isSensitivePackage(packageName) {
+    return isMessagingPackage(packageName) || isMoneyPackage(packageName);
 }
 
 function targetOf(args) {
@@ -109,9 +150,13 @@ function targetOf(args) {
 /**
  * Classifies one already-normalized command.
  *
+ * `category` is only present on gated verdicts: it tells an owner bubble turn
+ * which steps its request already approves ("message") and which still wait
+ * ("money", "destructive", "confirmation", "sensitive_app").
+ *
  * @param {{type?: string, args?: object}} command
  * @param {{foregroundPackage?: string | null}} [context]
- * @returns {{gated: boolean, reason: string, target?: string}}
+ * @returns {{gated: boolean, reason: string, target?: string, category?: string}}
  */
 export function classifyCommand(command, { foregroundPackage = null } = {}) {
     const type = command && typeof command === "object" ? command.type : undefined;
@@ -122,7 +167,9 @@ export function classifyCommand(command, { foregroundPackage = null } = {}) {
 
     if (type === "type") {
         if (args.submit === true) {
-            return { gated: true, reason: RISK_REASONS.typeSubmit };
+            // Sending composed text is a messaging step: an owner turn covers
+            // it, the money/destructive categories never apply here.
+            return { gated: true, reason: RISK_REASONS.typeSubmit, category: "message" };
         }
         // Composing text changes nothing until a send: the submit flag above
         // and the phone-side node check own that boundary.
@@ -130,12 +177,25 @@ export function classifyCommand(command, { foregroundPackage = null } = {}) {
     }
 
     if (type === "tap" || type === "long_press") {
-        if (typeof args.text === "string" && isRiskyText(args.text)) {
-            return { gated: true, reason: RISK_REASONS.riskyText, target: args.text };
+        if (typeof args.text === "string") {
+            const category = riskyTextCategory(args.text);
+            if (category !== null) {
+                return {
+                    gated: true,
+                    reason: RISK_REASONS.riskyText,
+                    target: args.text,
+                    category,
+                };
+            }
         }
         const target = targetOf(args);
         if (target !== null && isSensitivePackage(foregroundPackage)) {
-            return { gated: true, reason: RISK_REASONS.sensitiveApp, target };
+            return {
+                gated: true,
+                reason: RISK_REASONS.sensitiveApp,
+                target,
+                category: isMoneyPackage(foregroundPackage) ? "money" : "message",
+            };
         }
         return { gated: false, reason: "free" };
     }

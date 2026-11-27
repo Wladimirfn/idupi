@@ -220,9 +220,55 @@ class CommandParserTest {
                 approvalId = "apr-123456789abc",
                 approvedTarget = "Enviar",
                 reason = "risky_text",
+                expiresAt = "2026-11-24T12:10:00.000Z",
             ),
             parsed.approval,
         )
+    }
+
+    @Test
+    fun `an owner-request approval exposes the turn, the category and the expiry`() {
+        val parsed = valid(
+            """
+            {"id":"phc-6","type":"type",
+             "args":{"text":"hola","submit":true,"approvalId":"apr-123456789abc",
+                     "approvedTarget":null,"approvalReason":"type_submit",
+                     "ownerTurnId":"pat-0123456789ab","approvalCategory":"message"},
+             "approvalId":"apr-123456789abc",
+             "approvalExpiresAt":"2026-11-26T12:10:00.000Z",
+             "approvalReason":"type_submit","approvalTarget":null,
+             "ownerTurnId":"pat-0123456789ab","approvalCategory":"message"}
+            """.trimIndent()
+        ) as PhoneCommand.TypeText
+
+        assertEquals(
+            CommandApproval(
+                approvalId = "apr-123456789abc",
+                approvedTarget = null,
+                reason = "type_submit",
+                ownerTurnId = "pat-0123456789ab",
+                category = "message",
+                expiresAt = "2026-11-26T12:10:00.000Z",
+            ),
+            parsed.approval,
+        )
+    }
+
+    @Test
+    fun `approval fields missing from the wire default to null`() {
+        val parsed = valid(
+            """
+            {"id":"phc-7","type":"tap",
+             "args":{"text":"Enviar","approvalId":"apr-123456789abc",
+                     "approvedTarget":"Enviar","approvalReason":"risky_text"}}
+            """.trimIndent()
+        ) as PhoneCommand.Tap
+        val approval = parsed.approval ?: error("expected an approval")
+
+        assertEquals("apr-123456789abc", approval.approvalId)
+        assertEquals(null, approval.ownerTurnId)
+        assertEquals(null, approval.category)
+        assertEquals(null, approval.expiresAt)
     }
 
     @Test

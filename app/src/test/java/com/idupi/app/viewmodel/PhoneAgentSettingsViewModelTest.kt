@@ -207,6 +207,28 @@ class PhoneAgentSettingsViewModelTest {
     }
 
     @Test
+    fun `the bubble is off by default`() = runTest {
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        assertFalse(viewModel.phoneBubbleEnabled.value)
+        assertFalse(repository.phoneBubbleEnabled.first())
+    }
+
+    @Test
+    fun `turning the bubble on persists without touching phone control`() = runTest {
+        val viewModel = viewModel()
+        advanceUntilIdle()
+
+        viewModel.setPhoneBubbleEnabled(true)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.phoneBubbleEnabled.value)
+        assertTrue(repository.phoneBubbleEnabled.first())
+        assertFalse(viewModel.phoneControlEnabled.value)
+    }
+
+    @Test
     fun `recent commands are exposed to the UI`() = runTest {
         val log = MutableStateFlow<List<PhoneCommandLogEntry>>(emptyList())
         val viewModel = PhoneAgentSettingsViewModel(repository, commandLog = log) { true }

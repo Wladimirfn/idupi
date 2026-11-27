@@ -13,6 +13,7 @@ import { join, basename, relative, dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { REPO_ROOT, PROJECTS_JSON_FILE } from "./lib/server-paths.mjs";
+import { scrubInheritedSessionEnv } from "./lib/inherited-session-env.mjs";
 import { createAuthGuard, loadToken } from "../server-auth.mjs";
 import { TaskRegistry } from "./lib/task-registry.mjs";
 import { parseSubagentNotify, resolveNoticeCard, describeNoticeResult } from "./lib/subagent-notify.mjs";
@@ -80,6 +81,14 @@ import { createInboxRoutes } from "./lib/inbox-routes.mjs";
 import { createPhoneStore } from "./lib/phone-store.mjs";
 import { createPhoneRoutes } from "./lib/phone-routes.mjs";
 import { createPhoneApprovalStore } from "./lib/phone-approval-store.mjs";
+// Phone bubble (phone-bubble, T1/T2): free-form owner requests typed in the
+// on-device bubble, one serialized agent turn at a time, answer long-polled by
+// the phone. Turns are persisted in data/ (last 20); the runner profile lives in
+// lib/phone-agent.mjs.
+import { createPhoneAgentTurnStore } from "./lib/phone-agent-turns.mjs";
+import { createPhoneAgentRoutes } from "./lib/phone-agent-routes.mjs";
+import { createPhoneTurnGrants } from "./lib/phone-turn-grants.mjs";
+import { createPhoneAgentRunner } from "./lib/phone-agent.mjs";
 // Phone calendar (phone-calendar, T1): the phone's calendar snapshot, conflict
 // and free-slot math, and the PC proposal queue the owner approves on the
 // phone. Times are UTC; day boundaries use the phone's reported offset.
@@ -341,6 +350,14 @@ import {
     handleProfileApplyWithPresets,
     handleModelsUpdate,
 } from "./lib/orchestrator/routes.mjs";
+
+// Before any child is spawned: a server launched from inside a Claude Code
+// session must not pass that session's markers to the CLIs it starts, or
+// they disable transcript saving and the owner's conversation is lost.
+const scrubbedSessionKeys = scrubInheritedSessionEnv(process.env);
+if (scrubbedSessionKeys.length > 0) {
+    console.log(`[IDUPI] Dropped inherited Claude Code session variables: ${scrubbedSessionKeys.join(", ")}`);
+}
 
 const PORT = process.env.PORT || 8788;
 const execFileAsync = promisify(execFile);
@@ -1367,8 +1384,36 @@ const phoneStore = createPhoneStore({
     dataDir: fileURLToPath(new URL("./data", import.meta.url)),
     approvalStore: phoneApprovalStore,
 });
-const handlePhoneRoute = createPhoneRoutes({ store: phoneStore });
+// One in-memory registry for owner bubbles: the agent routes mint and revoke a
+// per-turn secret, and the command route resolves it on POST /commands. A
+// command created by a queued/running bubble turn auto-approves its messaging
+// steps (phone-bubble, T13); money and destructive ones still wait.
+const phoneTurnGrants = createPhoneTurnGrants();
+const handlePhoneRoute = createPhoneRoutes({ store: phoneStore, turnGrants: phoneTurnGrants });
 const handlePhoneCalendarRoute = createPhoneCalendarRoutes({ store: phoneCalendarStore });
+
+// Phone bubble turns (phone-bubble, T1/T2): the owner request and its answer
+// are persisted; the agent runs with a single-command Bash allowlist for
+// idupi-phone, a throwaway cwd and an env without the server token.
+const PHONE_AGENT_CONFIG = Object.freeze({
+    agent: "claude",
+    model: process.env.IDUPI_PHONE_AGENT_MODEL?.trim() || "claude-sonnet-5-5",
+    effort: "medium",
+});
+const phoneAgentTurnStore = createPhoneAgentTurnStore({
+    dataDir: fileURLToPath(new URL("./data", import.meta.url)),
+});
+const phoneAgentRunner = createPhoneAgentRunner({
+    resolveCommand: resolveInboxAgentCommand,
+});
+const handlePhoneAgentRoute = createPhoneAgentRoutes({
+    store: phoneAgentTurnStore,
+    runner: phoneAgentRunner,
+    // Bubble turns have their own agent: only the claude profile can be limited
+    // to the single idupi-phone command, while the inbox may run on opencode.
+    getConfig: () => PHONE_AGENT_CONFIG,
+    turnGrants: phoneTurnGrants,
+});
 
 // Phone health (phone-health, T1/T3/T4): the ADB link, the hidden-display
 // reader, the daily store and the digest. The scheduler only runs when a target
@@ -1412,6 +1457,119 @@ const healthScheduler = createHealthScheduler({
     adb: adbConnection,
     triggerRefresh: healthRoutes.triggerRefresh,
 });
+
+/**
+ * Resolves WHAT to spawn for the Claude CLI, without a shell: the native
+ * installer's claude.exe when present, else the real cli.js parsed out of the
+ * npm .cmd shim (spawning .cmd requires shell:true -- exactly the injection
+ * surface removed here). Cached; throws with a clear message if neither exists.
+ */
+let claudeSpawnTargetCache = null;
+function resolveClaudeSpawnTarget() {
+    if (claudeSpawnTargetCache) return claudeSpawnTargetCache;
+    // 1. Native installers (Windows + Unix)
+    const nativeCandidates = [
+        join(homedir(), ".local", "bin", "claude.exe"),
+        join(homedir(), "AppData", "Local", "Programs", "claude", "claude.exe"),
+        join(homedir(), "AppData", "Local", "claude", "claude.exe"),
+        join(process.env.LOCALAPPDATA || "", "Programs", "claude", "claude.exe"),
+        join(process.env.APPDATA || "", "npm", "claude.cmd"),
+        join(homedir(), "AppData", "Roaming", "npm", "claude.cmd"),
+    ].filter(Boolean);
+    for (const p of nativeCandidates) {
+        try { if (existsSync(p) && p.toLowerCase().endsWith(".exe")) { claudeSpawnTargetCache = { exe: p }; return claudeSpawnTargetCache; } } catch {}
+        // .cmd candidates are parsed below, but if they exist we can at least log
+    }
+    let hits = [];
+    try {
+        hits = execFileSync("where", ["claude"], { encoding: "utf8", maxBuffer: EXEC_MAX_BUFFER })
+            .split(/\r?\n/)
+            .map((s) => s.trim())
+            .filter(Boolean);
+    } catch {}
+    if (hits.length === 0) {
+        try {
+            hits = execFileSync("where", ["claude.cmd"], { encoding: "utf8", maxBuffer: EXEC_MAX_BUFFER })
+                .split(/\r?\n/)
+                .map((s) => s.trim())
+                .filter(Boolean);
+        } catch {}
+    }
+    // Direct .exe hit from PATH (e.g. native installer added to PATH)
+    const exeHit = hits.find((h) => h.toLowerCase().endsWith("claude.exe"));
+    if (exeHit && existsSync(exeHit)) {
+        claudeSpawnTargetCache = { exe: exeHit };
+        return claudeSpawnTargetCache;
+    }
+    // .cmd shim hits - try each, not just first
+    const cmdHits = hits.filter((h) => h.toLowerCase().endsWith(".cmd"));
+    // Also add known shim locations if where missed them
+    for (const p of nativeCandidates.filter((p) => p.toLowerCase().endsWith(".cmd"))) {
+        if (existsSync(p) && !cmdHits.includes(p)) cmdHits.push(p);
+    }
+    for (const cmdShim of cmdHits) {
+        try {
+            const shim = readFileSync(cmdShim, "utf8");
+            // Universal: match any claude-code entry - cli.js, bin/claude.js, bin/claude.exe (newer installer)
+            const m = shim.match(/"([^"]*claude-code[\\\/][^"]+\.(js|exe))"/i)
+                ?? shim.match(/([A-Za-z]:[^\s"]*claude-code[\\\/][^\s"]+\.(js|exe))/i)
+                ?? shim.match(/([^\s"]*claude-code[\\\/][^\s"]+\.(js|exe))/i);
+            if (m) {
+                let targetPath = m[1].replace(/\//g, "\\");
+                // Shim may contain %dp0% variable - resolve relative to shim dir
+                if (targetPath.includes("%dp0%") || targetPath.includes("%~dp0") || targetPath.startsWith("%")) {
+                    // Generic: the quoted part after %dp0% is the relative path inside npm package
+                    const relMatch = shim.match(/%~?dp0%[\\\/]*([^"]+\.(js|exe))/i);
+                    if (relMatch) {
+                        targetPath = join(dirname(cmdShim), relMatch[1].replace(/\//g, "\\"));
+                    } else {
+                        targetPath = join(dirname(cmdShim), "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.js");
+                        if (!existsSync(targetPath)) targetPath = join(dirname(cmdShim), "node_modules", "@anthropic-ai", "claude-code", "cli.js");
+                    }
+                }
+                const isJs = targetPath.toLowerCase().endsWith(".js");
+                if (existsSync(targetPath)) {
+                    claudeSpawnTargetCache = isJs ? { js: targetPath } : { exe: targetPath };
+                    return claudeSpawnTargetCache;
+                }
+                // Even if not exists, try it - node will error clearly
+                claudeSpawnTargetCache = isJs ? { js: targetPath } : { exe: targetPath };
+                return claudeSpawnTargetCache;
+            }
+            console.warn(`[Claude Resolve] shim ${cmdShim} no matcheó regex, contenido: ${shim.slice(0, 400)}`);
+        } catch (e) {
+            console.warn(`[Claude Resolve] no se pudo leer shim ${cmdShim}: ${e.message}`);
+        }
+    }
+    // Universal fallback: use the actual hit found by where (world-wide, no hardcoded path).
+    // spawn("claude") without extension fails with ENOENT on some Node/Windows combos
+    // because PATHEXT resolution needs the full .cmd path, so we use the hit directly.
+    // Security: an unparseable .cmd shim is NOT run through `cmd.exe /c`.
+    // cmd.exe re-parses the whole command line, and Node's argv quoting (\")
+    // is not cmd.exe quoting, so a chat message with `" & calc.exe` would
+    // execute. Fall through to a direct spawn or a clear install error.
+    if (cmdHits.length > 0) {
+        console.warn(`[Claude Resolve] shim ${cmdHits[0]} no parseable; se omite el fallback via cmd.exe por seguridad`);
+    }
+    if (hits.some((h) => !h.toLowerCase().endsWith(".cmd"))) {
+        console.warn(`[Claude Resolve] shim no parseable pero where encontró ${hits.length} hit(s), fallback a spawn("claude") directo`);
+        claudeSpawnTargetCache = { cmd: "claude" };
+        return claudeSpawnTargetCache;
+    }
+    // Last probe: try to run claude --version directly (covers npx/pnpx edge cases)
+    try {
+        execFileSync("claude", ["--version"], { encoding: "utf8", timeout: 3000, maxBuffer: EXEC_MAX_BUFFER });
+        console.warn(`[Claude Resolve] claude --version ok, fallback a spawn("claude")`);
+        claudeSpawnTargetCache = { cmd: "claude" };
+        return claudeSpawnTargetCache;
+    } catch {}
+    console.error(`[Claude Resolve] FAIL hits=${JSON.stringify(hits)} cmdHits=${JSON.stringify(cmdHits)} nativeChecked=${JSON.stringify(nativeCandidates)}`);
+    const err = new Error(
+        `No se encontró el ejecutable de Claude. where hits: ${hits.join(", ") || "(vacío)"}. Revisá que 'where claude' en cmd devuelva algo y que el shim .cmd contenga cli.js. Instalá Claude Code y reiniciá el server, o cambiá el motor a Pi/OpenCode.`
+    );
+    err.code = "CLAUDE_NOT_INSTALLED";
+    throw err;
+}
 
 /**
  * Resolves WHAT to spawn for an inbox agent without a shell. Mirrors the
@@ -3357,6 +3515,10 @@ const handleRequest = async (req, res) => {
     if (await handleOsProcessesRoute(req, res, pathname)) return;
     // Phone inbox items, agent config and model catalog (lib/inbox-routes.mjs).
     if (await handleInboxRoute(req, res, pathname)) return;
+    // Phone bubble turns: POST a request, long-poll its answer
+    // (lib/phone-agent-routes.mjs). Mounted before the phone agent so
+    // /agent/turns is never mistaken for a command path.
+    if (await handlePhoneAgentRoute(req, res, pathname)) return;
     // Phone calendar: snapshot, agenda, conflicts, free slots and proposals
     // (lib/phone-calendar-routes.mjs). Mounted before the phone agent so the
     // /calendar subtree is never mistaken for a phone command path.
@@ -4622,119 +4784,6 @@ function getModelsForProvider(providerId) {
         res.end(JSON.stringify([]));
         return;
     }
-
-/**
- * Resolves WHAT to spawn for the Claude CLI, without a shell: the native
- * installer's claude.exe when present, else the real cli.js parsed out of the
- * npm .cmd shim (spawning .cmd requires shell:true -- exactly the injection
- * surface removed here). Cached; throws with a clear message if neither exists.
- */
-let claudeSpawnTargetCache = null;
-function resolveClaudeSpawnTarget() {
-    if (claudeSpawnTargetCache) return claudeSpawnTargetCache;
-    // 1. Native installers (Windows + Unix)
-    const nativeCandidates = [
-        join(homedir(), ".local", "bin", "claude.exe"),
-        join(homedir(), "AppData", "Local", "Programs", "claude", "claude.exe"),
-        join(homedir(), "AppData", "Local", "claude", "claude.exe"),
-        join(process.env.LOCALAPPDATA || "", "Programs", "claude", "claude.exe"),
-        join(process.env.APPDATA || "", "npm", "claude.cmd"),
-        join(homedir(), "AppData", "Roaming", "npm", "claude.cmd"),
-    ].filter(Boolean);
-    for (const p of nativeCandidates) {
-        try { if (existsSync(p) && p.toLowerCase().endsWith(".exe")) { claudeSpawnTargetCache = { exe: p }; return claudeSpawnTargetCache; } } catch {}
-        // .cmd candidates are parsed below, but if they exist we can at least log
-    }
-    let hits = [];
-    try {
-        hits = execFileSync("where", ["claude"], { encoding: "utf8", maxBuffer: EXEC_MAX_BUFFER })
-            .split(/\r?\n/)
-            .map((s) => s.trim())
-            .filter(Boolean);
-    } catch {}
-    if (hits.length === 0) {
-        try {
-            hits = execFileSync("where", ["claude.cmd"], { encoding: "utf8", maxBuffer: EXEC_MAX_BUFFER })
-                .split(/\r?\n/)
-                .map((s) => s.trim())
-                .filter(Boolean);
-        } catch {}
-    }
-    // Direct .exe hit from PATH (e.g. native installer added to PATH)
-    const exeHit = hits.find((h) => h.toLowerCase().endsWith("claude.exe"));
-    if (exeHit && existsSync(exeHit)) {
-        claudeSpawnTargetCache = { exe: exeHit };
-        return claudeSpawnTargetCache;
-    }
-    // .cmd shim hits - try each, not just first
-    const cmdHits = hits.filter((h) => h.toLowerCase().endsWith(".cmd"));
-    // Also add known shim locations if where missed them
-    for (const p of nativeCandidates.filter((p) => p.toLowerCase().endsWith(".cmd"))) {
-        if (existsSync(p) && !cmdHits.includes(p)) cmdHits.push(p);
-    }
-    for (const cmdShim of cmdHits) {
-        try {
-            const shim = readFileSync(cmdShim, "utf8");
-            // Universal: match any claude-code entry - cli.js, bin/claude.js, bin/claude.exe (newer installer)
-            const m = shim.match(/"([^"]*claude-code[\\\/][^"]+\.(js|exe))"/i)
-                ?? shim.match(/([A-Za-z]:[^\s"]*claude-code[\\\/][^\s"]+\.(js|exe))/i)
-                ?? shim.match(/([^\s"]*claude-code[\\\/][^\s"]+\.(js|exe))/i);
-            if (m) {
-                let targetPath = m[1].replace(/\//g, "\\");
-                // Shim may contain %dp0% variable - resolve relative to shim dir
-                if (targetPath.includes("%dp0%") || targetPath.includes("%~dp0") || targetPath.startsWith("%")) {
-                    // Generic: the quoted part after %dp0% is the relative path inside npm package
-                    const relMatch = shim.match(/%~?dp0%[\\\/]*([^"]+\.(js|exe))/i);
-                    if (relMatch) {
-                        targetPath = join(dirname(cmdShim), relMatch[1].replace(/\//g, "\\"));
-                    } else {
-                        targetPath = join(dirname(cmdShim), "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.js");
-                        if (!existsSync(targetPath)) targetPath = join(dirname(cmdShim), "node_modules", "@anthropic-ai", "claude-code", "cli.js");
-                    }
-                }
-                const isJs = targetPath.toLowerCase().endsWith(".js");
-                if (existsSync(targetPath)) {
-                    claudeSpawnTargetCache = isJs ? { js: targetPath } : { exe: targetPath };
-                    return claudeSpawnTargetCache;
-                }
-                // Even if not exists, try it - node will error clearly
-                claudeSpawnTargetCache = isJs ? { js: targetPath } : { exe: targetPath };
-                return claudeSpawnTargetCache;
-            }
-            console.warn(`[Claude Resolve] shim ${cmdShim} no matcheó regex, contenido: ${shim.slice(0, 400)}`);
-        } catch (e) {
-            console.warn(`[Claude Resolve] no se pudo leer shim ${cmdShim}: ${e.message}`);
-        }
-    }
-    // Universal fallback: use the actual hit found by where (world-wide, no hardcoded path).
-    // spawn("claude") without extension fails with ENOENT on some Node/Windows combos
-    // because PATHEXT resolution needs the full .cmd path, so we use the hit directly.
-    // Security: an unparseable .cmd shim is NOT run through `cmd.exe /c`.
-    // cmd.exe re-parses the whole command line, and Node's argv quoting (\")
-    // is not cmd.exe quoting, so a chat message with `" & calc.exe` would
-    // execute. Fall through to a direct spawn or a clear install error.
-    if (cmdHits.length > 0) {
-        console.warn(`[Claude Resolve] shim ${cmdHits[0]} no parseable; se omite el fallback via cmd.exe por seguridad`);
-    }
-    if (hits.some((h) => !h.toLowerCase().endsWith(".cmd"))) {
-        console.warn(`[Claude Resolve] shim no parseable pero where encontró ${hits.length} hit(s), fallback a spawn("claude") directo`);
-        claudeSpawnTargetCache = { cmd: "claude" };
-        return claudeSpawnTargetCache;
-    }
-    // Last probe: try to run claude --version directly (covers npx/pnpx edge cases)
-    try {
-        execFileSync("claude", ["--version"], { encoding: "utf8", timeout: 3000, maxBuffer: EXEC_MAX_BUFFER });
-        console.warn(`[Claude Resolve] claude --version ok, fallback a spawn("claude")`);
-        claudeSpawnTargetCache = { cmd: "claude" };
-        return claudeSpawnTargetCache;
-    } catch {}
-    console.error(`[Claude Resolve] FAIL hits=${JSON.stringify(hits)} cmdHits=${JSON.stringify(cmdHits)} nativeChecked=${JSON.stringify(nativeCandidates)}`);
-    const err = new Error(
-        `No se encontró el ejecutable de Claude. where hits: ${hits.join(", ") || "(vacío)"}. Revisá que 'where claude' en cmd devuelva algo y que el shim .cmd contenga cli.js. Instalá Claude Code y reiniciá el server, o cambiá el motor a Pi/OpenCode.`
-    );
-    err.code = "CLAUDE_NOT_INSTALLED";
-    throw err;
-}
 
 // Ejecución Asíncrona en Streaming para Claude CLI (Soporta tareas largas, subagentes en vivo y no se corta)
 function runClaudeCli(projPath, sessionId, isNewSession, modelId, message) {

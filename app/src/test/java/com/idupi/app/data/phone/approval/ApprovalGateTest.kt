@@ -2,6 +2,7 @@ package com.idupi.app.data.phone.approval
 
 import com.idupi.app.data.phone.control.CommandApproval
 import kotlinx.coroutines.test.runTest
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Test
@@ -20,6 +21,12 @@ class ApprovalGateTest {
     @Before
     fun setUp() {
         ledger = FileApprovalLedger(file = null, clock = { now })
+        OwnerTurnRegistry.clear()
+    }
+
+    @After
+    fun tearDown() {
+        OwnerTurnRegistry.clear()
     }
 
     private fun grant(
@@ -40,6 +47,23 @@ class ApprovalGateTest {
         reason: String = "risky_text",
         target: String? = "Enviar",
     ) = CommandApproval(approvalId = id, approvedTarget = target, reason = reason)
+
+    /** The shape the server sends when an owner bubble turn approved a step. */
+    private fun ownerApproval(
+        id: String = "apr-123456789abc",
+        reason: String = "risky_text",
+        target: String? = "Enviar",
+        turnId: String? = OWNER_TURN,
+        category: String? = "message",
+        expiresAt: String? = java.time.Instant.ofEpochMilli(now + 600_000L).toString(),
+    ) = CommandApproval(
+        approvalId = id,
+        approvedTarget = target,
+        reason = reason,
+        ownerTurnId = turnId,
+        category = category,
+        expiresAt = expiresAt,
+    )
 
     private suspend fun checkNode(
         approval: CommandApproval?,
@@ -205,5 +229,137 @@ class ApprovalGateTest {
             ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
             checkNode(approval(), "Enviar"),
         )
+    }
+
+    // --- owner-request approvals (phone-bubble, T18) ----------------------
+
+    @Test
+    fun `an owner-request approval runs while its turn is active on this phone`() = runTest {
+        OwnerTurnRegistry.register(OWNER_TURN)
+
+        assertEquals(ApprovalGateResult.Allowed, checkNode(ownerApproval(), "Enviar"))
+    }
+
+    @Test
+    fun `an owner-request approval is one use like a manual grant`() = runTest {
+        OwnerTurnRegistry.register(OWNER_TURN)
+
+        assertEquals(ApprovalGateResult.Allowed, checkNode(ownerApproval(), "Enviar"))
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
+            checkNode(ownerApproval(), "Enviar"),
+        )
+    }
+
+    @Test
+    fun `an owner-request approval is refused once the turn is terminal`() = runTest {
+        OwnerTurnRegistry.register(OWNER_TURN)
+        OwnerTurnRegistry.remove(OWNER_TURN)
+
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
+            checkNode(ownerApproval(), "Enviar"),
+        )
+    }
+
+    @Test
+    fun `an owner-request approval for an unknown turn is refused`() = runTest {
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
+            checkNode(ownerApproval(), "Enviar"),
+        )
+    }
+
+    @Test
+    fun `an owner-request approval without a turn id is a manual approval`() = runTest {
+        // No local grant: the registry is irrelevant for the manual shape.
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
+            checkNode(ownerApproval(turnId = null), "Enviar"),
+        )
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
+            checkNode(approval(), "Enviar"),
+        )
+    }
+
+    @Test
+    fun `an owner-request approval outside the message category is refused`() = runTest {
+        OwnerTurnRegistry.register(OWNER_TURN)
+
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
+            checkNode(ownerApproval(category = "money"), "Pagar"),
+        )
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
+            checkNode(ownerApproval(category = null), "Pagar"),
+        )
+    }
+
+    @Test
+    fun `an owner-request approval with an unknown reason is refused`() = runTest {
+        OwnerTurnRegistry.register(OWNER_TURN)
+
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
+            checkNode(ownerApproval(reason = ""), "Enviar"),
+        )
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
+            checkNode(ownerApproval(reason = "phone_detected_risky_target"), "Enviar"),
+        )
+    }
+
+    @Test
+    fun `an expired owner-request approval is refused`() = runTest {
+        OwnerTurnRegistry.register(OWNER_TURN)
+
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
+            checkNode(
+                ownerApproval(
+                    expiresAt = java.time.Instant.ofEpochMilli(now - 1).toString(),
+                ),
+                "Enviar",
+            ),
+        )
+    }
+
+    @Test
+    fun `an owner-request tap still has to match the approved target`() = runTest {
+        OwnerTurnRegistry.register(OWNER_TURN)
+
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.TARGET_MISMATCH, "Enviar ahora"),
+            checkNode(ownerApproval(), "Enviar ahora"),
+        )
+    }
+
+    @Test
+    fun `an owner-request submit runs only with the type approval`() = runTest {
+        OwnerTurnRegistry.register(OWNER_TURN)
+        val submit = ownerApproval(reason = "type_submit", target = null)
+
+        assertEquals(ApprovalGateResult.Allowed, ApprovalGate.checkSubmit(submit, ledger, now))
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
+            ApprovalGate.checkSubmit(submit, ledger, now),
+        )
+    }
+
+    @Test
+    fun `an owner-request tap approval cannot authorize a submit`() = runTest {
+        OwnerTurnRegistry.register(OWNER_TURN)
+
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
+            ApprovalGate.checkSubmit(ownerApproval(), ledger, now),
+        )
+    }
+
+    /** The turn ids are process-wide, so each test starts clean. */
+    private companion object {
+        const val OWNER_TURN = "pat-0123456789ab"
     }
 }

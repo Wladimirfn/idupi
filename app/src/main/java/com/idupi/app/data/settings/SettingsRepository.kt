@@ -41,6 +41,12 @@ interface SettingsRepository {
     val phoneControlEnabled: Flow<Boolean>
 
     /**
+     * Observed "Burbuja de IDUPI" switch (phone-bubble T4). Missing value means
+     * OFF: the bubble draws over other apps, so the owner opts in explicitly.
+     */
+    val phoneBubbleEnabled: Flow<Boolean>
+
+    /**
      * Observed "share my agenda with the PC" switch (phone-calendar T2).
      * Missing value means ON: reporting starts as soon as the calendar
      * permission is granted, matching the status-reporting default.
@@ -95,6 +101,8 @@ interface SettingsRepository {
 
     suspend fun setPhoneControlEnabled(enabled: Boolean)
 
+    suspend fun setPhoneBubbleEnabled(enabled: Boolean)
+
     suspend fun setCalendarShareEnabled(enabled: Boolean)
 
     suspend fun setCalendarLastUsedId(calendarId: String)
@@ -108,6 +116,7 @@ class InMemorySettingsRepository(
     initialInbox: InboxSettings = InboxSettings(),
     initialPhoneStatusEnabled: Boolean = true,
     initialPhoneControlEnabled: Boolean = false,
+    initialPhoneBubbleEnabled: Boolean = false,
     initialCalendarShareEnabled: Boolean = true,
     initialCalendarLastUsedId: String = "",
     initialCalendarViewMode: String = CalendarViewMode.DEFAULT.storageValue,
@@ -117,6 +126,7 @@ class InMemorySettingsRepository(
     private val _inboxSettings = MutableStateFlow(initialInbox)
     private val _phoneStatusEnabled = MutableStateFlow(initialPhoneStatusEnabled)
     private val _phoneControlEnabled = MutableStateFlow(initialPhoneControlEnabled)
+    private val _phoneBubbleEnabled = MutableStateFlow(initialPhoneBubbleEnabled)
     private val _calendarShareEnabled = MutableStateFlow(initialCalendarShareEnabled)
     private val _calendarLastUsedId = MutableStateFlow(initialCalendarLastUsedId)
     private val _calendarViewMode = MutableStateFlow(initialCalendarViewMode)
@@ -128,6 +138,8 @@ class InMemorySettingsRepository(
     override val phoneStatusEnabled: Flow<Boolean> = _phoneStatusEnabled.asStateFlow()
 
     override val phoneControlEnabled: Flow<Boolean> = _phoneControlEnabled.asStateFlow()
+
+    override val phoneBubbleEnabled: Flow<Boolean> = _phoneBubbleEnabled.asStateFlow()
 
     override val calendarShareEnabled: Flow<Boolean> = _calendarShareEnabled.asStateFlow()
 
@@ -187,6 +199,10 @@ class InMemorySettingsRepository(
 
     override suspend fun setPhoneControlEnabled(enabled: Boolean) {
         _phoneControlEnabled.value = enabled
+    }
+
+    override suspend fun setPhoneBubbleEnabled(enabled: Boolean) {
+        _phoneBubbleEnabled.value = enabled
     }
 
     override suspend fun setCalendarShareEnabled(enabled: Boolean) {

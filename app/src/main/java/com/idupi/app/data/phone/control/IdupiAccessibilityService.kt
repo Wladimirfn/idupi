@@ -9,6 +9,8 @@ import com.idupi.app.data.health.HealthReporting
 import com.idupi.app.data.phone.PhoneStatusReporting
 import com.idupi.app.data.phone.approval.PhoneApprovalReporting
 import com.idupi.app.data.phone.approval.PhoneApprovals
+import com.idupi.app.data.phone.bubble.BubbleGate
+import com.idupi.app.data.phone.bubble.PhoneBubbleOverlay
 import com.idupi.app.data.settings.SettingsProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -16,6 +18,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -39,8 +42,12 @@ class IdupiAccessibilityService : AccessibilityService() {
 
     private var controlJob: Job? = null
     private var settingsJob: Job? = null
+    private var bubbleJob: Job? = null
 
     private val executor by lazy { PhoneCommandExecutor(this, PhoneApprovals.ledger(this)) }
+
+    /** The floating bubble (phone-bubble T4); created on first use. */
+    private val bubbleOverlay by lazy { PhoneBubbleOverlay(this) }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -61,6 +68,29 @@ class IdupiAccessibilityService : AccessibilityService() {
                 }
             }
         }
+
+        // The bubble needs the owner's setting AND phone control; the service
+        // being bound IS the accessibility grant (phone-bubble T4).
+        // WindowManager.addView/removeView must run on the main thread, so this
+        // collector overrides the service's IO dispatcher.
+        bubbleJob?.cancel()
+        bubbleJob = scope.launch(Dispatchers.Main.immediate) {
+            combine(
+                SettingsProvider.repository.phoneBubbleEnabled,
+                SettingsProvider.repository.phoneControlEnabled,
+            ) { bubble, control ->
+                BubbleGate.shouldShow(
+                    bubbleEnabled = bubble,
+                    phoneControlEnabled = control,
+                    accessibilityConnected = true,
+                )
+            }.collect { show -> bubbleOverlay.setVisible(show) }
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        bubbleOverlay.onConfigurationChanged()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -74,6 +104,9 @@ class IdupiAccessibilityService : AccessibilityService() {
     override fun onUnbind(intent: Intent?): Boolean {
         stopControlLoop()
         PhoneApprovalReporting.stop()
+        bubbleOverlay.setVisible(false)
+        bubbleJob?.cancel()
+        bubbleJob = null
         settingsJob?.cancel()
         settingsJob = null
         return super.onUnbind(intent)
@@ -82,6 +115,9 @@ class IdupiAccessibilityService : AccessibilityService() {
     override fun onDestroy() {
         stopControlLoop()
         PhoneApprovalReporting.stop()
+        bubbleOverlay.destroy()
+        bubbleJob?.cancel()
+        bubbleJob = null
         settingsJob?.cancel()
         settingsJob = null
         scope.cancel()

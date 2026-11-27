@@ -76,7 +76,7 @@ Para que el servidor arranque solo al iniciar sesión en Windows:
 powershell -NoProfile -ExecutionPolicy Bypass -File idupi-server\scripts\install-autostart.ps1
 ```
 
-Los logs quedan en `idupi-server/logs/`. Para detener y relanzar el servidor: `start-server.ps1 -Restart`.
+Los logs quedan en `idupi-server/logs/`. Para detener y relanzar el servidor: `start-server.ps1 -Restart`. Si lo ejecutas desde una terminal compartida de IDUPI, esa terminal se cierra con el reinicio, pero el reinicio sigue por fuera y deja su salida en `idupi-server/logs/restart.log`.
 
 > El control remoto de mouse y teclado viene activado. Si no lo quieres disponible: inicia el servidor con `IDUPI_REMOTE_INPUT=0`.
 

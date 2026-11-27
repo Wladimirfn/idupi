@@ -19,6 +19,10 @@ import { join } from "node:path";
 import { createPhoneStore } from "../lib/phone-store.mjs";
 import { createPhoneRoutes } from "../lib/phone-routes.mjs";
 import { createPhoneApprovalStore } from "../lib/phone-approval-store.mjs";
+import {
+    TURN_GRANT_HEADER,
+    createPhoneTurnGrants,
+} from "../lib/phone-turn-grants.mjs";
 
 const silentLog = { log() {}, info() {}, warn() {}, error() {} };
 
@@ -63,16 +67,16 @@ async function startHarness(t) {
     return { base, store, clock };
 }
 
-function postJson(base, path, body) {
+function postJson(base, path, body, headers = null) {
     return fetch(base + path, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(headers || {}) },
         body: typeof body === "string" ? body : JSON.stringify(body),
     });
 }
 
-async function postCommand(base, type, args) {
-    const res = await postJson(base, "/api/v1/phone/commands", { type, args });
+async function postCommand(base, type, args, headers = null) {
+    const res = await postJson(base, "/api/v1/phone/commands", { type, args }, headers);
     const body = await res.json();
     return { res, body, command: body.command };
 }
@@ -404,7 +408,7 @@ test("invalid wait values are 400 and unsupported methods are 405", async (t) =>
 
 // --- approvals (phone-approvals, T1) --------------------------------------
 
-async function startApprovalHarness(t) {
+async function startApprovalHarness(t, { turnGrants = null } = {}) {
     const dir = await mkdtemp(join(tmpdir(), "idupi-phone-approval-routes-"));
     t.after(() => rm(dir, { recursive: true, force: true }));
     const clock = makeClock();
@@ -426,7 +430,7 @@ async function startApprovalHarness(t) {
         warn(message) { logs.push(message); },
         error() {},
     };
-    const handle = createPhoneRoutes({ store, log });
+    const handle = createPhoneRoutes({ store, log, turnGrants });
 
     const server = http.createServer(async (req, res) => {
         try {
@@ -605,4 +609,121 @@ test("APPROVAL_REQUIRED from the phone turns into a pending approval over HTTP",
     assert.equal(pending.approvals.length, 1);
     assert.equal(pending.approvals[0].reason, "phone_detected_risky_target");
     assert.equal(pending.approvals[0].target, "Enviar mensaje");
+});
+
+// --- owner bubble turns over HTTP (phone-bubble, T13) ---------------------
+
+const OWNER_TURN = "pat-0123456789ab";
+
+test("a valid owner turn grant approves a message submit over HTTP", async (t) => {
+    const turnGrants = createPhoneTurnGrants();
+    const { base, logs } = await startApprovalHarness(t, { turnGrants });
+    const secret = turnGrants.issue(OWNER_TURN);
+    const headers = { [TURN_GRANT_HEADER]: secret };
+
+    const created = await postCommand(
+        base,
+        "type",
+        { text: "hola Ana", submit: true },
+        headers,
+    );
+
+    assert.equal(created.res.status, 201);
+    assert.equal(created.command.state, "pending");
+    assert.match(created.command.approvalId, /^apr-[0-9a-f]{12}$/);
+
+    // No pending card: the approval is already approved for the owner's turn.
+    const pending = await (await fetch(
+        base + "/api/v1/phone/approvals?state=pending",
+    )).json();
+    assert.equal(pending.approvals.length, 0);
+
+    const approved = await (await fetch(
+        base + `/api/v1/phone/approvals/${created.command.approvalId}`,
+    )).json();
+    assert.equal(approved.approval.state, "approved");
+    assert.equal(approved.approval.decidedBy, `owner-request:${OWNER_TURN}`);
+
+    // The phone gets the exact fields a manual approval produces.
+    const next = await (await fetch(base + "/api/v1/phone/commands/next?wait=1")).json();
+    assert.equal(next.command.id, created.command.id);
+    assert.equal(next.command.args.approvalId, created.command.approvalId);
+    assert.equal(next.command.args.approvedTarget, null);
+    assert.equal(next.command.approvalReason, "type_submit");
+    // T18: the phone binds this grant to the bubble turn it started.
+    assert.equal(next.command.args.ownerTurnId, OWNER_TURN);
+    assert.equal(next.command.args.approvalCategory, "message");
+
+    // The secret is never logged.
+    const joined = logs.join("\n");
+    assert.equal(joined.includes(secret), false);
+});
+
+test("money, destructive and bank steps stay gated over HTTP with a valid grant", async (t) => {
+    const turnGrants = createPhoneTurnGrants();
+    const { base } = await startApprovalHarness(t, { turnGrants });
+    const headers = { [TURN_GRANT_HEADER]: turnGrants.issue(OWNER_TURN) };
+
+    for (const args of [{ text: "Pagar" }, { text: "Eliminar chat" }]) {
+        const created = await postCommand(base, "tap", args, headers);
+        assert.equal(created.command.state, "awaiting_approval", JSON.stringify(args));
+    }
+
+    await postJson(base, "/api/v1/phone/status", {
+        foregroundApp: { packageName: "cl.bancoestado.app", label: "Banco Estado" },
+    });
+    const banking = await postCommand(
+        base,
+        "tap",
+        { id: "cl.bancoestado.app:id/transfer" },
+        headers,
+    );
+    assert.equal(banking.command.state, "awaiting_approval");
+
+    const pending = await (await fetch(
+        base + "/api/v1/phone/approvals?state=pending",
+    )).json();
+    assert.equal(pending.approvals.length, 3);
+});
+
+test("an absent, wrong or revoked grant falls back to the normal gate", async (t) => {
+    const turnGrants = createPhoneTurnGrants();
+    const { base } = await startApprovalHarness(t, { turnGrants });
+    const secret = turnGrants.issue(OWNER_TURN);
+
+    const absent = await postCommand(base, "type", { text: "hola", submit: true });
+    assert.equal(absent.command.state, "awaiting_approval");
+
+    const wrong = await postCommand(
+        base,
+        "type",
+        { text: "hola", submit: true },
+        { [TURN_GRANT_HEADER]: "f".repeat(secret.length) },
+    );
+    assert.equal(wrong.command.state, "awaiting_approval");
+
+    turnGrants.revoke(OWNER_TURN);
+    const revoked = await postCommand(
+        base,
+        "type",
+        { text: "hola", submit: true },
+        { [TURN_GRANT_HEADER]: secret },
+    );
+    assert.equal(revoked.command.state, "awaiting_approval");
+});
+
+test("requestedBy in the body never mints an owner turn over HTTP", async (t) => {
+    const { base } = await startApprovalHarness(t, {
+        turnGrants: createPhoneTurnGrants(),
+    });
+
+    const res = await postJson(base, "/api/v1/phone/commands", {
+        type: "type",
+        args: { text: "hola", submit: true },
+        requestedBy: `owner-request:${OWNER_TURN}`,
+    });
+    const body = await res.json();
+
+    assert.equal(res.status, 201);
+    assert.equal(body.command.state, "awaiting_approval");
 });

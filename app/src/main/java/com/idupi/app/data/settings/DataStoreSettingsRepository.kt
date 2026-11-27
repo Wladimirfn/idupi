@@ -143,6 +143,17 @@ class DataStoreSettingsRepository(
         dataStore.edit { prefs -> prefs[PHONE_CONTROL_ENABLED_KEY] = enabled }
     }
 
+    // Missing key means OFF: the bubble draws over other apps, so it is opt-in
+    // like command execution. The service also requires phone control, but the
+    // two switches are stored separately so the owner can prepare the bubble
+    // before turning control on.
+    override val phoneBubbleEnabled: Flow<Boolean> =
+        dataStore.data.map { prefs -> prefs[PHONE_BUBBLE_ENABLED_KEY] ?: false }
+
+    override suspend fun setPhoneBubbleEnabled(enabled: Boolean) {
+        dataStore.edit { prefs -> prefs[PHONE_BUBBLE_ENABLED_KEY] = enabled }
+    }
+
     // Missing key means ON: sharing the agenda is opt-out, like the phone
     // status report. Without READ_CALENDAR the reporter still sends nothing.
     override val calendarShareEnabled: Flow<Boolean> =
@@ -220,6 +231,10 @@ class DataStoreSettingsRepository(
         /** phone-agent T3: execute PC commands through accessibility; default OFF. */
         val PHONE_CONTROL_ENABLED_KEY: Preferences.Key<Boolean> =
             booleanPreferencesKey("phone_control_enabled")
+
+        /** phone-bubble T4: draw the IDUPI bubble over other apps; default OFF. */
+        val PHONE_BUBBLE_ENABLED_KEY: Preferences.Key<Boolean> =
+            booleanPreferencesKey("phone_bubble_enabled")
 
         /** phone-calendar T2: share the agenda with the PC; default ON. */
         val CALENDAR_SHARE_ENABLED_KEY: Preferences.Key<Boolean> =

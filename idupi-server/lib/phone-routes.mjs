@@ -20,6 +20,7 @@ import {
     DEFAULT_APPROVAL_LIST_LIMIT,
     MAX_APPROVAL_LIST_LIMIT,
 } from "./phone-approval-store.mjs";
+import { TURN_GRANT_HEADER } from "./phone-turn-grants.mjs";
 
 const PREFIX = "/api/v1/phone";
 
@@ -143,6 +144,7 @@ function bodyError(res, err) {
 /**
  * @param {{
  *   store: ReturnType<import("./phone-store.mjs").createPhoneStore>,
+ *   turnGrants?: ReturnType<import("./phone-turn-grants.mjs").createPhoneTurnGrants> | null,
  *   maxStatusBytes?: number,
  *   maxResultBytes?: number,
  *   log?: { info?: Function, warn?: Function },
@@ -151,6 +153,7 @@ function bodyError(res, err) {
  */
 export function createPhoneRoutes({
     store,
+    turnGrants = null,
     maxStatusBytes = DEFAULT_MAX_STATUS_BYTES,
     maxResultBytes = DEFAULT_MAX_RESULT_BYTES,
     log = console,
@@ -211,10 +214,19 @@ export function createPhoneRoutes({
         }
         let command;
         try {
+            // The only source of an owner turn is the per-turn secret the
+            // runner gave the CLI child. Resolve it server-side against the
+            // in-memory grants of queued/running turns; the body's requestedBy
+            // is a label, never authority, and an unknown/revoked secret falls
+            // back to the normal approval gate.
+            const ownerTurnId = turnGrants
+                ? turnGrants.turnFor(req.headers[TURN_GRANT_HEADER])
+                : null;
             command = store.createCommand({
                 type: body.type,
                 args: body.args,
                 requestedBy: body.requestedBy,
+                ownerTurnId,
             });
         } catch (err) {
             sendError(

@@ -102,12 +102,23 @@ class NeutralSpanishCopyTest {
         )
     }
 
+    /**
+     * Words a file may contain because they are recognized INPUT, never shown
+     * or spoken: the bubble's voice confirmation (phone-bubble T21) accepts
+     * what the owner actually says, including "dale".
+     */
+    private val inputVocabularyExemptions = mapOf(
+        "BubbleVoiceConfirm.kt" to setOf("dale"),
+    )
+
     private fun violationsInKotlinStrings(file: File): List<String> {
         val text = file.readText()
         val violations = mutableListOf<String>()
+        val exempt = inputVocabularyExemptions[file.name].orEmpty()
         kotlinStringPattern.findAll(text).forEach { literal ->
             val matcher = voseoPattern.matcher(literal.value)
             while (matcher.find()) {
+                if (matcher.group().lowercase() in exempt) continue
                 violations += "${file.path}:${lineOf(text, literal.range.first)}: ${matcher.group()}"
             }
         }
