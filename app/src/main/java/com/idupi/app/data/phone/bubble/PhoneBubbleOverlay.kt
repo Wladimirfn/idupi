@@ -2128,7 +2128,12 @@ class PhoneBubbleOverlay(
         controller.resume()
     }
 
-    private fun collapse(keepFollowing: Boolean = false) {
+    /**
+     * @param endSession false only for the agent's working collapse (T7): a
+     *   session-only panel (Dashboard or system assistant) shrinks to the
+     *   circle while the turn runs and lives on until the owner minimizes it.
+     */
+    private fun collapse(keepFollowing: Boolean = false, endSession: Boolean = true) {
         // T21/T23: the spoken loop dies with the panel; a routed approval falls
         // back to its notification and the request text stays in the field.
         cancelConfirmLoop()
@@ -2166,6 +2171,7 @@ class PhoneBubbleOverlay(
         buildPill()
         render()
         scheduleDock()
+        if (!endSession) return
         // assistant-key T1: a panel opened by the system assistant lasts for
         // that session. Ending it lets the service gate hide a temporary panel
         // again; with the owner's bubble setting on, the pill simply stays.
@@ -2201,13 +2207,13 @@ class PhoneBubbleOverlay(
     /**
      * Collapses without stopping the poll: the answer must be able to reopen
      * the panel. A session-only panel (the Dashboard with the bubble setting
-     * off, or the system assistant) has no circle to fall back to, so it stays
-     * up instead of hiding the window and dropping the turn.
+     * off, or the system assistant) shrinks to the circle too but keeps its
+     * session: the owner's live check showed a panel that stayed open covering
+     * the screen while the agent navigated (turn pat-f741174ac8c6).
      */
     private fun collapseForTurn() {
         if (mode != BubbleMode.EXPANDED || !visible || root == null) return
-        if (ownerRequestSessionOnly || assistantSessionEnded != null) return
-        collapse(keepFollowing = true)
+        collapse(keepFollowing = true, endSession = false)
     }
 
     private fun sendDraft() {
