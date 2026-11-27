@@ -145,6 +145,12 @@ class PhoneBubbleOverlay(
     @Volatile
     private var visible = false
 
+    /**
+     * Ends a session-only show requested by the system assistant
+     * (assistant-key T1); null when the panel was not opened by that path.
+     */
+    private var assistantSessionEnded: (() -> Unit)? = null
+
     /** Current window top-left while fully visible, in pixels. */
     private var position = 0 to 0
 
@@ -273,6 +279,36 @@ class PhoneBubbleOverlay(
         if (show) attach() else detach()
     }
 
+    /**
+     * Opens the panel in dictation for a launch of the system assistant
+     * (assistant-key T1).
+     *
+     * The accessibility service has already marked a temporary session, so the
+     * window may be attached here even when the owner's bubble icon is off.
+     * Expanding undocks first (T10) and nothing shows the keyboard: T16 keeps
+     * the IME owner's choice. Dictation then runs through the same
+     * [onMicTapped] path as the Dictar button, including the RECORD_AUDIO flow
+     * and the T22 recognizer fallback.
+     *
+     * @param onSessionEnded invoked once when the owner collapses this panel;
+     *   the service clears the temporary override and the visibility gate hides
+     *   the bubble again unless the owner's setting keeps it.
+     * @return true when the panel is up and listening.
+     */
+    fun openForAssistantDictation(onSessionEnded: () -> Unit): Boolean {
+        assistantSessionEnded = onSessionEnded
+        if (!visible) setVisible(true)
+        if (!visible) {
+            // No window means no session to end later; the service clears the
+            // temporary gate and the activity falls back to the app hint.
+            assistantSessionEnded = null
+            return false
+        }
+        if (mode == BubbleMode.COLLAPSED) expand()
+        onMicTapped()
+        return true
+    }
+
     /** Re-clamps the window after a rotation or a display-size change. */
     fun onConfigurationChanged() {
         if (!visible) return
@@ -389,6 +425,9 @@ class PhoneBubbleOverlay(
         // No new approval may be routed here while the window is going away;
         // an approval already in the loop falls back to the notification below.
         ApprovalVoiceHost.detach()
+        // A session-only show dies with its window; the service clears the
+        // temporary gate separately (assistant-key T1).
+        assistantSessionEnded = null
         stateJob?.cancel()
         stateJob = null
         voiceJob?.cancel()
@@ -1983,6 +2022,13 @@ class PhoneBubbleOverlay(
         buildPill()
         render()
         scheduleDock()
+        // assistant-key T1: a panel opened by the system assistant lasts for
+        // that session. Ending it lets the service gate hide a temporary panel
+        // again; with the owner's bubble setting on, the pill simply stays.
+        assistantSessionEnded?.let { ended ->
+            assistantSessionEnded = null
+            ended()
+        }
     }
 
     private fun sendDraft() {

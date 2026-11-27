@@ -30,6 +30,70 @@ class BubbleOverlayModelTest {
         assertFalse(BubbleGate.shouldShow(false, false, false))
     }
 
+    @Test
+    fun `a temporary assistant session overrides the persisted bubble setting`() {
+        // The assistant entry point (assistant-key T1) is a session-only show:
+        // it works with the bubble icon off and with phone control off, and the
+        // owner's setting is never rewritten to achieve it.
+        assertTrue(
+            BubbleGate.shouldShow(
+                bubbleEnabled = false,
+                phoneControlEnabled = false,
+                accessibilityConnected = true,
+                temporarySessionActive = true,
+            ),
+        )
+        assertFalse(
+            BubbleGate.shouldShow(
+                bubbleEnabled = false,
+                phoneControlEnabled = true,
+                accessibilityConnected = true,
+                temporarySessionActive = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `the keyguard hides the bubble whatever the settings or the session say`() {
+        // Accessibility overlays draw ABOVE the lock screen (assistant-key T5),
+        // so a locked phone must hide the bubble even when the owner's setting
+        // and the temporary assistant session would otherwise show it.
+        assertFalse(
+            BubbleGate.shouldShow(
+                bubbleEnabled = true,
+                phoneControlEnabled = true,
+                accessibilityConnected = true,
+                keyguardLocked = true,
+            ),
+        )
+        assertFalse(
+            BubbleGate.shouldShow(
+                bubbleEnabled = true,
+                phoneControlEnabled = true,
+                accessibilityConnected = true,
+                temporarySessionActive = true,
+                keyguardLocked = true,
+            ),
+        )
+        assertTrue(
+            BubbleGate.shouldShow(
+                bubbleEnabled = true,
+                phoneControlEnabled = true,
+                accessibilityConnected = true,
+                keyguardLocked = false,
+            ),
+        )
+        assertTrue(
+            BubbleGate.shouldShow(
+                bubbleEnabled = false,
+                phoneControlEnabled = false,
+                accessibilityConnected = true,
+                temporarySessionActive = true,
+                keyguardLocked = false,
+            ),
+        )
+    }
+
     // --- window spec ------------------------------------------------------
 
     @Test

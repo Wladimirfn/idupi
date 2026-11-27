@@ -1,10 +1,12 @@
 package com.idupi.app.ui.screens
 
 import android.Manifest
+import android.app.role.RoleManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -20,6 +22,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChatBubbleOutline
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -58,6 +61,7 @@ import com.idupi.app.data.phone.control.isAccessibilityControlEnabled
 import com.idupi.app.data.phone.isUsageAccessGranted
 import com.idupi.app.data.phone.usageAccessSettingsIntent
 import com.idupi.app.domain.model.PhoneApproval
+import com.idupi.app.ui.screens.settings.assistantRoleSummary
 import com.idupi.app.ui.theme.AppShapes
 import com.idupi.app.ui.theme.AppSpacing
 import com.idupi.app.ui.theme.AppTypography
@@ -99,6 +103,7 @@ fun PhoneAgentSection(viewModel: PhoneAgentSettingsViewModel) {
     var accessibilityEnabled by remember { mutableStateOf(isAccessibilityControlEnabled(context)) }
     var phoneStateGranted by remember { mutableStateOf(hasReadPhoneState(context)) }
     var microphoneGranted by remember { mutableStateOf(MicPermission.isGranted(context)) }
+    var assistantRoleHeld by remember { mutableStateOf(isAssistantRoleHeld(context)) }
 
     // Every grant below happens in the system settings or a system dialog:
     // re-check them all when the owner comes back instead of trusting the
@@ -110,6 +115,7 @@ fun PhoneAgentSection(viewModel: PhoneAgentSettingsViewModel) {
                 accessibilityEnabled = isAccessibilityControlEnabled(context)
                 phoneStateGranted = hasReadPhoneState(context)
                 microphoneGranted = MicPermission.isGranted(context)
+                assistantRoleHeld = isAssistantRoleHeld(context)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -188,6 +194,11 @@ fun PhoneAgentSection(viewModel: PhoneAgentSettingsViewModel) {
                 if (enabled && !accessibilityEnabled) openAccessibilitySettings()
             },
             onOpenAccessibility = openAccessibilitySettings,
+        )
+
+        DigitalAssistantCard(
+            roleHeld = assistantRoleHeld,
+            onChooseAssistant = { openAssistantSettings(context) },
         )
 
         // Empty state stays hidden: the card only exists when something needs
@@ -314,6 +325,36 @@ private fun PendingApprovalRow(
 private fun hasReadPhoneState(context: Context): Boolean =
     ContextCompat.checkSelfPermission(context, Manifest.permission.READ_PHONE_STATE) ==
         PackageManager.PERMISSION_GRANTED
+
+/**
+ * assistant-key T2: true when IDUPI holds the system's assistant role. The role
+ * is platform state granted in the system settings, so it is re-read on every
+ * resume like the other grants in this section. A device without RoleManager
+ * answers false instead of crashing.
+ */
+private fun isAssistantRoleHeld(context: Context): Boolean = try {
+    val roles = context.getSystemService(Context.ROLE_SERVICE) as? RoleManager
+    roles?.isRoleHeld(RoleManager.ROLE_ASSISTANT) == true
+} catch (error: Exception) {
+    false
+}
+
+/**
+ * Opens the system screen where the owner picks the digital assistant
+ * (assistant-key T2). The voice-input screen is the closest one on most phones;
+ * the default-apps screen and plain settings are the fallbacks, each attempted
+ * with try-catch because OEMs ship different settings layouts.
+ */
+private fun openAssistantSettings(context: Context) {
+    val candidates = listOf(
+        Intent(Settings.ACTION_VOICE_INPUT_SETTINGS),
+        Intent(Settings.ACTION_MANAGE_DEFAULT_APPS_SETTINGS),
+        Intent(Settings.ACTION_SETTINGS),
+    ).map { it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+    for (intent in candidates) {
+        if (runCatching { context.startActivity(intent) }.isSuccess) return
+    }
+}
 
 @Composable
 private fun StatusReportingCard(
@@ -715,6 +756,76 @@ private fun PhoneBubbleCard(
                     style = AppTypography.bodySmall,
                     color = TextSecondary
                 )
+            }
+        }
+    }
+}
+
+/**
+ * assistant-key T2: "Asistente digital" states whether IDUPI holds the system
+ * assistant role and opens the screen where the owner changes it. The role is
+ * what makes a side-key long press start `AssistEntryActivity` already in
+ * dictation.
+ */
+@Composable
+private fun DigitalAssistantCard(
+    roleHeld: Boolean,
+    onChooseAssistant: () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = SlateCard),
+        shape = AppShapes.card
+    ) {
+        Column(
+            modifier = Modifier
+                .padding(AppSpacing.cardPadding)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .background(SlateBorder, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.Mic,
+                        contentDescription = null,
+                        tint = if (roleHeld) StatusConnected else TextSecondary
+                    )
+                }
+                Spacer(modifier = Modifier.width(AppSpacing.lg))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Asistente digital",
+                        style = AppTypography.bodyLarge,
+                        color = TextPrimary
+                    )
+                    Text(
+                        text = assistantRoleSummary(roleHeld),
+                        style = AppTypography.bodySmall,
+                        color = if (roleHeld) StatusConnected else TextSecondary
+                    )
+                }
+            }
+
+            Divider(color = SlateBorder)
+
+            Button(
+                onClick = onChooseAssistant,
+                modifier = Modifier.fillMaxWidth(),
+                shape = AppShapes.button,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = PrimaryIndigo,
+                    contentColor = Color.White
+                )
+            ) {
+                Text("Elegir asistente", style = AppTypography.bodySmall)
             }
         }
     }

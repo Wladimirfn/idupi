@@ -223,6 +223,32 @@
             android:launchMode="singleTop"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
+        <!-- Digital assistant entry point (assistant-key T1). The owner picks
+             IDUPI under "Aplicación de asistente digital"; the system starts
+             this activity for ASSIST and VOICE_ASSIST (side-key long press).
+             Exported because the system (and any app) may start it, so it is
+             inert: no extras, no data, one action: ask the accessibility
+             overlay for in-bubble dictation or open the app with the grant
+             hint. Transparent, history-free and with its own empty task
+             affinity so it never drags MainActivity up behind the bubble
+             (phone-bubble T20). -->
+        <activity
+            android:name="com.idupi.app.data.phone.bubble.AssistEntryActivity"
+            android:exported="true"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:launchMode="singleTask"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VOICE_ASSIST" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
     </application>
 
 </manifest>
