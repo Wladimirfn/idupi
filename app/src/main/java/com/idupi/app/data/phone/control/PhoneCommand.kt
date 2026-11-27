@@ -57,6 +57,18 @@ sealed interface PhoneCommand {
         val app: String,
     ) : PhoneCommand
 
+    /**
+     * One of the fixed Settings screens (phone-dashboard T7). There is no
+     * free-form intent: the PC names a screen key and the phone maps it.
+     * [packageName] is set only for [SettingsScreen.APP].
+     */
+    data class Settings(
+        override val id: String,
+        override val expiresAt: String?,
+        val screen: SettingsScreen,
+        val packageName: String? = null,
+    ) : PhoneCommand
+
     data class Wait(
         override val id: String,
         override val expiresAt: String?,
@@ -104,6 +116,31 @@ sealed interface NodeTarget {
 enum class ScrollDirection { UP, DOWN, LEFT, RIGHT }
 
 enum class GlobalAction { BACK, HOME, RECENTS, NOTIFICATIONS, QUICK_SETTINGS }
+
+/**
+ * Fixed Settings screens `settings` may open (phone-dashboard T7). The wire
+ * value mirrors `idupi-server/lib/phone-store.mjs`; the allowlist is the
+ * contract, so an unknown key is rejected instead of guessed.
+ */
+enum class SettingsScreen(val wire: String) {
+    DEVICE_CARE("device-care"),
+    STORAGE("storage"),
+    BATTERY("battery"),
+    APPS("apps"),
+    APP("app"),
+    ;
+
+    companion object {
+        fun fromWire(value: String?): SettingsScreen? =
+            values().firstOrNull { it.wire == value }
+    }
+}
+
+/** The package rule the server enforces before queueing `settings app`. */
+private val PACKAGE_NAME_PATTERN = Regex("^[a-zA-Z]\\w*(\\.[a-zA-Z_]\\w*)+$")
+
+fun isValidPackageName(value: String?): Boolean =
+    value != null && PACKAGE_NAME_PATTERN.matches(value)
 
 /**
  * True when the server deadline already passed, so the command must not run.

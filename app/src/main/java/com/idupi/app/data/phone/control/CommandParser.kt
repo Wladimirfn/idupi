@@ -111,6 +111,34 @@ object CommandParser {
                 if (app.length > MAX_APP_CHARS) return invalid(id, type, "app demasiado larga")
                 CommandParseResult.Valid(PhoneCommand.OpenApp(id, expiresAt, app))
             }
+            "settings" -> {
+                // phone-dashboard T7: fixed allowlist, never a free-form intent.
+                unknownArg(args, setOf("screen", "package"))
+                    ?.let { return invalid(id, type, it) }
+                val screen = SettingsScreen.fromWire(args.string("screen"))
+                    ?: return invalid(id, type, "screen inválido")
+                if (screen != SettingsScreen.APP) {
+                    // Only the app screen takes a package; anything else with
+                    // one is extra input from the PC.
+                    if (args["package"] != null) {
+                        return invalid(id, type, "package no se permite con esta pantalla")
+                    }
+                    return CommandParseResult.Valid(
+                        PhoneCommand.Settings(id, expiresAt, screen)
+                    )
+                }
+                val packageName = args.string("package")?.takeIf { it.isNotBlank() }
+                    ?: return invalid(id, type, "package inválido")
+                if (!isValidPackageName(packageName)) {
+                    return invalid(id, type, "package inválido")
+                }
+                if (packageName.length > MAX_APP_CHARS) {
+                    return invalid(id, type, "package demasiado largo")
+                }
+                return CommandParseResult.Valid(
+                    PhoneCommand.Settings(id, expiresAt, screen, packageName)
+                )
+            }
             "wait" -> {
                 unknownArg(args, setOf("ms"))?.let { return invalid(id, type, it) }
                 val millis = args.int("ms")?.takeIf { it in 0..MAX_WAIT_MS }

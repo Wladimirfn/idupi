@@ -551,6 +551,9 @@ class PhoneBubbleOverlay(
                 val previousPhase = chatState.phase
                 chatState = state
                 approvalUi = BubbleApprovalState.of(state.phase, pending.size)
+                // phone-dashboard T7: the panel collapses while the agent works
+                // and opens again when the turn has something to read.
+                applyTurnPanel(previousPhase, state)
                 render()
                 maybeReopenForVoice(previousPhase, state)
                 // T23: an approval that leaves the pending poll was decided by
@@ -621,7 +624,7 @@ class PhoneBubbleOverlay(
                 setColor(style.circleFill)
                 setStroke(dp(1), style.circleRim)
             }
-            contentDescription = "Abrir la burbuja de IDUPI"
+            contentDescription = OPEN_DESCRIPTION
             isClickable = false
             layoutParams = FrameLayout.LayoutParams(size, size)
             installDrag(this)
@@ -2125,7 +2128,7 @@ class PhoneBubbleOverlay(
         controller.resume()
     }
 
-    private fun collapse() {
+    private fun collapse(keepFollowing: Boolean = false) {
         // T21/T23: the spoken loop dies with the panel; a routed approval falls
         // back to its notification and the request text stays in the field.
         cancelConfirmLoop()
@@ -2138,7 +2141,7 @@ class PhoneBubbleOverlay(
         // bubble is minimized, so a question answer can reopen it with the mic
         // ready. A typed request keeps the T6/T18 rule: minimizing stops the
         // poll and this turn stops approving steps on the phone.
-        if (requestOrigin != BubbleRequestOrigin.DICTATED || !chatState.isBusy) {
+        if (!keepFollowing && (requestOrigin != BubbleRequestOrigin.DICTATED || !chatState.isBusy)) {
             controller.close()
         }
         focusState = BubbleFocusState()
@@ -2176,6 +2179,35 @@ class PhoneBubbleOverlay(
             ownerRequestSessionOnly = false
             setVisible(false)
         }
+    }
+
+    // --- auto collapse while the agent works (T7) --------------------------
+
+    /**
+     * Applies [BubbleTurnPanel] on every chat emission. A request started from
+     * the expanded panel collapses it before the agent reads the screen; the
+     * answer (or the error) opens it again so the owner reads it without
+     * tapping. A bubble approval and the T17 voice follow-up still expand the
+     * panel on their own paths.
+     */
+    private fun applyTurnPanel(previousPhase: BubbleChatPhase, state: BubbleChatState) {
+        when (BubbleTurnPanel.onPhaseChange(previousPhase, state.phase, mode)) {
+            BubbleTurnPanelAction.COLLAPSE -> collapseForTurn()
+            BubbleTurnPanelAction.EXPAND -> expand()
+            BubbleTurnPanelAction.NONE -> Unit
+        }
+    }
+
+    /**
+     * Collapses without stopping the poll: the answer must be able to reopen
+     * the panel. A session-only panel (the Dashboard with the bubble setting
+     * off, or the system assistant) has no circle to fall back to, so it stays
+     * up instead of hiding the window and dropping the turn.
+     */
+    private fun collapseForTurn() {
+        if (mode != BubbleMode.EXPANDED || !visible || root == null) return
+        if (ownerRequestSessionOnly || assistantSessionEnded != null) return
+        collapse(keepFollowing = true)
     }
 
     private fun sendDraft() {
@@ -2396,6 +2428,16 @@ class PhoneBubbleOverlay(
         badge?.visibility = if (approvalUi.badgeVisible) View.VISIBLE else View.GONE
         updateBadgePlacement()
         pill?.alpha = if (docked) style.dockedAlpha else 1f
+        // phone-dashboard T7: while a turn runs the panel is tucked away as the
+        // circle. The breathing animation is the "working" cue; the accent mark
+        // and the description make the state explicit without new views.
+        val working = chatState.isBusy
+        mark?.imageTintList = ColorStateList.valueOf(if (working) style.primary else style.markTint)
+        pill?.contentDescription = if (working) {
+            BubbleTurnPanel.WORKING_DESCRIPTION
+        } else {
+            OPEN_DESCRIPTION
+        }
     }
 
     private fun renderPanel() {
@@ -2609,6 +2651,9 @@ class PhoneBubbleOverlay(
 
         /** Compact keyboard glyph on the hide-keyboard glass button. */
         private const val HIDE_KEYBOARD_GLYPH = "⌨"
+
+        /** Accessible name of the circle when no turn is running. */
+        private const val OPEN_DESCRIPTION = "Abrir la burbuja de IDUPI"
 
         /** Utterance id of the spoken prompt (T21/T23). */
         private const val TTS_UTTERANCE_ID = "idupi-bubble-confirm"

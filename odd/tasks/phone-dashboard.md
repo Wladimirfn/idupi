@@ -72,6 +72,19 @@ asking approval for anything it deletes.
       wipes data on its own initiative (playbook rule; the approval still
       applies). Money stays notification-only. Also: the server suite hung for
       20+ minutes after T3 (worker reported 16 s); find and fix the hang.
+- [ ] T7 Agent got lost (owner live check 2026-11-26, turn pat-9ee16fd0e46a:
+      37 CLI calls, nothing optimized). Causes: `open "Cuidado del dispositivo"`
+      fails (not a launcher app on Samsung) so it wandered Settings; the
+      expanded bubble panel covered the screen and the agent tapped
+      "MINIMIZAR" repeatedly (also in pat-f0ede6586408). Fix: (a) new
+      `settings` phone command with a fixed allowlist of screens opened by
+      intent (verified on the owner's phone: device-care =
+      `com.samsung.android.sm.ACTION_DASHBOARD`, storage =
+      `android.settings.INTERNAL_STORAGE_SETTINGS`, app <package> =
+      `APPLICATION_DETAILS_SETTINGS` + `package:`), plus battery and apps;
+      (b) the bubble panel collapses to the circle while a turn runs and
+      re-expands on answer/question/approval; `screen` dumps and text/id taps
+      ignore IDUPI's own overlay windows; (c) playbook uses `settings`.
 - [ ] T5 Release: version bump, assembleRelease, install, owner live check
       ("optimiza mi teléfono" by voice and by text), PR.
 
