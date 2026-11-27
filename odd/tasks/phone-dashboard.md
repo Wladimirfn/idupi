@@ -50,10 +50,10 @@ asking approval for anything it deletes.
 
 ## Tasks
 
-- [ ] T1 App: phone snapshot for the dashboard (reuse collectors) + per-app
+- [x] T1 App: phone snapshot for the dashboard (reuse collectors) + per-app
       storage via `StorageStatsManager` (largest apps with app/cache bytes,
       pure mapping/sorting) + tests.
-- [ ] T2 App: Dashboard "PC · Teléfono" chips + `HorizontalPager`; phone page
+- [x] T2 App: Dashboard "PC · Teléfono" chips + `HorizontalPager`; phone page
       cards (storage, RAM, battery, network, largest apps, most used today);
       "Optimizar" button starting the bubble turn; pure state tests.
 - [ ] T3 Server: phone status gains largest apps; optimization playbook in the
@@ -88,6 +88,18 @@ precedent), one PR stacked on #31.
 - 2026-11-26: exploration done; owner chose "act and ask approval"; branch
   created on `feat/assistant-key`.
 
+- 2026-11-26: T1+T2 done (writer idu-pi work-1): `PhoneDashboardSnapshot`,
+  `PhoneDashboardCollector` (StorageStatsManager per launchable app, 60 s
+  cache), `PhoneDashboardViewModel` (5 s poll), `DashboardPager` +
+  `DashboardPhonePage`, `BubbleRequestHost` (Optimizar sends through the
+  bubble controller so the turn is owner-registered). RED: compile failures on
+  the new types. GREEN: 141 suites, 1306 tests, 0 failures (orchestrator
+  re-run). Commit `9955539`. Device check pending (T5). Engram mirror pending:
+  mem_save refused with "multiple active runtime sessions".
+- 2026-11-26: while preparing T3 found that "desinstalar"/"uninstall" are not
+  gated by the risk classifier (only eliminar/borrar/delete); added to T3 with a
+  hard block for "Borrar datos"/"Borrar almacenamiento".
+
 ## Next step
 
-T1 + T2.
+T3 + T4 (writer running), then T5.
