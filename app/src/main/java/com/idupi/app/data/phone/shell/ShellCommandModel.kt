@@ -55,10 +55,10 @@ enum class ShellRisk {
     /** Auto-approved in an owner turn, asked otherwise. */
     OPTIMIZATION,
 
-    /** Voice approval. */
+    /** Auto-approved in an owner turn, asked otherwise (like optimization). */
     DESTRUCTIVE,
 
-    /** A batch: always one plan approval, never auto-approved. */
+    /** A batch: auto-approved in an owner turn; one plan approval outside it. */
     PLAN,
 }
 
@@ -96,8 +96,10 @@ object ShellCommandRules {
     }
 }
 
-/** Category the server attaches to an owner-turn optimization approval. */
+/** Categories the server attaches to a shell approval it auto-approves in an owner turn. */
 const val SHELL_OPTIMIZATION_CATEGORY = "optimization"
+const val SHELL_DESTRUCTIVE_CATEGORY = "destructive"
+const val SHELL_PLAN_CATEGORY = "plan"
 
 fun ShellOperation.wireAction(): String = when (this) {
     is ShellOperation.TrimCaches -> "trim-caches"

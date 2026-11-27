@@ -10,11 +10,12 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * Phone-side gate for typed shell commands (phone-shell T4).
+ * Phone-side gate for typed shell commands (phone-shell T4/T4b/T4c).
  *
- * Free runs; optimization accepts an owner-turn auto-approval exactly like a
- * message step or a local grant; destructive only accepts a grant the owner
- * actually gave on this phone.
+ * Free runs; optimization, destructive and plan accept an owner-turn
+ * auto-approval carrying the matching category, or a one-use local grant the
+ * owner gave on this phone. Outside an owner turn a plan is never
+ * auto-approved.
  */
 class ApprovalGateShellTest {
 
@@ -69,7 +70,7 @@ class ApprovalGateShellTest {
     }
 
     @Test
-    fun `optimization and destructive need an approval`() = runTest {
+    fun `gated shell commands need an approval`() = runTest {
         assertEquals(
             ApprovalGateResult.Refused(ApprovalGate.APPROVAL_REQUIRED),
             check(null, ShellRisk.OPTIMIZATION),
@@ -77,6 +78,10 @@ class ApprovalGateShellTest {
         assertEquals(
             ApprovalGateResult.Refused(ApprovalGate.APPROVAL_REQUIRED),
             check(null, ShellRisk.DESTRUCTIVE),
+        )
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.APPROVAL_REQUIRED),
+            check(null, ShellRisk.PLAN),
         )
     }
 
@@ -128,9 +133,20 @@ class ApprovalGateShellTest {
     }
 
     @Test
-    fun `destructive is never auto-approved from the wire`() = runTest {
+    fun `an owner turn auto-approves a destructive step once`() = runTest {
         OwnerTurnRegistry.register(OWNER_TURN)
-        val destructive = approval(category = "destructive", reason = "destructive")
+        val destructive = approval(category = "destructive", reason = "shell_destructive")
+
+        assertEquals(ApprovalGateResult.Allowed, check(destructive, ShellRisk.DESTRUCTIVE))
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
+            check(destructive, ShellRisk.DESTRUCTIVE),
+        )
+    }
+
+    @Test
+    fun `a destructive approval without a live turn is refused`() = runTest {
+        val destructive = approval(category = "destructive", reason = "shell_destructive")
 
         assertEquals(
             ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
@@ -163,8 +179,23 @@ class ApprovalGateShellTest {
     }
 
     @Test
-    fun `a plan always needs the owner grant, never an owner-turn auto-approval`() = runTest {
+    fun `an owner turn auto-approves a plan once`() = runTest {
         OwnerTurnRegistry.register(OWNER_TURN)
+        val plan = approval(
+            id = "apr-shell-plan",
+            category = "plan",
+            reason = "shell_plan",
+        )
+
+        assertEquals(ApprovalGateResult.Allowed, check(plan, ShellRisk.PLAN))
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
+            check(plan, ShellRisk.PLAN),
+        )
+    }
+
+    @Test
+    fun `a plan approval without a live turn is refused`() = runTest {
         val plan = approval(
             id = "apr-shell-plan",
             category = "plan",
@@ -175,12 +206,36 @@ class ApprovalGateShellTest {
             ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
             check(plan, ShellRisk.PLAN),
         )
+    }
 
+    @Test
+    fun `a plan still runs with the grant the owner gave on this phone`() = runTest {
         ledger.record(grant("apr-shell-plan", reason = "shell_plan"))
+        val plan = approval(id = "apr-shell-plan", category = null, turnId = null)
+
         assertEquals(ApprovalGateResult.Allowed, check(plan, ShellRisk.PLAN))
         assertEquals(
             ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
             check(plan, ShellRisk.PLAN),
+        )
+    }
+
+    @Test
+    fun `an owner-turn shell approval needs the category of its risk`() = runTest {
+        OwnerTurnRegistry.register(OWNER_TURN)
+
+        // A plan never borrows the optimization/destructive auto-approval.
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
+            check(approval(id = "apr-wrong-1", category = "optimization"), ShellRisk.PLAN),
+        )
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
+            check(approval(id = "apr-wrong-2", category = "plan"), ShellRisk.DESTRUCTIVE),
+        )
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
+            check(approval(id = "apr-wrong-3", category = "destructive"), ShellRisk.OPTIMIZATION),
         )
     }
 

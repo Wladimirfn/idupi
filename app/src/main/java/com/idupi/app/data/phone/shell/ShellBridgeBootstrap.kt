@@ -75,7 +75,7 @@ class ShellBridgeBootstrap(
         onStep("Verificando el puente…")
         if (!verifyBridge(probeBaseline)) {
             throw ShellBootstrapException(
-                "El puente no responde. Reinicia el teléfono y vuelve a intentarlo."
+                "El puente no arrancó. Vuelve a tocar «Iniciar puente»."
             )
         }
         return Outcome(

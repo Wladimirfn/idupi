@@ -60,12 +60,17 @@ class ShellBridgeClient private constructor(private val appContext: Context) {
             operation.topic()?.let { putString(EXTRA_TOPIC, it.wire) }
         }
         val aggregate = operation is ShellOperation.TrimCaches
+        val uninstall = operation is ShellOperation.Uninstall
         val bundle = call(
             BRIDGE_URI,
             METHOD_SHELL,
             null,
             extras,
-            if (aggregate) TRIM_TIMEOUT_MS else DEFAULT_TIMEOUT_MS,
+            when {
+                aggregate -> TRIM_TIMEOUT_MS
+                uninstall -> UNINSTALL_TIMEOUT_MS
+                else -> DEFAULT_TIMEOUT_MS
+            },
         ) ?: throw BridgeUnavailableException()
         bundle.toResult()
     }
@@ -142,6 +147,7 @@ class ShellBridgeClient private constructor(private val appContext: Context) {
 
         private const val STATUS_TIMEOUT_MS = 10_000L
         private const val DEFAULT_TIMEOUT_MS = 20_000L
+        private const val UNINSTALL_TIMEOUT_MS = 60_000L
         private const val TRIM_TIMEOUT_MS = 70_000L
         private const val KICK_TIMEOUT_MS = 10_000L
 

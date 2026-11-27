@@ -18,6 +18,11 @@
         xmlns:tools="http://schemas.android.com/tools"
         tools:ignore="QueryAllPackagesPermission" />
 
+    <!-- In-process uninstall (phone-shell T4c): PackageInstaller requires the
+         caller to hold the normal request-delete permission; the adopted shell
+         identity supplies DELETE_PACKAGES for the actual removal. -->
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+
     <!-- IDUPI shell helper (phone-shell). No launcher activity: the owner never
          opens it. It exists so the shell bridge runs in its own package:
          `am instrument` force-stops the whole target package, and targeting
