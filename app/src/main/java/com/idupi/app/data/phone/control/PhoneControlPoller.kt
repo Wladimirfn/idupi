@@ -84,6 +84,8 @@ class PhoneControlPoller(
     private val waitSeconds: Int = DEFAULT_WAIT_SECONDS,
     private val backoff: PollBackoff = PollBackoff(),
     private val log: (PhoneCommandLogEntry) -> Unit = PhoneCommandLog::record,
+    private val onTransportFailure: (Throwable) -> Unit = {},
+    private val onTransportSuccess: () -> Unit = {},
 ) {
 
     suspend fun pollOnce(): PollStep {
@@ -95,10 +97,12 @@ class PhoneControlPoller(
             throw cancelled
         } catch (error: Exception) {
             Log.w(TAG, "phone command poll failed: ${error.javaClass.simpleName}")
+            onTransportFailure(error)
             return PollStep.Retry(backoff.delayMillisForFailure())
         }
 
         backoff.reset()
+        onTransportSuccess()
         if (raw == null) return PollStep.Continue
 
         return try {
@@ -108,6 +112,7 @@ class PhoneControlPoller(
             throw cancelled
         } catch (error: Exception) {
             Log.w(TAG, "phone command handling failed: ${error.javaClass.simpleName}")
+            onTransportFailure(error)
             PollStep.Retry(backoff.delayMillisForFailure())
         }
     }

@@ -85,6 +85,9 @@
         <!-- Phone shell (phone-shell T3b): the app checks the helper's install
              state and version through PackageManager. -->
         <package android:name="com.idupi.shell" />
+        <!-- Server link (phone-shell T9): TailscaleLink checks that the VPN app
+             is installed before sending its explicit CONNECT_VPN broadcast. -->
+        <package android:name="com.tailscale.ipn" />
     </queries>
 
     <!-- Phone status reporting (phone-agent T2): usage minutes per app and the

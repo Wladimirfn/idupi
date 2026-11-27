@@ -3,6 +3,7 @@ package com.idupi.app.data.phone.approval
 import android.content.Context
 import com.idupi.app.data.IduPiClientProvider
 import com.idupi.app.data.phone.control.PollStep
+import com.idupi.app.data.phone.tailscale.TailscaleTimeouts
 import com.idupi.app.data.settings.SettingsProvider
 import com.idupi.app.domain.model.PhoneApproval
 import com.idupi.app.domain.model.PhoneApprovalState
@@ -126,6 +127,8 @@ object PhoneApprovalReporting {
             onNewApprovals = { approvals -> approvals.forEach(dispatcher::handle) },
             onResolved = { ids -> ids.forEach(notifier::cancel) },
             onPending = PhoneApprovals.pendingStore::replace,
+            onTransportFailure = { error -> TailscaleTimeouts.onFailure(appContext, error) },
+            onTransportSuccess = TailscaleTimeouts::onSuccess,
         )
         job = scope.launch {
             while (isActive) {

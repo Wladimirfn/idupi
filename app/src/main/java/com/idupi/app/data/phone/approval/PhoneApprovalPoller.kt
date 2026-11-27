@@ -33,6 +33,8 @@ class PhoneApprovalPoller(
     private val limit: Int = DEFAULT_LIMIT,
     private val backoff: PollBackoff = PollBackoff(),
     private val log: (String) -> Unit = { message -> Log.w(TAG, message) },
+    private val onTransportFailure: (Throwable) -> Unit = {},
+    private val onTransportSuccess: () -> Unit = {},
 ) {
 
     /** Pending ids seen on the last successful poll; null until the baseline. */
@@ -47,10 +49,12 @@ class PhoneApprovalPoller(
             throw cancelled
         } catch (error: Exception) {
             log("approval poll failed: ${error.javaClass.simpleName}")
+            onTransportFailure(error)
             return PollStep.Retry(backoff.delayMillisForFailure())
         }
 
         backoff.reset()
+        onTransportSuccess()
         val pending = response.approvals.filter { it.state == PhoneApprovalState.PENDING }
         val ids = pending.mapTo(mutableSetOf()) { it.id }
         val previous = knownIds

@@ -41,8 +41,8 @@ android {
         // "which APK am I running" is answerable from the system settings.
         // Same-versionCode installs get silently skipped by some phone
         // installers -- that is how a stale build masqueraded as the new one.
-        versionCode = 76
-        versionName = "1.75-autorrecuperacion"
+        versionCode = 77
+        versionName = "1.76-tailscale-auto"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

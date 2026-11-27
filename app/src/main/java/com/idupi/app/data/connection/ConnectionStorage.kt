@@ -39,10 +39,10 @@ class ConnectionStorage(private val context: Context) {
      * Lightweight "can the background delivery poller try at all?" check:
      * reads only the stored host, never decrypts the token.
      */
-    fun hasConfiguredServer(): Boolean {
-        val host = prefs.getString("profile_host", "") ?: ""
-        return host.isNotBlank()
-    }
+    fun hasConfiguredServer(): Boolean = configuredHost().isNotBlank()
+
+    /** The saved host only; never reads or decrypts the token (T9). */
+    fun configuredHost(): String = prefs.getString("profile_host", "") ?: ""
 
     fun getProfile(): ConnectionProfile? {
         val name = prefs.getString("profile_name", null) ?: return null

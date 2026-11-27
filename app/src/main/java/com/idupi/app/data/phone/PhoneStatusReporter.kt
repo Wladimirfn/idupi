@@ -4,6 +4,7 @@ import android.content.Context
 import android.util.Log
 import com.idupi.app.BuildConfig
 import com.idupi.app.data.IduPiClientProvider
+import com.idupi.app.data.phone.tailscale.TailscaleTimeouts
 import com.idupi.app.data.settings.SettingsProvider
 import com.idupi.app.domain.repository.IduPiClientSource
 import kotlinx.coroutines.CancellationException
@@ -35,6 +36,8 @@ class PhoneStatusReporter(
     private val isEnabled: suspend () -> Boolean,
     private val canReport: () -> Boolean,
     private val intervalMillis: Long = DEFAULT_INTERVAL_MS,
+    private val onTransportFailure: (Throwable) -> Unit = {},
+    private val onTransportSuccess: () -> Unit = {},
 ) {
 
     private val postMutex = Mutex()
@@ -77,6 +80,7 @@ class PhoneStatusReporter(
         val snapshot = snapshotProvider() ?: return false
         return try {
             clientSource.client.postPhoneStatus(snapshot)
+            onTransportSuccess()
             true
         } catch (e: CancellationException) {
             throw e
@@ -84,6 +88,7 @@ class PhoneStatusReporter(
             // The snapshot carries the owner's personal state: log the failure
             // kind only, never the body.
             Log.w(TAG, "status post failed: ${e.javaClass.simpleName}")
+            onTransportFailure(e)
             false
         }
     }
@@ -134,6 +139,8 @@ object PhoneStatusReporting {
                 // reads the saved profile and applies it to the shared client,
                 // so the very first report cannot race the configuration.
                 canReport = { IduPiClientProvider.configureFromStorage(appContext) },
+                onTransportFailure = { error -> TailscaleTimeouts.onFailure(appContext, error) },
+                onTransportSuccess = TailscaleTimeouts::onSuccess,
             ).also { reporter = it }
         }
         current.start(scope)

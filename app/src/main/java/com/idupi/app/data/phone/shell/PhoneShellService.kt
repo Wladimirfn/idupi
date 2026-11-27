@@ -18,6 +18,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import com.idupi.app.MainActivity
+import com.idupi.app.data.phone.tailscale.TailscaleLink
 import io.github.muntashirakon.adb.android.AdbMdns
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -332,6 +333,30 @@ class PhoneShellService : Service() {
         }
         flowJob = scope.launch {
             val outcome = withTimeoutOrNull(SERVICE_TIMEOUT_MS) {
+                if (boot) {
+                    // phone-shell T9: the server link (Tailscale) comes back
+                    // before the shell bridge, so the pollers can reach the
+                    // server as soon as the phone is up. A failure here never
+                    // blocks the shell recovery.
+                    updateNotification(TAILSCALE_TEXT, withCode = false)
+                    val vpnUp = try {
+                        TailscaleLink.ensureConnected(
+                            this@PhoneShellService,
+                            trigger = "boot",
+                        )
+                        TailscaleLink.awaitConnected(this@PhoneShellService, TAILSCALE_WAIT_MS)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Exception) {
+                        Log.w(TAG, "tailscale(boot): check failed: ${error.javaClass.simpleName}")
+                        false
+                    }
+                    Log.i(
+                        TAG,
+                        "tailscale(boot): ${if (vpnUp) "vpn up" else "vpn not up"}",
+                    )
+                    updateNotification(RECOVERY_INITIAL_TEXT, withCode = false)
+                }
                 if (boot &&
                     !ShellRecoveryNetwork.awaitWifi(this@PhoneShellService, BOOT_WIFI_TIMEOUT_MS)
                 ) {
@@ -555,6 +580,7 @@ class PhoneShellService : Service() {
 
         private const val SERVICE_TIMEOUT_MS = 5 * 60_000L
         private const val BOOT_WIFI_TIMEOUT_MS = 2 * 60_000L
+        private const val TAILSCALE_WAIT_MS = 30_000L
         private const val PORT_REMINDER_MS = 30_000L
         private const val MAX_PAIR_ATTEMPTS = 5
 
@@ -575,6 +601,7 @@ class PhoneShellService : Service() {
         private const val BRIDGE_INITIAL_TEXT = "Conectando con la depuración inalámbrica…"
         private const val RECOVERY_TITLE = "Recuperando el puente"
         private const val RECOVERY_INITIAL_TEXT = "Buscando Wi-Fi…"
+        private const val TAILSCALE_TEXT = "Conectando Tailscale…"
         private const val SUCCESS_TITLE = "Puente activo"
         private const val SUCCESS_TEXT = "El puente de IDUPI está activo."
         private const val FAILURE_TITLE = "No se pudo completar"

@@ -6,6 +6,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import androidx.core.content.ContextCompat
@@ -19,6 +23,8 @@ import com.idupi.app.data.phone.bubble.AssistDictationHost
 import com.idupi.app.data.phone.bubble.BubbleGate
 import com.idupi.app.data.phone.bubble.BubbleRequestHost
 import com.idupi.app.data.phone.bubble.PhoneBubbleOverlay
+import com.idupi.app.data.phone.tailscale.TailscaleLink
+import com.idupi.app.data.phone.tailscale.TailscaleTimeouts
 import com.idupi.app.data.settings.SettingsProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -81,6 +87,8 @@ class IdupiAccessibilityService : AccessibilityService() {
 
     private var keyguardReceiverRegistered = false
 
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
     private val keyguardReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             refreshKeyguardLocked()
@@ -93,6 +101,13 @@ class IdupiAccessibilityService : AccessibilityService() {
         PhoneStatusReporting.start(this)
         CalendarReporting.start(this)
         HealthReporting.start(this)
+
+        // phone-shell T9: the accessibility service starts at boot and hosts
+        // the pollers, so this is the earliest reliable link check. It runs
+        // off the main thread; a failure only means Tailscale is missing or
+        // the broadcast was rate-limited.
+        scope.launch { TailscaleLink.ensureConnected(this@IdupiAccessibilityService, trigger = "start") }
+        registerNetworkRecovery()
 
         // assistant-key T5: read the current lock state before the first gate
         // emission and keep it fresh for the whole binding.
@@ -184,6 +199,7 @@ class IdupiAccessibilityService : AccessibilityService() {
         // whose service is unbinding either.
         BubbleRequestHost.detach()
         unregisterKeyguardReceiver()
+        unregisterNetworkRecovery()
         assistSessionActive.value = false
         bubbleOverlay.setVisible(false)
         bubbleJob?.cancel()
@@ -199,6 +215,7 @@ class IdupiAccessibilityService : AccessibilityService() {
         PhoneApprovalReporting.stop()
         AssistDictationHost.detach()
         unregisterKeyguardReceiver()
+        unregisterNetworkRecovery()
         assistSessionActive.value = false
         bubbleOverlay.destroy()
         bubbleJob?.cancel()
@@ -217,6 +234,8 @@ class IdupiAccessibilityService : AccessibilityService() {
             isEnabled = { SettingsProvider.repository.phoneControlEnabled.first() },
             canPoll = { IduPiClientProvider.configureFromStorage(this) },
             execute = executor::execute,
+            onTransportFailure = { error -> TailscaleTimeouts.onFailure(this, error) },
+            onTransportSuccess = TailscaleTimeouts::onSuccess,
         )
 
         controlJob = scope.launch {
@@ -284,6 +303,42 @@ class IdupiAccessibilityService : AccessibilityService() {
         if (!keyguardReceiverRegistered) return
         keyguardReceiverRegistered = false
         runCatching { unregisterReceiver(keyguardReceiver) }
+    }
+
+    /**
+     * Phone-shell T9: any internet network becoming available asks Tailscale
+     * to reconnect. It lives exactly as long as this service binding, not only
+     * while the foreground service runs, because the accessibility service is
+     * the component that starts at boot and hosts the pollers.
+     */
+    private fun registerNetworkRecovery() {
+        if (networkCallback != null) return
+        val manager = getSystemService(ConnectivityManager::class.java) ?: return
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                scope.launch {
+                    TailscaleLink.ensureConnected(this@IdupiAccessibilityService, trigger = "network")
+                }
+            }
+        }
+        runCatching {
+            manager.registerNetworkCallback(
+                NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .build(),
+                callback,
+            )
+            networkCallback = callback
+        }.onFailure { error ->
+            Log.w(TAG, "tailscale(network): could not register callback: ${error.javaClass.simpleName}")
+        }
+    }
+
+    private fun unregisterNetworkRecovery() {
+        val callback = networkCallback ?: return
+        networkCallback = null
+        val manager = getSystemService(ConnectivityManager::class.java) ?: return
+        runCatching { manager.unregisterNetworkCallback(callback) }
     }
 
     companion object {
