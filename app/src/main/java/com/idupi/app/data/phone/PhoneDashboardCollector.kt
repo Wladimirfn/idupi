@@ -46,12 +46,19 @@ object AndroidPhoneDashboardSource : PhoneDashboardSource {
 
     override suspend fun collect(forceAppStorage: Boolean): PhoneDashboardSnapshot =
         withContext(Dispatchers.IO) { collector.collect(forceAppStorage = forceAppStorage) }
+
+    /**
+     * The per-app summary for the status reporter (T3), from the same collector
+     * and 60 s cache the phone page uses. Null without usage access.
+     */
+    fun appStorageSummary(): PhoneAppStorageSummary? = collector.appStorageSummary()
 }
 
 /**
  * Android glue for the phone page: reuses [PhoneStatusCollectors] for battery,
  * signal, network, RAM, storage and today's usage, and adds the per-app
- * `StorageStatsManager` sizes the status reporter deliberately never sends.
+ * `StorageStatsManager` sizes. The status reporter reuses the same cached
+ * reader since phone-dashboard T3 to send the 8 largest apps.
  *
  * The per-app read walks every launchable app, so its result is cached for
  * [AppStorageRefreshPolicy.REFRESH_INTERVAL_MS]; the owner's refresh bypasses
@@ -78,24 +85,7 @@ class PhoneDashboardCollector(
     ): PhoneDashboardSnapshot {
         val status = statusCollectors.collect(BuildConfig.VERSION_NAME, nowMillis)
         val usageAccessGranted = isUsageAccessGranted(context)
-        val appStorage = if (usageAccessGranted) {
-            val due = forceAppStorage ||
-                AppStorageRefreshPolicy.isDue(appStorageReadAtMillis, nowMillis)
-            if (due) {
-                PhoneAppStorageMapping.summarize(appStorageSource.load()).also {
-                    cachedAppStorage = it
-                    appStorageReadAtMillis = nowMillis
-                }
-            } else {
-                cachedAppStorage
-            }
-        } else {
-            // Revoking the access must hide stale sizes, not freeze the last
-            // list forever.
-            cachedAppStorage = null
-            appStorageReadAtMillis = null
-            null
-        }
+        val appStorage = appStorageSummary(forceAppStorage, nowMillis, usageAccessGranted)
 
         return PhoneDashboardSnapshot(
             battery = status.battery,
@@ -108,6 +98,34 @@ class PhoneDashboardCollector(
             usageAccessGranted = usageAccessGranted,
             appStorage = appStorage,
         )
+    }
+
+    /**
+     * The per-app sizes, cached for [AppStorageRefreshPolicy.REFRESH_INTERVAL_MS]
+     * and shared with the status reporter (T3), which sends the largest eight.
+     * Null when usage access is not granted: revoking it must hide stale sizes
+     * instead of freezing the last list forever.
+     */
+    @Synchronized
+    fun appStorageSummary(
+        forceAppStorage: Boolean = false,
+        nowMillis: Long = System.currentTimeMillis(),
+        usageAccessGranted: Boolean = isUsageAccessGranted(context),
+    ): PhoneAppStorageSummary? {
+        if (!usageAccessGranted) {
+            cachedAppStorage = null
+            appStorageReadAtMillis = null
+            return null
+        }
+        val due = forceAppStorage ||
+            AppStorageRefreshPolicy.isDue(appStorageReadAtMillis, nowMillis)
+        if (due) {
+            PhoneAppStorageMapping.summarize(appStorageSource.load()).also {
+                cachedAppStorage = it
+                appStorageReadAtMillis = nowMillis
+            }
+        }
+        return cachedAppStorage
     }
 }
 

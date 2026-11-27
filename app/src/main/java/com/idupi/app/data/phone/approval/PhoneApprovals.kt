@@ -111,6 +111,13 @@ object PhoneApprovalReporting {
             isBubbleAttached = ApprovalVoiceHost::isAttached,
             deliverToBubble = ApprovalVoiceHost::offer,
             notifyFallback = notifier::show,
+            // T4: a server-created approval carries the turn that produced it;
+            // when present, that exact turn must still be alive on this phone.
+            isOwnerTurnActiveFor = { approval ->
+                val turnId = approval.ownerTurnId
+                OwnerTurnRegistry.hasActiveTurn() &&
+                    (turnId.isNullOrBlank() || OwnerTurnRegistry.isActive(turnId))
+            },
         )
         val poller = PhoneApprovalPoller(
             clientSource = IduPiClientProvider,

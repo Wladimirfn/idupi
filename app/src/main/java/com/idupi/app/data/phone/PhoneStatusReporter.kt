@@ -117,15 +117,25 @@ object PhoneStatusReporting {
     fun start(context: Context) {
         val appContext = context.applicationContext
         val collectors = PhoneStatusCollectors(appContext)
-        val current = reporter ?: PhoneStatusReporter(
-            clientSource = IduPiClientProvider,
-            snapshotProvider = { collectors.collect(BuildConfig.VERSION_NAME) },
-            isEnabled = { SettingsProvider.repository.phoneStatusEnabled.first() },
-            // configureFromStorage doubles as "is a PC configured?": it reads
-            // the saved profile and applies it to the shared client, so the
-            // very first report cannot race the configuration.
-            canReport = { IduPiClientProvider.configureFromStorage(appContext) },
-        ).also { reporter = it }
+        val current = reporter ?: run {
+            PhoneStatusReporter(
+                clientSource = IduPiClientProvider,
+                snapshotProvider = {
+                    collectors.collect(BuildConfig.VERSION_NAME).copy(
+                        // T3: the same per-app reader and 60 s cache the
+                        // Dashboard uses; null without usage access.
+                        largestApps = PhoneAppStorageMapping.toLargestApps(
+                            AndroidPhoneDashboardSource.appStorageSummary(),
+                        ),
+                    )
+                },
+                isEnabled = { SettingsProvider.repository.phoneStatusEnabled.first() },
+                // configureFromStorage doubles as "is a PC configured?": it
+                // reads the saved profile and applies it to the shared client,
+                // so the very first report cannot race the configuration.
+                canReport = { IduPiClientProvider.configureFromStorage(appContext) },
+            ).also { reporter = it }
+        }
         current.start(scope)
     }
 

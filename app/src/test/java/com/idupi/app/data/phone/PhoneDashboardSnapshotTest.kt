@@ -78,6 +78,28 @@ class PhoneDashboardSnapshotTest {
     }
 
     @Test
+    fun `the status wire list keeps the eight largest apps and their bytes`() {
+        val summary = PhoneAppStorageMapping.summarize(
+            listOf(
+                app("com.whatsapp", appBytes = 1_000, cacheBytes = 500, label = "WhatsApp"),
+                app("com.android.chrome", appBytes = 2_000, cacheBytes = 100, label = "Chrome"),
+            )
+        )
+
+        val wire = PhoneAppStorageMapping.toLargestApps(summary)
+
+        assertEquals(
+            listOf(
+                PhoneLargestApp("Chrome", "com.android.chrome", 2_100, 100),
+                PhoneLargestApp("WhatsApp", "com.whatsapp", 1_500, 500),
+            ),
+            wire,
+        )
+        assertNull(PhoneAppStorageMapping.toLargestApps(null))
+        assertNull(PhoneAppStorageMapping.toLargestApps(PhoneAppStorageSummary(emptyList(), 0)))
+    }
+
+    @Test
     fun `bytes format in es-CL style across units`() {
         assertEquals("1,2 GB", formatPhoneBytes(1_288_490_189L))
         assertEquals("1 GB", formatPhoneBytes(1_073_741_824L))

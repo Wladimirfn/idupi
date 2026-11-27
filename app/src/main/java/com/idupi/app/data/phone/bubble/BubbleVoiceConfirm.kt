@@ -278,11 +278,22 @@ sealed interface BubbleConfirmEvent {
     /** The owner tapped Enviar while the loop ran. */
     data object SendTapped : BubbleConfirmEvent
 
+    /** The owner tapped the Aprobar button under the prompt (T4). */
+    data object ButtonApprove : BubbleConfirmEvent
+
+    /** The owner tapped the Rechazar button under the prompt (T4). */
+    data object ButtonReject : BubbleConfirmEvent
+
     /**
      * The screen read finished. Screen text is untrusted data: it only feeds
-     * the spoken sentence, never the decision.
+     * the spoken sentence, never the decision. [detail] is the storage size
+     * line a cache/uninstall prompt reads back (T4), when the screen has one.
      */
-    data class ReadDone(val recipient: String?, val text: String?) : BubbleConfirmEvent
+    data class ReadDone(
+        val recipient: String?,
+        val text: String?,
+        val detail: String? = null,
+    ) : BubbleConfirmEvent
 
     /** The compose field took the appended words. */
     data object AppendDone : BubbleConfirmEvent

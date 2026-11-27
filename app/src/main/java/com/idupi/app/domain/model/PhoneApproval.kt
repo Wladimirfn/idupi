@@ -29,12 +29,24 @@ data class PhoneApproval(
     val state: String = PhoneApprovalState.PENDING,
     val command: PhoneApprovalCommand = PhoneApprovalCommand(),
     val reason: String = "",
+    /**
+     * Additive detail the server sends for a destructive step that needs its
+     * own wording (phone-dashboard T6). Null for every other approval and for
+     * an older server.
+     */
+    val riskKind: String? = null,
     val target: String? = null,
     val foregroundApp: PhoneApprovalApp? = null,
     val requestedBy: String = "",
     val createdAt: String = "",
     val expiresAt: String = "",
     val decidedAt: String? = null,
+    /**
+     * The bubble turn that created the command, when any (phone-dashboard
+     * T4). A destructive approval is voiced only while this exact turn is
+     * still active on the device, then the same condition as T23 applies.
+     */
+    val ownerTurnId: String? = null,
     val commandId: String? = null,
     val resultCommandId: String? = null,
 )
@@ -59,6 +71,15 @@ object PhoneApprovalReason {
     const val TYPE_SUBMIT = "type_submit"
     const val SENSITIVE_APP = "sensitive_app"
     const val PHONE_DETECTED = "phone_detected_risky_target"
+}
+
+/**
+ * Optional `riskKind` values (phone-dashboard T6). They refine a destructive
+ * approval so the bubble can name what is lost; the approval is still a normal
+ * gate and runs only with a grant.
+ */
+object PhoneApprovalRiskKind {
+    const val DATA_WIPE = "data_wipe"
 }
 
 /**

@@ -13,14 +13,41 @@ import android.view.accessibility.AccessibilityWindowInfo
  *
  * @property recipient conversation title: WhatsApp's
  *   `com.whatsapp:id/conversation_contact_name`, or a generic window/toolbar
- *   fallback. Null when nothing readable was found.
+ *   fallback. On a Settings screen it is the title (the app name). Null when
+ *   nothing readable was found.
  * @property text the composed message: WhatsApp's `com.whatsapp:id/entry`, or
  *   the focused / first editable field of the active window.
+ * @property detail the storage size line of a Settings app screen ("Caché
+ *   1,2 GB"), used by "léemelo" on a cache/uninstall prompt (T4). Null when
+ *   the screen shows none.
  */
 data class ApprovalScreenContent(
     val recipient: String?,
     val text: String?,
+    val detail: String? = null,
 )
+
+/**
+ * Pure selection of the storage size line (phone-dashboard T4): the first
+ * visible text that carries both a size and a storage word. Kept Android-free
+ * so it is unit-tested on the JVM.
+ */
+object ApprovalScreenText {
+
+    /** A number with a binary unit, comma or dot decimals: "1,2 GB". */
+    private val SIZE = Regex("""\d+(?:[.,]\d+)?\s*(?:TB|GB|MB|kB|KB|B)\b""", RegexOption.IGNORE_CASE)
+
+    /** Words that make a size line a storage line. "Datos" alone is not. */
+    private val STORAGE = Regex(
+        "cach[eé]|almacenamiento|storage|memoria interna|internal storage",
+        RegexOption.IGNORE_CASE,
+    )
+
+    fun sizeLine(texts: List<String>): String? = texts
+        .asSequence()
+        .map { it.trim() }
+        .firstOrNull { it.isNotEmpty() && SIZE.containsMatchIn(it) && STORAGE.containsMatchIn(it) }
+}
 
 /**
  * Reads and edits the app behind the bubble with the accessibility service.
@@ -39,6 +66,7 @@ class ApprovalScreenReader(private val service: AccessibilityService) {
         return ApprovalScreenContent(
             recipient = knownRecipient(roots) ?: genericRecipient(roots),
             text = composeField(roots)?.text?.toString()?.trim()?.takeIf { it.isNotEmpty() },
+            detail = ApprovalScreenText.sizeLine(allTexts(roots)),
         )
     }
 
@@ -223,6 +251,19 @@ class ApprovalScreenReader(private val service: AccessibilityService) {
     private fun nodeLabel(node: AccessibilityNodeInfo): String? =
         node.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }
             ?: node.contentDescription?.toString()?.trim()?.takeIf { it.isNotEmpty() }
+
+    /** Every visible text/description, depth-first, for the size-line search. */
+    private fun allTexts(nodes: List<AccessibilityNodeInfo>): List<String> {
+        val texts = mutableListOf<String>()
+        fun visit(node: AccessibilityNodeInfo) {
+            nodeLabel(node)?.let(texts::add)
+            for (index in 0 until node.childCount) {
+                node.getChild(index)?.let(::visit)
+            }
+        }
+        nodes.forEach(::visit)
+        return texts
+    }
 
     private companion object {
         private const val TAG = "ApprovalScreenReader"

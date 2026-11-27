@@ -24,6 +24,12 @@ data class PhoneStatus(
     val storage: PhoneStorage? = null,
     val foregroundApp: PhoneAppRef? = null,
     val topAppsToday: List<PhoneTopApp>? = null,
+    /**
+     * Additive field (phone-dashboard T3): the 8 largest apps with their cache,
+     * read locally with `StorageStatsManager` and sent only when usage access
+     * is granted. Older contracts simply omit it.
+     */
+    val largestApps: List<PhoneLargestApp>? = null,
     val collectedAt: String,
     val appVersion: String = "",
 )
@@ -85,4 +91,16 @@ data class PhoneTopApp(
     val label: String,
     val packageName: String,
     val minutes: Int,
+)
+
+/**
+ * One `largestApps` entry (phone-dashboard T3): the whole footprint and what
+ * "Borrar caché" would free. Only sent when usage access is granted.
+ */
+@Serializable
+data class PhoneLargestApp(
+    val label: String,
+    val packageName: String,
+    val totalBytes: Long,
+    val cacheBytes: Long,
 )

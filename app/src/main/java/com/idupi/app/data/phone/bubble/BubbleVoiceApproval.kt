@@ -1,7 +1,11 @@
 package com.idupi.app.data.phone.bubble
 
+import com.idupi.app.data.phone.approval.ApprovalVoiceKind
+
 /**
- * Copy of the voice approval of an outbound message (phone-bubble T23).
+ * Copy of the voice approval of an outbound message (phone-bubble T23) and of
+ * every destructive step (phone-dashboard T4 + T6): cache, uninstall, data
+ * wipe and any other delete.
  *
  * Neutral Latin American Spanish (tú, no voseo): the owner hears and reads the
  * same sentence. The app label comes from the foreground app; when it is not
@@ -12,6 +16,15 @@ object ApprovalVoiceCopy {
 
     /** Used when the foreground app cannot be named. */
     const val UNKNOWN_APP = "esta app"
+
+    /** Used when the screen shows nothing the bubble can name. */
+    const val UNKNOWN_SUBJECT = "esto"
+
+    /** Spoken when the owner said no to a data wipe (T6). */
+    const val REJECTED_DATA_WIPE = "No borré los datos."
+
+    /** Spoken when the owner said no to any other destructive step (T6). */
+    const val REJECTED_DESTRUCTIVE = "No borré nada."
 
     /** A composed message is read back up to this many characters. */
     const val MAX_READ_CHARS = 400
@@ -24,6 +37,15 @@ object ApprovalVoiceCopy {
 
     /** Spoken after the owner said no; the message is not sent. */
     const val MESSAGE_REJECTED = "No lo envié."
+
+    /** Spoken when the owner said no to a cache clear (T4). */
+    const val REJECTED_CACHE = "No borré la caché."
+
+    /** Spoken when the owner said no to an uninstall (T4). */
+    const val REJECTED_UNINSTALL = "No desinstalé la app."
+
+    /** Re-asked when an addition does not apply to a cache/uninstall prompt. */
+    const val PROMPT_YES_NO = "Responde sí o no."
 
     /**
      * The package of an Android resource id (`com.whatsapp:id/send` ->
@@ -39,6 +61,95 @@ object ApprovalVoiceCopy {
     fun sendPrompt(appLabel: String?): String {
         val label = appLabel?.trim()?.takeIf { it.isNotEmpty() } ?: UNKNOWN_APP
         return "Voy a enviar el mensaje por $label. ¿Está bien?"
+    }
+
+    /** "Voy a borrar la caché de WhatsApp. ¿Está bien?" (T4) */
+    fun cachePrompt(appLabel: String?): String {
+        val label = appLabel?.trim()?.takeIf { it.isNotEmpty() } ?: UNKNOWN_APP
+        return "Voy a borrar la caché de $label. ¿Está bien?"
+    }
+
+    /** "Voy a desinstalar WhatsApp. ¿Está bien?" (T4) */
+    fun uninstallPrompt(appLabel: String?): String {
+        val label = appLabel?.trim()?.takeIf { it.isNotEmpty() } ?: UNKNOWN_APP
+        return "Voy a desinstalar $label. ¿Está bien?"
+    }
+
+    /**
+     * "Voy a borrar los datos de WhatsApp. Se cierra la sesión y se pierden
+     * sus archivos en el teléfono. ¿Estás seguro?" (T6)
+     */
+    fun dataWipePrompt(appLabel: String?): String {
+        val label = appLabel?.trim()?.takeIf { it.isNotEmpty() } ?: UNKNOWN_APP
+        return "Voy a borrar los datos de $label. " +
+            "Se cierra la sesión y se pierden sus archivos en el teléfono. " +
+            "¿Estás seguro?"
+    }
+
+    /**
+     * "Voy a eliminar la foto. No se puede deshacer. ¿Estás seguro?" (T6).
+     * [action] is the destructive verb the approval carries; [subject] is what
+     * the screen shows. A title that repeats the verb is not said twice, and
+     * an unknown subject becomes "esto".
+     */
+    fun destructivePrompt(action: String?, subject: String?): String {
+        val verb = destructiveVerb(action)
+        val raw = subject?.let(::singleLine)?.takeIf { it.isNotEmpty() }
+        val what = raw?.let { withoutLeadingVerb(it, verb) }
+            ?.takeIf { it.isNotEmpty() }
+            ?: UNKNOWN_SUBJECT
+        return "Voy a $verb $what. No se puede deshacer. ¿Estás seguro?"
+    }
+
+    /** The prompt of one approval family. */
+    fun promptFor(
+        kind: ApprovalVoiceKind,
+        appLabel: String?,
+        subject: String? = null,
+        action: String? = null,
+    ): String = when (kind) {
+        ApprovalVoiceKind.MESSAGE -> sendPrompt(appLabel)
+        ApprovalVoiceKind.CACHE -> cachePrompt(appLabel)
+        ApprovalVoiceKind.UNINSTALL -> uninstallPrompt(appLabel)
+        ApprovalVoiceKind.DATA_WIPE -> dataWipePrompt(appLabel)
+        ApprovalVoiceKind.DESTRUCTIVE -> destructivePrompt(action, subject)
+    }
+
+    /** What the owner hears after rejecting a step of [kind]. */
+    fun rejectMessage(kind: ApprovalVoiceKind): String = when (kind) {
+        ApprovalVoiceKind.MESSAGE -> MESSAGE_REJECTED
+        ApprovalVoiceKind.CACHE -> REJECTED_CACHE
+        ApprovalVoiceKind.UNINSTALL -> REJECTED_UNINSTALL
+        ApprovalVoiceKind.DATA_WIPE -> REJECTED_DATA_WIPE
+        ApprovalVoiceKind.DESTRUCTIVE -> REJECTED_DESTRUCTIVE
+    }
+
+    /** Spanish verb for the generic destructive sentence; "Delete" -> eliminar. */
+    private fun destructiveVerb(action: String?): String =
+        when (val verb = action?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }) {
+            null -> "eliminar"
+            "delete", "remove" -> "eliminar"
+            else -> verb
+        }
+
+    /** Drops a leading repetition of [verb] ("Borrar descargas" -> "descargas"). */
+    private fun withoutLeadingVerb(text: String, verb: String): String {
+        val normalized = text.lowercase()
+        if (!normalized.startsWith(verb)) return text
+        val rest = text.substring(verb.length)
+        if (rest.isNotEmpty() && rest.first().isLetterOrDigit()) return text
+        return rest.trimStart(' ', ':', '-', '–', '.', ',')
+    }
+
+    /**
+     * "Léemelo" on a cache/uninstall prompt (T4): the Settings size line when
+     * the screen has one ("Caché 1,2 GB" -> "Caché 1,2 GB. ¿Está bien?"),
+     * otherwise the title, otherwise the bare question.
+     */
+    fun storageReadPrompt(detail: String?, appLabel: String?): String {
+        val line = detail?.let(::singleLine)?.takeIf { it.isNotEmpty() }
+            ?: appLabel?.let(::singleLine)?.takeIf { it.isNotEmpty() }
+        return if (line == null) "¿Está bien?" else "$line. ¿Está bien?"
     }
 
     /**
@@ -79,7 +190,8 @@ object ApprovalVoiceCopy {
 
 /**
  * Pure event -> state -> action table for the voice approval of an outbound
- * message (phone-bubble T23).
+ * message (phone-bubble T23) and of a cache/uninstall step (phone-dashboard
+ * T4).
  *
  * Only an approval the routing rule sent to the bubble may reach this reducer;
  * the overlay binds the approve/reject actions to that one id. The owner's
@@ -87,11 +199,16 @@ object ApprovalVoiceCopy {
  *
  * - affirmative: approve and say nothing more;
  * - read ("léemelo"): read the recipient and the composed text from the screen
- *   and ask again;
+ *   (a cache/uninstall prompt reads the size line or the Settings title) and
+ *   ask again;
  * - add with content / anything else: append to the compose field and ask
- *   again; a failed append asks whether to send it as it is;
- * - bare add intent: ask what to add;
- * - cancel: reject and say "No lo envié.";
+ *   again; a failed append asks whether to send it as it is. For a cache or
+ *   uninstall prompt an addition makes no sense, so every non-answer asks
+ *   "Responde sí o no." again;
+ * - bare add intent: ask what to add (messages) or yes/no (cache/uninstall);
+ * - cancel: reject and say the family's rejection copy;
+ * - the Aprobar / Rechazar buttons decide from any active state through the
+ *   same Approve/Reject actions as a spoken answer;
  * - silence, a recognizer error, a typed takeover or a collapsed panel fall
  *   back to the usual approval notification so nothing hangs silently;
  * - an expired or externally decided approval stops without a notification.
@@ -104,10 +221,13 @@ object BubbleVoiceApprovalReducer {
     fun reduce(
         state: BubbleConfirmState,
         event: BubbleConfirmEvent,
+        kind: ApprovalVoiceKind = ApprovalVoiceKind.MESSAGE,
     ): BubbleConfirmDecision = when (event) {
         is BubbleConfirmEvent.StartApproval -> onStart(state, event.prompt)
-        is BubbleConfirmEvent.Answer -> onAnswer(state, event.text)
-        is BubbleConfirmEvent.ReadDone -> onReadDone(state, event)
+        is BubbleConfirmEvent.Answer -> onAnswer(state, event.text, kind)
+        is BubbleConfirmEvent.ReadDone -> onReadDone(state, event, kind)
+        BubbleConfirmEvent.ButtonApprove -> onButton(state, approve = true, kind = kind)
+        BubbleConfirmEvent.ButtonReject -> onButton(state, approve = false, kind = kind)
         BubbleConfirmEvent.TtsDone,
         BubbleConfirmEvent.TtsUnavailable,
         -> onSpeechFinished(state)
@@ -137,10 +257,14 @@ object BubbleVoiceApprovalReducer {
         )
     }
 
-    private fun onAnswer(state: BubbleConfirmState, raw: String): BubbleConfirmDecision {
+    private fun onAnswer(
+        state: BubbleConfirmState,
+        raw: String,
+        kind: ApprovalVoiceKind,
+    ): BubbleConfirmDecision {
         val answer = raw.trim()
         return when (state) {
-            BubbleConfirmState.AwaitingAnswer -> onAnswerToApproval(answer)
+            BubbleConfirmState.AwaitingAnswer -> onAnswerToApproval(answer, kind)
             BubbleConfirmState.AwaitingAddition -> onAddition(answer)
             // Anywhere else the microphone is not the approval's: a late
             // callback must never approve or reject.
@@ -158,12 +282,15 @@ object BubbleVoiceApprovalReducer {
             return stopWithFallback(BubbleConfirmState.AwaitingAddition, stopSpeech = false)
         }
         if (BubbleVoiceConfirm.classify(answer) == ConfirmReply.Cancel) {
-            return rejectAndSayIt()
+            return rejectAndSayIt(ApprovalVoiceKind.MESSAGE)
         }
         return writeToCompose(answer)
     }
 
-    private fun onAnswerToApproval(answer: String): BubbleConfirmDecision {
+    private fun onAnswerToApproval(
+        answer: String,
+        kind: ApprovalVoiceKind,
+    ): BubbleConfirmDecision {
         if (answer.isEmpty()) {
             return stopWithFallback(BubbleConfirmState.AwaitingAnswer, stopSpeech = false)
         }
@@ -176,8 +303,24 @@ object BubbleVoiceApprovalReducer {
                 state = BubbleConfirmState.Reading,
                 actions = listOf(BubbleConfirmAction.ReadScreen),
             )
-            is ConfirmReply.AddWithContent -> writeToCompose(reply.addition)
-            ConfirmReply.AddOnly -> BubbleConfirmDecision(
+            is ConfirmReply.AddWithContent -> additionOrAsk(reply.addition, kind)
+            ConfirmReply.AddOnly -> additionOrAsk(null, kind)
+            ConfirmReply.Cancel -> rejectAndSayIt(kind)
+            is ConfirmReply.Other -> additionOrAsk(reply.text, kind)
+        }
+    }
+
+    /**
+     * T23 messages append what the owner said; a cache/uninstall prompt has
+     * nothing to append, so every addition-shaped answer asks yes or no again.
+     */
+    private fun additionOrAsk(
+        addition: String?,
+        kind: ApprovalVoiceKind,
+    ): BubbleConfirmDecision {
+        if (kind != ApprovalVoiceKind.MESSAGE) return askYesOrNo()
+        if (addition == null) {
+            return BubbleConfirmDecision(
                 state = BubbleConfirmState.Speaking(
                     BubbleVoiceConfirm.PROMPT_ADD,
                     ConfirmListenTarget.ADDITION,
@@ -187,33 +330,70 @@ object BubbleVoiceApprovalReducer {
                     BubbleConfirmAction.Speak(BubbleVoiceConfirm.PROMPT_ADD),
                 ),
             )
-            ConfirmReply.Cancel -> BubbleConfirmDecision(
+        }
+        return writeToCompose(addition)
+    }
+
+    private fun askYesOrNo(): BubbleConfirmDecision = BubbleConfirmDecision(
+        state = BubbleConfirmState.Speaking(
+            ApprovalVoiceCopy.PROMPT_YES_NO,
+            ConfirmListenTarget.ANSWER,
+        ),
+        actions = listOf(
+            BubbleConfirmAction.ShowPrompt(ApprovalVoiceCopy.PROMPT_YES_NO),
+            BubbleConfirmAction.Speak(ApprovalVoiceCopy.PROMPT_YES_NO),
+        ),
+    )
+
+    private fun rejectAndSayIt(kind: ApprovalVoiceKind): BubbleConfirmDecision =
+        BubbleConfirmDecision(
+            state = BubbleConfirmState.Idle,
+            actions = listOf(
+                BubbleConfirmAction.HidePrompt,
+                BubbleConfirmAction.Speak(ApprovalVoiceCopy.rejectMessage(kind)),
+                BubbleConfirmAction.Reject,
+            ),
+        )
+
+    /**
+     * Aprobar / Rechazar (T4): the buttons decide through the same Approve
+     * and Reject actions a spoken answer produces. The overlay stops TTS and
+     * the recognizer before dispatching; from Idle nothing is owned.
+     */
+    private fun onButton(
+        state: BubbleConfirmState,
+        approve: Boolean,
+        kind: ApprovalVoiceKind,
+    ): BubbleConfirmDecision {
+        if (state == BubbleConfirmState.Idle) return BubbleConfirmDecision(state)
+        return if (approve) {
+            BubbleConfirmDecision(
+                state = BubbleConfirmState.Idle,
+                actions = listOf(BubbleConfirmAction.HidePrompt, BubbleConfirmAction.Approve),
+            )
+        } else {
+            BubbleConfirmDecision(
                 state = BubbleConfirmState.Idle,
                 actions = listOf(
                     BubbleConfirmAction.HidePrompt,
-                    BubbleConfirmAction.Speak(ApprovalVoiceCopy.MESSAGE_REJECTED),
+                    BubbleConfirmAction.Speak(ApprovalVoiceCopy.rejectMessage(kind)),
                     BubbleConfirmAction.Reject,
                 ),
             )
-            is ConfirmReply.Other -> writeToCompose(reply.text)
         }
     }
-
-    private fun rejectAndSayIt(): BubbleConfirmDecision = BubbleConfirmDecision(
-        state = BubbleConfirmState.Idle,
-        actions = listOf(
-            BubbleConfirmAction.HidePrompt,
-            BubbleConfirmAction.Speak(ApprovalVoiceCopy.MESSAGE_REJECTED),
-            BubbleConfirmAction.Reject,
-        ),
-    )
 
     private fun onReadDone(
         state: BubbleConfirmState,
         event: BubbleConfirmEvent.ReadDone,
+        kind: ApprovalVoiceKind,
     ): BubbleConfirmDecision {
         if (state != BubbleConfirmState.Reading) return BubbleConfirmDecision(state)
-        val prompt = ApprovalVoiceCopy.readPrompt(event.recipient, event.text)
+        val prompt = if (kind == ApprovalVoiceKind.MESSAGE) {
+            ApprovalVoiceCopy.readPrompt(event.recipient, event.text)
+        } else {
+            ApprovalVoiceCopy.storageReadPrompt(event.detail, event.recipient)
+        }
         return BubbleConfirmDecision(
             state = BubbleConfirmState.Speaking(prompt, ConfirmListenTarget.ANSWER),
             actions = listOf(

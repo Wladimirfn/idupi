@@ -89,6 +89,48 @@ class ApprovalGateTest {
     }
 
     @Test
+    fun `a data wipe node is a gated destructive step, not a hard block`() = runTest {
+        // Owner correction (phone-dashboard T6): deleting data needs an
+        // approval that names what is lost, never a deterministic refusal.
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.APPROVAL_REQUIRED, "Borrar datos"),
+            checkNode(null, "Borrar datos"),
+        )
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.APPROVAL_REQUIRED, "Clear data"),
+            checkNode(null, "Clear data"),
+        )
+
+        // A grant the owner gave on this phone runs it once, like any other
+        // destructive target.
+        ledger.record(grant("apr-123456789abc", target = "Borrar datos"))
+        assertEquals(
+            ApprovalGateResult.Allowed,
+            checkNode(approval(target = "Borrar datos"), "Borrar datos"),
+        )
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),
+            checkNode(approval(target = "Borrar datos"), "Borrar datos"),
+        )
+    }
+
+    @Test
+    fun `clearing the cache still goes through the normal approval gate`() = runTest {
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.APPROVAL_REQUIRED, "Borrar caché"),
+            checkNode(null, "Borrar caché"),
+        )
+    }
+
+    @Test
+    fun `uninstalling requires approval like any destructive step`() = runTest {
+        assertEquals(
+            ApprovalGateResult.Refused(ApprovalGate.APPROVAL_REQUIRED, "Desinstalar"),
+            checkNode(null, "Desinstalar"),
+        )
+    }
+
+    @Test
     fun `an approval not granted on this phone never executes`() = runTest {
         assertEquals(
             ApprovalGateResult.Refused(ApprovalGate.NOT_GRANTED_ON_PHONE),

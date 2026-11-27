@@ -41,9 +41,12 @@ asking approval for anything it deletes.
 - Agent playbook (server prompt): read status incl. largest apps; Samsung
   "Cuidado del dispositivo" -> "Optimizar ahora" (other OEMs: their cleaner or
   Settings > Storage); clear cache of the largest caches via Settings > Apps >
-  <app> > Almacenamiento > "Borrar caché" (never "Borrar datos"); suggest
-  uninstalling unused apps and only do it with approval; finish with the space
-  freed (status before/after).
+  <app> > Almacenamiento > "Borrar caché"; T6: "Borrar datos", deleting
+  files/photos/folders and uninstalling are allowed only when the owner asked
+  for that deletion in the request, through an approval that says what is
+  lost, and never on the agent's own initiative during an optimization;
+  suggest uninstalling unused apps and only do it with approval; finish with
+  the space freed (status before/after).
 - Approvals: during an owner bubble turn, destructive cache/uninstall steps
   are asked in the bubble (voice + Aprobar/Rechazar buttons) naming the app and
   size; money never by voice; anything else keeps the notification.
@@ -61,6 +64,14 @@ asking approval for anything it deletes.
 - [ ] T4 App: bubble approval for owner-turn cache/uninstall steps (voice,
       naming app and size) + Aprobar/Rechazar buttons on every bubble approval
       prompt; money never voiced; tests.
+- [ ] T6 Owner correction (2026-11-26): no deterministic hard block for data
+      wipes. "Borrar datos", "Borrar almacenamiento", deleting files/photos or
+      the Downloads folder are allowed when the owner asks for it, through an
+      approval that names what is erased and what is lost ("¿Estás seguro?"),
+      voice/buttons in the bubble during the owner's own turn. The agent never
+      wipes data on its own initiative (playbook rule; the approval still
+      applies). Money stays notification-only. Also: the server suite hung for
+      20+ minutes after T3 (worker reported 16 s); find and fix the hang.
 - [ ] T5 Release: version bump, assembleRelease, install, owner live check
       ("optimiza mi teléfono" by voice and by text), PR.
 
@@ -70,7 +81,9 @@ asking approval for anything it deletes.
 - "Optimiza mi teléfono" (voice, text or button) runs the optimization; every
   deletion is approved by the owner in the bubble; the answer says how much
   space was freed.
-- Nothing is deleted without approval; "Borrar datos" is never tapped.
+- Nothing is deleted without approval; "Borrar datos" is tapped only when the
+  owner explicitly asked for that deletion and approved it in the bubble (T6:
+  reasoned approval, not a deterministic block).
 
 ## Checks
 

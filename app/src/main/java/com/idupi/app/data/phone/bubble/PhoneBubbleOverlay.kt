@@ -49,6 +49,7 @@ import com.idupi.app.data.inbox.InboxNotifier
 import com.idupi.app.data.phone.approval.ApprovalNotifier
 import com.idupi.app.data.phone.approval.ApprovalVoiceFallback
 import com.idupi.app.data.phone.approval.ApprovalVoiceHost
+import com.idupi.app.data.phone.approval.ApprovalVoiceKind
 import com.idupi.app.data.phone.approval.ApprovalVoiceRoute
 import com.idupi.app.data.phone.approval.ApprovalVoiceRouting
 import com.idupi.app.data.phone.approval.OwnerTurnRegistry
@@ -208,6 +209,12 @@ class PhoneBubbleOverlay(
     /** Read-back line of the spoken loop: the approval question (T21/T23). */
     private var confirmPrompt: TextView? = null
 
+    /**
+     * Aprobar / Rechazar under the read-back line (phone-dashboard T4). Shown
+     * only while a bubble approval owns the loop.
+     */
+    private var confirmButtons: View? = null
+
     /** Text currently on the read-back line; null hides it. */
     private var confirmPromptText: String? = null
 
@@ -222,6 +229,9 @@ class PhoneBubbleOverlay(
      * or rejected by voice; cleared as soon as the loop leaves it.
      */
     private var voiceApproval: PhoneApproval? = null
+
+    /** Which sentence the loop speaks: message (T23), cache or uninstall (T4). */
+    private var voiceApprovalKind: ApprovalVoiceKind = ApprovalVoiceKind.MESSAGE
 
     /**
      * The routed approval was seen in a pending poll. From then on, a poll
@@ -524,6 +534,7 @@ class PhoneBubbleOverlay(
         voiceListeningRow = null
         voiceLevels = null
         confirmPrompt = null
+        confirmButtons = null
         try {
             windowManager.removeView(view)
         } catch (error: Exception) {
@@ -674,6 +685,7 @@ class PhoneBubbleOverlay(
         voiceListeningRow = null
         voiceLevels = null
         confirmPrompt = null
+        confirmButtons = null
         startIdleAnimation(circle, sheen)
     }
 
@@ -751,6 +763,7 @@ class PhoneBubbleOverlay(
 
         card.addView(buildStatusLine())
         card.addView(buildConfirmPrompt())
+        card.addView(buildConfirmButtons())
         card.addView(buildRetryButton())
         card.addView(buildInputRow())
 
@@ -874,6 +887,31 @@ class PhoneBubbleOverlay(
             confirmPrompt = it
             renderConfirmPrompt()
         }
+
+    /**
+     * Aprobar / Rechazar under the prompt (T4): owners who type instead of
+     * speak decide through the same path as a voice answer. Hidden unless a
+     * bubble approval owns the loop.
+     */
+    private fun buildConfirmButtons(): View {
+        val row = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            visibility = View.GONE
+            setPadding(0, dp(2), 0, dp(2))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            )
+        }
+        row.addView(filledButton("Aprobar") { onApprovalButton(approve = true) }
+            .apply { layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { rightMargin = dp(8) } })
+        row.addView(glassButton("Rechazar") { onApprovalButton(approve = false) })
+        return row.also { confirmButtons = it }
+    }
 
     private fun buildRetryButton(): View =
         filledButton("Reintentar") { controller.retry() }.apply {
@@ -1464,7 +1502,7 @@ class PhoneBubbleOverlay(
     private fun dispatchConfirm(event: BubbleConfirmEvent) {
         val wasActive = confirmState != BubbleConfirmState.Idle
         val decision = if (voiceApproval != null) {
-            BubbleVoiceApprovalReducer.reduce(confirmState, event)
+            BubbleVoiceApprovalReducer.reduce(confirmState, event, voiceApprovalKind)
         } else {
             BubbleVoiceConfirmReducer.reduce(confirmState, event)
         }
@@ -1523,6 +1561,8 @@ class PhoneBubbleOverlay(
         val text = confirmPromptText
         line.text = text.orEmpty()
         line.visibility = if (text.isNullOrEmpty()) View.GONE else View.VISIBLE
+        confirmButtons?.visibility =
+            if (!text.isNullOrEmpty() && voiceApproval != null) View.VISIBLE else View.GONE
     }
 
     // --- voice approval of the outbound message (T23) ---------------------
@@ -1549,9 +1589,12 @@ class PhoneBubbleOverlay(
      * claimed approval is never dropped.
      */
     private fun startVoiceApproval(approval: PhoneApproval) {
+        val turnId = approval.ownerTurnId
+        val ownerTurnActive = OwnerTurnRegistry.hasActiveTurn() &&
+            (turnId.isNullOrBlank() || OwnerTurnRegistry.isActive(turnId))
         val route = ApprovalVoiceRouting.decide(
             approval = approval,
-            ownerTurnActive = OwnerTurnRegistry.hasActiveTurn(),
+            ownerTurnActive = ownerTurnActive,
             bubbleAttached = visible && root != null,
             nowMillis = System.currentTimeMillis(),
         )
@@ -1565,7 +1608,14 @@ class PhoneBubbleOverlay(
             postApprovalNotification(approval, stillPending = true)
             return
         }
+        val kind = ApprovalVoiceRouting.voiceKind(approval)
+        if (kind == null) {
+            Log.i(TAG, "voice approval skipped: ${approval.id}")
+            postApprovalNotification(approval, stillPending = true)
+            return
+        }
         voiceApproval = approval
+        voiceApprovalKind = kind
         // The same poll already replaced the pending list before offering new
         // rows, so this is the freshest local evidence that the approval is
         // still pending; a later poll without it means it was decided or
@@ -1576,12 +1626,32 @@ class PhoneBubbleOverlay(
         // The app behind must keep the input focus and stay the accessibility
         // active window; the panel is only a mirror of the spoken question.
         releaseFocusForVoiceApproval()
+        // T23 names the messaging app from the command/window; T4/T6 name the
+        // Settings app or the selected screen item from the title the owner is
+        // looking at (one read for both the app and the generic subject).
+        val screenTitle = if (kind == ApprovalVoiceKind.MESSAGE) null else resolveSettingsTitle()
+        val appLabel = if (kind == ApprovalVoiceKind.MESSAGE) {
+            resolveAppLabel(approval)
+        } else {
+            screenTitle
+        }
+        val subject = if (kind == ApprovalVoiceKind.DESTRUCTIVE) screenTitle else null
+        val action = if (kind == ApprovalVoiceKind.DESTRUCTIVE) {
+            ApprovalVoiceRouting.destructiveAction(approval)
+        } else {
+            null
+        }
         dispatchConfirm(
             BubbleConfirmEvent.StartApproval(
-                ApprovalVoiceCopy.sendPrompt(resolveAppLabel(approval)),
+                ApprovalVoiceCopy.promptFor(kind, appLabel, subject = subject, action = action),
             ),
         )
     }
+
+    /** Settings screen title read for a cache/uninstall prompt, or null. */
+    private fun resolveSettingsTitle(): String? = runCatching {
+        screenReader.read().recipient?.trim()?.takeIf { it.isNotEmpty() }
+    }.getOrNull()
 
     private fun releaseFocusForVoiceApproval() {
         hideKeyboard()
@@ -1628,6 +1698,7 @@ class PhoneBubbleOverlay(
     private fun decideVoiceApproval(approve: Boolean) {
         val approval = voiceApproval ?: return
         voiceApproval = null
+        voiceApprovalKind = ApprovalVoiceKind.MESSAGE
         voiceApprovalSeenPending = false
         Log.i(TAG, "voice approval ${approval.id}: ${if (approve) "approved" else "rejected"}")
         scope.launch(Dispatchers.IO) {
@@ -1647,7 +1718,22 @@ class PhoneBubbleOverlay(
     private fun readVoiceApprovalScreen() {
         // Screen text is data only: it is spoken, never classified or logged.
         val content = screenReader.read()
-        postConfirm(BubbleConfirmEvent.ReadDone(content.recipient, content.text))
+        postConfirm(
+            BubbleConfirmEvent.ReadDone(content.recipient, content.text, content.detail),
+        )
+    }
+
+    /**
+     * Aprobar / Rechazar (T4): stops the microphone and the spoken prompt, then
+     * uses the same reducer decision as the spoken answer ("sí" / "no").
+     */
+    private fun onApprovalButton(approve: Boolean) {
+        if (voiceApproval == null) return
+        stopTts()
+        abandonVoice(render = true)
+        dispatchConfirm(
+            if (approve) BubbleConfirmEvent.ButtonApprove else BubbleConfirmEvent.ButtonReject,
+        )
     }
 
     private fun appendVoiceApprovalText(text: String) {
@@ -1671,6 +1757,7 @@ class PhoneBubbleOverlay(
         val stillPending = !voiceApprovalSeenPending ||
             approvals.pending.value.any { it.id == approval.id }
         voiceApproval = null
+        voiceApprovalKind = ApprovalVoiceKind.MESSAGE
         voiceApprovalSeenPending = false
         postApprovalNotification(approval, stillPending)
     }
@@ -1702,6 +1789,7 @@ class PhoneBubbleOverlay(
         // Neither event leaves a surface behind: the approval is already gone.
         if (confirmState == BubbleConfirmState.Idle) {
             voiceApproval = null
+            voiceApprovalKind = ApprovalVoiceKind.MESSAGE
             voiceApprovalSeenPending = false
         }
     }

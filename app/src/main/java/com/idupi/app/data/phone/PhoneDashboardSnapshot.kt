@@ -4,8 +4,9 @@ import java.util.Locale
 
 /**
  * Storage sizes of one launchable app, read with `StorageStatsManager` on the
- * phone (phone-dashboard T1). The status reporter never sends these: the wire
- * contract in `idupi-server/docs/phone.md` stays untouched.
+ * phone (phone-dashboard T1). The Dashboard reads them locally; since T3 the
+ * status reporter also sends the 8 largest as the additive `largestApps`
+ * field, so the PC agent can name what a cleanup would free.
  *
  * @property appBytes APK plus extracted code; @property dataBytes the app's
  *   data directory; @property cacheBytes what "Borrar caché" would free.
@@ -76,6 +77,24 @@ object PhoneAppStorageMapping {
             .take(limit.coerceAtLeast(0)),
         totalCacheBytes = apps.sumOf { it.cacheBytes },
     )
+
+    /**
+     * Wire form of the largest apps for `PhoneStatus.largestApps` (T3): the
+     * already-sorted top list, or null when there is nothing to report (no
+     * usage access, an empty read or every app with zero bytes). Null keeps the
+     * field out of the JSON instead of sending an empty array.
+     */
+    fun toLargestApps(summary: PhoneAppStorageSummary?): List<PhoneLargestApp>? =
+        summary?.apps
+            ?.map { app ->
+                PhoneLargestApp(
+                    label = app.label,
+                    packageName = app.packageName,
+                    totalBytes = app.totalBytes,
+                    cacheBytes = app.cacheBytes,
+                )
+            }
+            ?.takeIf { it.isNotEmpty() }
 }
 
 /**
