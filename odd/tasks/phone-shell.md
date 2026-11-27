@@ -164,6 +164,23 @@ estamos siendo muy estrictos ... con tanta aprobación que no logra ejecutar".
   `pm uninstall` stays only as a fallback.
 - Bootstrap failure text no longer says "Reinicia el teléfono".
 
+## T6/T7 design (decided 2026-11-27 12:40)
+
+- Recovery routine `ShellBridgeRecovery` (app): when the helper `status` is
+  not active and IDUPI is paired, on Wi-Fi: remember `adb_wifi_enabled`, set it
+  to 1 (WRITE_SECURE_SETTINGS, already granted), wait for adbd, run
+  `ShellBridgeBootstrap` (connect, update helper if needed, detached start,
+  probe), then restore `adb_wifi_enabled` to its previous value so the adb port
+  is not left open on the LAN (the bridge survives adbd restarts, proven).
+  Single-flight, at most one attempt every 2 minutes, every outcome logged
+  under `IdupiPhoneShell`. Off Wi-Fi it does nothing and says why.
+- Triggers: `BOOT_COMPLETED` / `LOCKED_BOOT_COMPLETED`-safe receiver (after
+  unlock), Wi-Fi becoming available (network callback held while IDUPI's
+  foreground service runs), and on demand: a `shell` command that finds the
+  bridge unavailable tries one recovery and retries once before failing.
+- The adb key authorization can expire after 7 days unused; every recovery
+  uses it, and a failed connect is reported as "vuelve a vincular".
+
 ## Tasks
 
 - [x] T1 Device spike over PC adb on the S24 (see evidence). Result: plain
