@@ -57,6 +57,7 @@ export const COMMAND_TYPES = [
     "global",
     "open",
     "settings",
+    "shell",
     "wait",
     "status",
 ];
@@ -75,6 +76,48 @@ export const GLOBAL_ACTIONS = ["back", "home", "recents", "notifications", "quic
 // free-form intent from the PC. `app` is the one screen that takes a package.
 export const SETTINGS_SCREENS = ["device-care", "storage", "battery", "apps"];
 export const SETTINGS_APP_SCREEN = "app";
+
+// Phone-shell T4: the typed `shell` command replaces a free-form shell with a
+// closed action list. Both sides validate the same contract: the server here
+// (queue boundary) and the helper on the phone (execution boundary), so a
+// command that slips past one is still refused by the other.
+export const SHELL_ACTIONS = [
+    "info",
+    "trim-caches",
+    "force-stop",
+    "background",
+    "disable",
+    "enable",
+];
+// `info` takes exactly a topic; every other action takes exactly its own keys.
+export const SHELL_INFO_TOPICS = ["storage", "memory", "battery", "packages"];
+// `background <pkg> allow|ignore` maps to appops RUN_IN_BACKGROUND (ignore) and
+// RUN_ANY_IN_BACKGROUND (allow).
+export const SHELL_BACKGROUND_MODES = ["allow", "ignore"];
+// Refused on both sides even though they are valid package ids: stopping,
+// background-limiting or disabling them breaks the phone, IDUPI itself or the
+// channel the command travels through.
+export const SHELL_PROTECTED_PACKAGES = [
+    "com.idupi.app",
+    "com.idupi.shell",
+    "android",
+    "com.android.systemui",
+    "com.android.settings",
+    "com.android.phone",
+    "com.android.providers.settings",
+    "com.google.android.gms",
+    "com.sec.android.app.launcher",
+    "com.samsung.android.honeyboard",
+];
+
+/** Actions that name a package, and therefore honour the protected list. */
+export const SHELL_PACKAGE_ACTIONS = ["force-stop", "background", "disable"];
+
+/** True when a shell action would refuse this package as protected. */
+export function isProtectedShellPackage(action, packageName) {
+    if (!SHELL_PACKAGE_ACTIONS.includes(action)) return false;
+    return SHELL_PROTECTED_PACKAGES.includes(packageName);
+}
 
 // A package id: at least two dot-separated segments, each starting with a
 // letter (the first) or a letter/underscore (the rest). Same rule on the phone.
@@ -199,6 +242,85 @@ function normalizeTarget(args) {
     };
 }
 
+/** Validates one shell package argument: a valid id, capped and not protected. */
+function normalizeShellPackage(action, value, { allowProtected = false } = {}) {
+    // The protected check runs first: `android` is a real package id that the
+    // stricter name regex below would reject anyway, and naming the real reason
+    // tells the phone (and the agent) that the refusal is deliberate.
+    if (!allowProtected && isProtectedShellPackage(action, value)) {
+        throw typedError("INVALID_COMMAND", `package is protected: ${value}`);
+    }
+    if (!isValidPackageName(value)) {
+        throw typedError("INVALID_COMMAND", "package must be a valid package name");
+    }
+    if (value.length > MAX_APP_CHARS) {
+        throw typedError("INVALID_COMMAND", `package exceeds ${MAX_APP_CHARS} characters`);
+    }
+    return value;
+}
+
+/**
+ * Validates the typed `shell` command (phone-shell T4). Each action accepts
+ * exactly the keys of the contract: no action is free-form, and an extra key is
+ * refused even when it looks harmless.
+ */
+function normalizeShellArgs(args) {
+    rejectUnknownArgs(args, ["action", "topic", "package", "mode"]);
+    if (!SHELL_ACTIONS.includes(args.action)) {
+        throw typedError("INVALID_COMMAND", "action must be one of: " + SHELL_ACTIONS.join(", "));
+    }
+
+    switch (args.action) {
+        case "info":
+            rejectUnknownArgs(args, ["action", "topic"]);
+            if (!SHELL_INFO_TOPICS.includes(args.topic)) {
+                throw typedError(
+                    "INVALID_COMMAND",
+                    "topic must be one of: " + SHELL_INFO_TOPICS.join(", "),
+                );
+            }
+            return { action: "info", topic: args.topic };
+        case "trim-caches":
+            rejectUnknownArgs(args, ["action"]);
+            return { action: "trim-caches" };
+        case "force-stop":
+            rejectUnknownArgs(args, ["action", "package"]);
+            return {
+                action: "force-stop",
+                package: normalizeShellPackage("force-stop", args.package),
+            };
+        case "background":
+            rejectUnknownArgs(args, ["action", "package", "mode"]);
+            if (!SHELL_BACKGROUND_MODES.includes(args.mode)) {
+                throw typedError(
+                    "INVALID_COMMAND",
+                    "mode must be one of: " + SHELL_BACKGROUND_MODES.join(", "),
+                );
+            }
+            return {
+                action: "background",
+                package: normalizeShellPackage("background", args.package),
+                mode: args.mode,
+            };
+        case "disable":
+            rejectUnknownArgs(args, ["action", "package"]);
+            return {
+                action: "disable",
+                package: normalizeShellPackage("disable", args.package),
+            };
+        case "enable":
+            // Undo: enabling is always safe, so the protected list does not
+            // apply (it is also how the owner recovers a package by hand).
+            rejectUnknownArgs(args, ["action", "package"]);
+            return {
+                action: "enable",
+                package: normalizeShellPackage("enable", args.package, { allowProtected: true }),
+            };
+        default:
+            throw typedError("INVALID_COMMAND", "unknown shell action");
+    }
+}
+
 /** Validates one command type and returns the normalized args. */
 export function normalizeCommandArgs(type, rawArgs) {
     if (!COMMAND_TYPES.includes(type)) {
@@ -275,6 +397,9 @@ export function normalizeCommandArgs(type, rawArgs) {
             }
             return { screen: args.screen };
         }
+        case "shell":
+            // A typed command surface, not a free-form shell (phone-shell T4).
+            return normalizeShellArgs(args);
         case "wait":
             rejectUnknownArgs(args, ["ms"]);
             if (!Number.isInteger(args.ms) || args.ms < 0 || args.ms > MAX_WAIT_MS) {
@@ -707,11 +832,16 @@ export function createPhoneStore({
             });
             // An owner bubble turn is the approval for its messaging steps
             // (owner rule 2026-11-26). Money, destructive, confirmation and
-            // sensitive-app steps keep the normal gate. The approval is marked
-            // approved before anyone can poll it, so no card or notification is
-            // shown and the command is delivered on the next poll carrying the
-            // same approvalId/approvedTarget a manual approval produces.
-            if (turnId !== null && verdict.category === "message") {
+            // sensitive-app steps keep the normal gate. An optimization step
+            // (phone-shell T4: clearing caches, stopping or background-limiting
+            // an app) is the one the owner asked for by name when they say
+            // "optimiza mi teléfono", so it is auto-approved the same way and
+            // leaves `message` untouched. The approval is marked approved
+            // before anyone can poll it, so no card or notification is shown
+            // and the command is delivered on the next poll carrying the same
+            // approvalId/approvedTarget a manual approval produces.
+            const autoCategories = ["message", "optimization"];
+            if (turnId !== null && autoCategories.includes(verdict.category)) {
                 const decided = approvalStore.decideApproval(approval.id, "approve", {
                     decidedBy: `owner-request:${turnId}`,
                 });

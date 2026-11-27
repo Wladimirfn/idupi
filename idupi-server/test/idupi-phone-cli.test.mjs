@@ -153,6 +153,109 @@ test("parseArgs handles the settings screens (T7)", () => {
     assert.equal(parseArgs(["settings", "app", "com..whatsapp"]).command, "help");
 });
 
+test("parseArgs handles the typed shell surface (T4)", () => {
+    for (const topic of ["storage", "memory", "battery", "packages"]) {
+        assert.deepEqual(parseArgs(["shell", "info", topic]), {
+            command: "shell",
+            action: "info",
+            topic,
+        });
+    }
+    assert.deepEqual(parseArgs(["shell", "trim-caches"]), {
+        command: "shell",
+        action: "trim-caches",
+    });
+    assert.deepEqual(parseArgs(["shell", "force-stop", "com.whatsapp"]), {
+        command: "shell",
+        action: "force-stop",
+        package: "com.whatsapp",
+    });
+    assert.deepEqual(parseArgs(["shell", "background", "com.whatsapp", "ignore"]), {
+        command: "shell",
+        action: "background",
+        package: "com.whatsapp",
+        mode: "ignore",
+    });
+    assert.deepEqual(parseArgs(["shell", "background", "com.whatsapp", "allow"]), {
+        command: "shell",
+        action: "background",
+        package: "com.whatsapp",
+        mode: "allow",
+    });
+    assert.deepEqual(parseArgs(["shell", "disable", "com.facebook.katana"]), {
+        command: "shell",
+        action: "disable",
+        package: "com.facebook.katana",
+    });
+    assert.deepEqual(parseArgs(["shell", "enable", "com.facebook.katana"]), {
+        command: "shell",
+        action: "enable",
+        package: "com.facebook.katana",
+    });
+
+    // The wire shape the agent sends for each parsed action.
+    assert.deepEqual(actionFor(parseArgs(["shell", "info", "memory"])), {
+        type: "shell",
+        args: { action: "info", topic: "memory" },
+    });
+    assert.deepEqual(actionFor(parseArgs(["shell", "trim-caches"])), {
+        type: "shell",
+        args: { action: "trim-caches" },
+    });
+    assert.deepEqual(actionFor(parseArgs(["shell", "force-stop", "com.whatsapp"])), {
+        type: "shell",
+        args: { action: "force-stop", package: "com.whatsapp" },
+    });
+    assert.deepEqual(actionFor(parseArgs(["shell", "background", "com.whatsapp", "ignore"])), {
+        type: "shell",
+        args: { action: "background", package: "com.whatsapp", mode: "ignore" },
+    });
+    assert.deepEqual(actionFor(parseArgs(["shell", "disable", "com.facebook.katana"])), {
+        type: "shell",
+        args: { action: "disable", package: "com.facebook.katana" },
+    });
+    assert.deepEqual(actionFor(parseArgs(["shell", "enable", "com.facebook.katana"])), {
+        type: "shell",
+        args: { action: "enable", package: "com.facebook.katana" },
+    });
+
+    // Closed surface: no action outside the contract, no missing or extra arg.
+    for (const argv of [
+        ["shell"],
+        ["shell", "exec"],
+        ["shell", "exec", "rm -rf /"],
+        ["shell", "info"],
+        ["shell", "info", "wifi"],
+        ["shell", "info", "storage", "extra"],
+        ["shell", "trim-caches", "now"],
+        ["shell", "force-stop"],
+        ["shell", "force-stop", "whatsapp"],
+        ["shell", "force-stop", "com..whatsapp"],
+        ["shell", "force-stop", "com.whatsapp", "extra"],
+        ["shell", "background"],
+        ["shell", "background", "com.whatsapp"],
+        ["shell", "background", "com.whatsapp", "stop"],
+        ["shell", "disable"],
+        ["shell", "enable", "com.whatsapp", "extra"],
+    ]) {
+        assert.equal(parseArgs(argv).command, "help", JSON.stringify(argv));
+    }
+
+    // The protected packages are refused here too, except for the undo. The
+    // bare `android` id never passes the package regex, so only dotted ids are
+    // reachable.
+    for (const packageName of ["com.idupi.app", "com.android.systemui"]) {
+        assert.equal(parseArgs(["shell", "force-stop", packageName]).command, "help");
+        assert.equal(parseArgs(["shell", "disable", packageName]).command, "help");
+        assert.equal(
+            parseArgs(["shell", "background", packageName, "ignore"]).command,
+            "help",
+        );
+        assert.equal(parseArgs(["shell", "enable", packageName]).command, "shell");
+    }
+    assert.equal(parseArgs(["shell", "force-stop", "android"]).command, "help");
+});
+
 test("parseArgs covers log, help and unknown input", () => {
     assert.deepEqual(parseArgs(["log"]), { command: "log" });
     assert.equal(parseArgs(["log", "extra"]).command, "help");

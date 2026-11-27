@@ -253,5 +253,36 @@ export function classifyCommand(command, { foregroundPackage = null } = {}) {
         return { gated: false, reason: "free" };
     }
 
+    if (type === "shell") {
+        // phone-shell T4: the typed shell surface. Reading device state and
+        // undoing a disable (`enable`) change nothing the owner cares about;
+        // freeing space, stopping or background-limiting an app is an
+        // optimization (auto in an owner turn, like `message`); disabling a
+        // package is destructive and is asked by voice.
+        const action = typeof args.action === "string" ? args.action : "";
+        if (action === "info" || action === "enable") {
+            return { gated: false, reason: "free" };
+        }
+        if (action === "disable") {
+            return {
+                gated: true,
+                reason: RISK_REASONS.riskyText,
+                target: typeof args.package === "string" ? args.package : null,
+                category: "destructive",
+            };
+        }
+        if (action === "trim-caches" || action === "force-stop" || action === "background") {
+            return {
+                gated: true,
+                reason: RISK_REASONS.riskyText,
+                target: typeof args.package === "string" ? args.package : null,
+                category: "optimization",
+            };
+        }
+        // An action the store would reject anyway: keep it free here so the
+        // classifier never invents a gate for a command that cannot run.
+        return { gated: false, reason: "free" };
+    }
+
     return { gated: false, reason: "free" };
 }

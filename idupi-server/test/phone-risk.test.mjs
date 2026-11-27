@@ -362,3 +362,57 @@ test("a sensitive messaging app is a message step, a bank app is money", () => {
     );
     assert.equal(banking.category, "money");
 });
+
+// --- typed shell command (phone-shell, T4) --------------------------------
+
+test("shell info and enable are free: reading and undoing change nothing", () => {
+    for (const topic of ["storage", "memory", "battery", "packages"]) {
+        const verdict = classifyCommand({ type: "shell", args: { action: "info", topic } });
+        assert.equal(verdict.gated, false, topic);
+        assert.equal(verdict.reason, "free");
+    }
+    const enable = classifyCommand({
+        type: "shell",
+        args: { action: "enable", package: "com.facebook.katana" },
+    });
+    assert.equal(enable.gated, false);
+    assert.equal(enable.reason, "free");
+});
+
+test("shell optimization steps are gated as an optimization, not as a message", () => {
+    const trims = classifyCommand({ type: "shell", args: { action: "trim-caches" } });
+    assert.equal(trims.gated, true);
+    assert.equal(trims.category, "optimization");
+
+    const forceStop = classifyCommand({
+        type: "shell",
+        args: { action: "force-stop", package: "com.whatsapp" },
+    });
+    assert.equal(forceStop.gated, true);
+    assert.equal(forceStop.category, "optimization");
+    assert.equal(forceStop.target, "com.whatsapp");
+
+    const background = classifyCommand({
+        type: "shell",
+        args: { action: "background", package: "com.whatsapp", mode: "ignore" },
+    });
+    assert.equal(background.gated, true);
+    assert.equal(background.category, "optimization");
+    assert.equal(background.target, "com.whatsapp");
+});
+
+test("shell disable is destructive", () => {
+    const verdict = classifyCommand({
+        type: "shell",
+        args: { action: "disable", package: "com.facebook.katana" },
+    });
+    assert.equal(verdict.gated, true);
+    assert.equal(verdict.category, "destructive");
+    assert.equal(verdict.target, "com.facebook.katana");
+});
+
+test("an unknown shell action never invents a gate", () => {
+    const verdict = classifyCommand({ type: "shell", args: { action: "exec" } });
+    assert.equal(verdict.gated, false);
+    assert.equal(verdict.reason, "free");
+});

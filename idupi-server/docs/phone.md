@@ -59,6 +59,7 @@ command queue is memory-only; a server restart never replays a stale command.
 | `global` | `{action}` where action is `back`, `home`, `recents`, `notifications`, `quick_settings` | Global system action |
 | `open` | `{app}` | Launch an app by package name or visible label |
 | `settings` | `{screen}` where screen is `device-care`, `storage`, `battery` or `apps`; `{screen: "app", package}` for one app | Open a fixed Settings screen by intent |
+| `shell` | `{action}` plus that action's exact keys (see [Shell](#shell-phone-shell-t4)) | Run one typed command with the phone's shell identity |
 | `wait` | `{ms}` (0..10000) | Pause inside the phone executor |
 | `status` | `{}` | Ask the phone to report `POST /phone/status` now |
 
@@ -123,6 +124,59 @@ Every intent starts from the accessibility service with
   `{ "message": "...", "fallback": true }`, so the agent knows it got the
   storage screen.
 - `settings` is navigation: `phone-risk.mjs` classifies it free, like `open`.
+
+## Shell (phone-shell T4)
+
+`shell` runs one typed operation with the phone's shell identity. It is an
+allowlist, never a free-form command string: the PC names an action and the
+exact keys that action takes, and three layers validate the same contract
+(the server at the queue boundary, the app and the helper at the execution
+boundary). The helper builds a fixed argv vector: no `sh -c`, no concatenation
+of untrusted input.
+
+Source: [`lib/phone-store.mjs`](../lib/phone-store.mjs) (validation);
+`ShellCommandRules` / `ShellRequestValidator` on the phone repeat the same list;
+the executor lives in `shellhelper/`.
+
+| `action` | `args` | What it runs |
+|----------|--------|--------------|
+| `info` | `{topic}` where topic is `storage`, `memory`, `battery` or `packages` | Read device state: free/total storage, available/total memory (`/proc/meminfo`), battery level/status/temperature, or the third-party package list (`pm list packages -3`, first 30 names) |
+| `trim-caches` | `{}` | Free every app's cache (`cmd package trim-caches 4096G`) and report the space freed |
+| `force-stop` | `{package}` | Stop one app (`am force-stop`) |
+| `background` | `{package, mode}` where mode is `allow` or `ignore` | Set `RUN_ANY_IN_BACKGROUND` to `allow` / `ignore` |
+| `disable` | `{package}` | Disable the app for the owner (`pm disable-user --user 0`) |
+| `enable` | `{package}` | Re-enable it (`pm enable --user 0`) |
+
+- `package` must be a package id (same regex as `settings app`: at least two
+  dot-separated segments). An unknown action, a missing key, an extra key, an
+  unknown topic or mode is `400 INVALID_COMMAND`; nothing is created.
+- `force-stop`, `background` and `disable` refuse the protected packages:
+  `com.idupi.app`, `com.idupi.shell`, `android`, `com.android.systemui`,
+  `com.android.settings`, `com.android.phone`,
+  `com.android.providers.settings`, `com.google.android.gms`,
+  `com.sec.android.app.launcher` and `com.samsung.android.honeyboard`. Stopping
+  or background-limiting one of them breaks the phone, IDUPI itself or the
+  channel the command travels through. `enable` is the undo, so it accepts any
+  package id.
+- The successful `result` is `{ "text": "<sentence>", "path": "exec" | "api" }`,
+  plus `freeBefore` / `freeAfter` (bytes) for `trim-caches`. `text` is what the
+  CLI prints; `path` says whether the operation used the helper's child process
+  (`exec`) or a framework fallback (`api`). `trim-caches` falls back to the
+  framework when the child hits a `SecurityException`, and the sentence already
+  includes the freed space.
+- The phone re-checks the allowlist before executing, so a forged Binder call
+  cannot widen the surface; a refusal answers `{ ok: false, error: "<message>" }`.
+
+Risk and approvals ([`lib/phone-risk.mjs`](../lib/phone-risk.mjs)):
+
+- `info` and `enable` are free: reading state and undoing a disable change
+  nothing.
+- `trim-caches`, `force-stop` and `background` are optimization steps. Inside
+  an owner bubble turn they are approved automatically like a `message` step
+  (`category: "optimization"`); without an owner turn they wait in the normal
+  approval queue.
+- `disable` is destructive: it is gated like a delete and waits for the owner
+  even inside an owner turn (asked by voice in the bubble).
 
 ## Approvals
 
@@ -630,6 +684,12 @@ idupi-phone open whatsapp
 idupi-phone settings device-care     # Cuidado del dispositivo (Samsung) o storage
 idupi-phone settings storage         # Ajustes de almacenamiento
 idupi-phone settings app com.whatsapp
+idupi-phone shell info storage       # estado del dispositivo con la shell del teléfono
+idupi-phone shell trim-caches        # libera la caché de todas las apps
+idupi-phone shell force-stop com.facebook.katana
+idupi-phone shell background com.facebook.katana ignore
+idupi-phone shell disable com.facebook.katana   # pide tu aprobación
+idupi-phone shell enable com.facebook.katana
 idupi-phone wait 1500
 idupi-phone calendar                     # agenda for the next 7 days
 idupi-phone calendar --days 14 --json    # raw agenda payload
