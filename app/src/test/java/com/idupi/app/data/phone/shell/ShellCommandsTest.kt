@@ -84,7 +84,7 @@ class ShellCommandsTest {
     fun `startBridgeDetached runs the instrumentation in its own session`() {
         assertEquals(
             "setsid sh -c 'am instrument -w -r com.idupi.shell/.ShellBridgeInstrumentation " +
-                "> /dev/null 2>&1' < /dev/null > /dev/null 2>&1 &",
+                "> /dev/null 2>&1' < /dev/null > /dev/null 2>&1 & sleep 3",
             ShellCommands.startBridgeDetached(),
         )
     }
@@ -112,8 +112,9 @@ class ShellCommandsTest {
             "true & echo __IDUPI_EXIT__\$?",
             ShellCommands.withExitStatus("true &"),
         )
+        // The detached start now ends in `sleep`, so the normal `; ` applies.
         assertEquals(
-            "${ShellCommands.startBridgeDetached()} echo __IDUPI_EXIT__\$?",
+            "${ShellCommands.startBridgeDetached()}; echo __IDUPI_EXIT__\$?",
             ShellCommands.withExitStatus(ShellCommands.startBridgeDetached()),
         )
     }

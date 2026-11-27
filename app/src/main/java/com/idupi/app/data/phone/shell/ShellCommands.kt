@@ -35,9 +35,18 @@ object ShellCommands {
      * blocking `shell:` exec would hit the exec timeout every time, so the
      * command backgrounds itself with `setsid`, and the outer redirects keep
      * the adb stream from waiting on the still-open child stdout.
+     *
+     * The trailing `sleep` keeps the adb shell session open while the
+     * background child reaches `setsid`: the reader stops at the exit marker
+     * and closes the stream at once, and closing it while the child was still
+     * in the old session killed the start (owner retries 11:49 and 11:52 on
+     * 2026-11-27 never reached `am instrument`; the same command with the
+     * session held open worked).
      */
     fun startBridgeDetached(): String =
-        "setsid sh -c 'am instrument -w -r com.idupi.shell/.ShellBridgeInstrumentation > /dev/null 2>&1' < /dev/null > /dev/null 2>&1 &"
+        "setsid sh -c 'am instrument -w -r com.idupi.shell/.ShellBridgeInstrumentation > /dev/null 2>&1' < /dev/null > /dev/null 2>&1 & sleep $DETACH_SETTLE_SECONDS"
+
+    private const val DETACH_SETTLE_SECONDS = 3
 
     /**
      * Streams an APK over stdin into `cmd package install`, the same service
