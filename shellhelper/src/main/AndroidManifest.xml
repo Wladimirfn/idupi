@@ -8,6 +8,16 @@
         android:name="com.idupi.shell.permission.BRIDGE"
         android:protectionLevel="signature" />
 
+    <!-- Package visibility (Android 11+): the adopted shell identity covers
+         permission checks, but the system still filters packages by this
+         app's uid, so `pm enable`/`am force-stop`/`pm list` from the helper
+         saw only itself ("Unknown package"). A shell helper must see every
+         package. -->
+    <uses-permission
+        android:name="android.permission.QUERY_ALL_PACKAGES"
+        xmlns:tools="http://schemas.android.com/tools"
+        tools:ignore="QueryAllPackagesPermission" />
+
     <!-- IDUPI shell helper (phone-shell). No launcher activity: the owner never
          opens it. It exists so the shell bridge runs in its own package:
          `am instrument` force-stops the whole target package, and targeting
