@@ -248,7 +248,7 @@ boot with the accessibility service.
       the service is enabled but not connected; helper `kick-accessibility`
       first, adb `uiautomator dump` fallback). Removed: the PC push-flow kick
       (it suppressed accessibility on every install for nothing).
-- [ ] T9 Server link self-recovery (Tailscale auto-connect, design above).
+- [x] T9 Server link self-recovery (Tailscale auto-connect, design above).
 - [ ] T8 Release: version bump, assembleRelease (app + helper), push to
       phone, live check, docs (`idupi-server/docs/phone.md`, README), PR.
 
@@ -276,6 +276,7 @@ boot with the accessibility service.
 
 | Task | Commit | Checks |
 |------|--------|--------|
+| Reboot 3 (full) | (docs commit) | Owner reboot ~13:52 with 1.76, touching nothing (neither IDUPI nor Tailscale). At 13:55:12 through the server: phone online (seen 1 s ago, Wi-Fi), `shell info storage` 160 GB free, privileged `shell enable com.sec.android.app.sbrowser` ok, `info battery` ok; wireless debugging back off (no `_adb-tls-connect` advertised). The whole chain (Tailscale -> server link -> shell bridge) came back alone. |
 | T9 | 9d28f8a | worker work-1: `TailscaleLink` (installed + VPN check, explicit CONNECT_VPN broadcast, 60 s cooldown, single-flight), `TailscaleLinkPolicy` (18 tests), `TailscaleTimeouts` (2 consecutive transport failures with a 100.64.0.0/10 host), triggers: accessibility connect, boot flow (waits up to 30 s for the VPN before the shell recovery), any-network callback for the accessibility service lifetime, poller failures; always-on set only when empty. `:app:testDebugUnitTest` 1532 ok. 1.76-tailscale-auto (versionCode 77) installed: `always_on_vpn_app=com.tailscale.ipn`, lockdown unset. Live 13:49:10 DISCONNECT_VPN broadcast -> `tailscale(network): connected` at 13:49:11, VPN up for the next 120 s. Reboot test pending. |
 | T6 reboot 2 | (docs commit) | Owner reboot ~13:04 with 1.75: boot receiver 13:05:13, adb_wifi on, adbd TLS up but mDNS -65563 again, 3 discoveries empty, re-toggle at 13:05:47, adbd re-advertised, helper adopted the shell identity at 13:05:52, `recovery(boot): recovered` 13:05:56, adb_wifi restored to 0 at 13:05:57 (`tls_server.enable changed to 0`). Bridge (pid 21080) still active at 13:11:55. Separate pre-existing gap: after the reboot the phone could not reach the server because the app targets the Tailscale host (100.73.94.118) and Tailscale was not reconnected (all pollers `ConnectTimeoutException`), so the owner thought the server was down; the server was up the whole time (pid 24236 since 12:20). |
 | T6 reboot 1 | 0a66204 | Owner reboot 12:56: boot receiver scheduled recovery, IDUPI set adb_wifi_enabled=1 at 12:56:54, adbd opened TLS port 44519 but logged `Could not register mDNS service _adb-tls-connect._tcp, error (-65563)` (mdnsd not running yet); 3 discoveries found nothing and the owner saw the wrong text "la autorización puede haber caducado". Fix: typed `AdbServiceNotFoundException`, bootstrap reports `serviceNotFound`, recovery re-toggles adb_wifi (0, 1.5 s, 1, 2 s) once and re-runs the bootstrap; honest text when the service never appears; policy test added. 1.75 (versionCode 76) installed. Reboot retest pending. |
@@ -344,7 +345,7 @@ it runs).
 
 ## Next step
 
-T8 release + PR (owner decides push/PR). Follow-ups outside this feature: the
-phone's server link after a reboot depends on Tailscale reconnecting (Always-on
-VPN, or a LAN fallback host at home).
+T8 release + PR (owner decides push/PR; owner said 2026-11-27 13:35 "aún no la
+subas"). Candidate follow-ups: scan leftover large files in shared storage; the
+agent opening an app to look before a batch.
 Candidate follow-up: scan large leftover files in shared storage.
