@@ -50,7 +50,9 @@ import kotlin.coroutines.resumeWithException
 class PhoneShellService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val notifications = NotificationManagerCompat.from(this)
+    // Lazy: a Service has no base context until attachBaseContext, which runs
+    // after construction; resolving it in an initializer crashed on start.
+    private val notifications by lazy { NotificationManagerCompat.from(this) }
     private var flowJob: Job? = null
     private var codeChannel: Channel<String>? = null
     private var notificationTitle: String = PAIR_TITLE
