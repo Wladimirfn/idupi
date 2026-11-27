@@ -2,21 +2,17 @@ package com.idupi.app.ui.screens
 
 import android.content.Intent
 import android.widget.Toast
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -24,7 +20,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Apps
+import androidx.compose.material.icons.filled.Computer
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -64,12 +64,19 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.idupi.app.data.inbox.InboxCaptureState
 import com.idupi.app.data.inbox.InstalledApp
-import com.idupi.app.data.inbox.InstalledApps
 import com.idupi.app.data.inbox.isInboxListenerEnabled
 import com.idupi.app.data.inbox.notificationListenerSettingsIntent
 import com.idupi.app.data.inbox.requestInboxListenerRebind
 import com.idupi.app.domain.model.InboxImportance
 import com.idupi.app.domain.model.InboxSettings
+import com.idupi.app.ui.screens.settings.SettingsCategoryRow
+import com.idupi.app.ui.screens.settings.SettingsRoute
+import com.idupi.app.ui.screens.settings.SettingsSubScreen
+import com.idupi.app.ui.screens.settings.SettingsSubScreenScaffold
+import com.idupi.app.ui.screens.settings.analystSummary
+import com.idupi.app.ui.screens.settings.captureStatusSummary
+import com.idupi.app.ui.screens.settings.followedAppsSummary
+import com.idupi.app.ui.screens.settings.silencedChatsSummary
 import com.idupi.app.ui.theme.AppShapes
 import com.idupi.app.ui.theme.AppSpacing
 import com.idupi.app.ui.theme.AppTypography
@@ -85,11 +92,12 @@ import com.idupi.app.ui.theme.TextSecondary
 import com.idupi.app.viewmodel.InboxAgentConfigState
 import com.idupi.app.viewmodel.InboxCaptureActionState
 import com.idupi.app.viewmodel.InboxSettingsViewModel
-import com.idupi.app.viewmodel.InstalledAppsState
 
 /**
- * Ajustes > ALERTAS (phone-inbox T5): notification access, followed apps,
- * reminder cadence, template auto-reply and the PC-side agent configuration.
+ * Ajustes > ALERTAS (phone-inbox T5, settings redesign T4): the settings that
+ * need no extra room stay inline — notification access, shade clearing,
+ * reminders and auto-reply. The long blocks (followed apps, silenced chats, the
+ * PC analyst and capture diagnostics) are rows that open their own screen.
  *
  * Every phone-side switch is persisted on change; the agent/model/effort is
  * read from the server when this section appears and saved with an explicit
@@ -97,27 +105,15 @@ import com.idupi.app.viewmodel.InstalledAppsState
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-fun InboxAlertsSection(viewModel: InboxSettingsViewModel) {
+fun InboxAlertsSection(
+    viewModel: InboxSettingsViewModel,
+    onOpenRoute: (SettingsRoute) -> Unit,
+) {
     val settings by viewModel.inboxSettings.collectAsState()
     val config by viewModel.agentConfig.collectAsState()
     val captureStatus by viewModel.captureStatus.collectAsState()
-    val captureAction by viewModel.captureAction.collectAsState()
-    val installedApps by viewModel.installedApps.collectAsState()
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-
-    var listenerEnabled by remember { mutableStateOf(isInboxListenerEnabled(context)) }
-    // Notification access is granted in the system settings: re-check every
-    // time the owner comes back instead of trusting the initial value.
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                listenerEnabled = isInboxListenerEnabled(context)
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
+    val listenerEnabled = rememberListenerAccess()
 
     LaunchedEffect(Unit) {
         viewModel.loadConfig()
@@ -125,7 +121,7 @@ fun InboxAlertsSection(viewModel: InboxSettingsViewModel) {
         viewModel.loadInstalledApps()
     }
 
-    SettingsSection("ALERTAS") {
+    SettingsSection {
         NotificationAccessCard(
             enabled = listenerEnabled,
             onOpenSettings = {
@@ -135,31 +131,11 @@ fun InboxAlertsSection(viewModel: InboxSettingsViewModel) {
             }
         )
 
-        CaptureStatusCard(
-            enabled = listenerEnabled,
-            status = captureStatus,
-            action = captureAction,
-            onScanNow = {
-                // "Instead of scanning" a dead listener, ask the system to
-                // rebind it; the card still shows the requested status below.
-                if (!captureStatus.listenerConnected && listenerEnabled) {
-                    requestInboxListenerRebind(context)
-                    Toast.makeText(context, "Reconectando el lector", Toast.LENGTH_SHORT).show()
-                }
-                viewModel.scanNow()
-            },
-            onReconnect = {
-                val requested = requestInboxListenerRebind(context)
-                Toast.makeText(
-                    context,
-                    if (requested) {
-                        "Reconectando el lector"
-                    } else {
-                        "No se pudo reconectar el lector"
-                    },
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
+        SettingsCategoryRow(
+            icon = Icons.Default.Visibility,
+            title = "Estado de captura",
+            summary = captureStatusSummary(captureStatus),
+            onClick = { onOpenRoute(SettingsRoute.CaptureStatus) },
         )
 
         ShadeClearingCard(
@@ -167,19 +143,18 @@ fun InboxAlertsSection(viewModel: InboxSettingsViewModel) {
             onToggle = viewModel::setClearCapturedFromShade
         )
 
-        FollowedAppsCard(
-            settings = settings,
-            state = installedApps,
-            onToggleApp = { appId, followed -> viewModel.setAppFollowed(appId, followed) },
-            onReload = { viewModel.loadInstalledApps(force = true) },
-            onToggleExpanded = viewModel::toggleAppsExpanded
+        SettingsCategoryRow(
+            icon = Icons.Default.Apps,
+            title = "Apps a seguir",
+            summary = followedAppsSummary(settings.followedApps.size),
+            onClick = { onOpenRoute(SettingsRoute.FollowedApps) },
         )
 
-        SilencedChatsCard(
-            silenced = settings.silencedConversations,
-            onRemove = { conversationKey ->
-                viewModel.setConversationSilenced(conversationKey, silenced = false)
-            }
+        SettingsCategoryRow(
+            icon = Icons.Default.NotificationsOff,
+            title = "Chats silenciados por IDUPI",
+            summary = silencedChatsSummary(settings.silencedConversations.size),
+            onClick = { onOpenRoute(SettingsRoute.SilencedChats) },
         )
 
         RemindersCard(
@@ -195,13 +170,11 @@ fun InboxAlertsSection(viewModel: InboxSettingsViewModel) {
             onTemplateSave = viewModel::setAutoReplyTemplate
         )
 
-        AgentConfigCard(
-            config = config,
-            onAgentSelect = viewModel::setAgent,
-            onModelChange = viewModel::setModel,
-            onEffortSelect = viewModel::setEffort,
-            onProactiveChange = viewModel::setProactive,
-            onSave = viewModel::saveConfig
+        SettingsCategoryRow(
+            icon = Icons.Default.Computer,
+            title = "Analista en la PC",
+            summary = analystSummary(config),
+            onClick = { onOpenRoute(SettingsRoute.AlertAnalyst) },
         )
     }
 }
@@ -445,40 +418,50 @@ private fun lastUploadLabel(status: InboxCaptureState, nowMillis: Long): String 
     return "Último envío al PC: ok ${relativeTimeLabel(okAt, nowMillis)}"
 }
 
+/**
+ * Settings redesign T4: "Apps a seguir" owns its screen, so the full installed
+ * list fits without the old bounded panel. The search field stays visible while
+ * the list scrolls, followed apps come first (see [followedFirstApps]), and the
+ * route uses [SettingsSubScreenScaffold] because a LazyColumn must not sit
+ * inside the shared verticalScroll.
+ */
 @Composable
-private fun FollowedAppsCard(
-    settings: InboxSettings,
-    state: InstalledAppsState,
-    onToggleApp: (String, Boolean) -> Unit,
-    onReload: () -> Unit,
-    onToggleExpanded: () -> Unit
+internal fun FollowedAppsScreen(
+    viewModel: InboxSettingsViewModel,
+    onBack: () -> Unit,
 ) {
+    val settings by viewModel.inboxSettings.collectAsState()
+    val state by viewModel.installedApps.collectAsState()
     var query by rememberSaveable { mutableStateOf("") }
-    val followedApps = remember(state.inventory, settings.followedApps) {
-        state.inventory.followed(settings.followedApps)
+    // The followed-first order is taken when the screen opens (or the app list
+    // reloads), not on every toggle: a row must not jump away from under the
+    // owner's finger. Switches still read the live followed set.
+    val orderedBy = remember(state.inventory) { settings.followedApps }
+    val rows = remember(state.inventory, orderedBy, query) {
+        followedFirstApps(state.inventory, orderedBy, query)
     }
-    val filtered = remember(state.inventory, query) {
-        InstalledApps.matching(state.inventory.all, query)
-    }
-    val filteredPresets = remember(filtered) { filtered.filter { it.preset != null } }
-    val filteredOthers = remember(filtered) { filtered.filter { it.preset == null } }
 
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = SlateCard),
-        shape = AppShapes.card
-    ) {
+    LaunchedEffect(Unit) {
+        viewModel.loadInstalledApps()
+    }
+
+    SettingsSubScreenScaffold(title = "Apps a seguir", onBack = onBack) { paddingValues ->
         Column(
             modifier = Modifier
-                .padding(AppSpacing.cardPadding)
-                .fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
+                .fillMaxSize()
+                .padding(paddingValues)
+                .padding(horizontal = AppSpacing.screenPadding),
+            verticalArrangement = Arrangement.spacedBy(AppSpacing.sm)
         ) {
-            Text("Apps a seguir", style = AppTypography.bodyLarge, color = TextPrimary)
-            Text(
-                text = "Siguiendo ${followedApps.size} apps",
-                style = AppTypography.labelSmall,
-                color = StatusWorking
+            OutlinedTextField(
+                value = query,
+                onValueChange = { query = it },
+                label = { Text("Buscar apps", style = AppTypography.bodySmall) },
+                singleLine = true,
+                colors = inboxFieldColors(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = AppSpacing.md)
             )
             Text(
                 text = "Activa las apps cuyas notificaciones quieres ver en Alertas.",
@@ -495,107 +478,163 @@ private fun FollowedAppsCard(
             }
             state.errorMessage?.let { message ->
                 Text(message, style = AppTypography.bodySmall, color = StatusError)
-                TextButton(onClick = onReload) {
+                TextButton(onClick = { viewModel.loadInstalledApps(force = true) }) {
                     Text("Reintentar", style = AppTypography.labelSmall, color = PrimaryIndigo)
                 }
             }
 
-            if (!state.isLoading && !state.inventory.isEmpty) {
-                // Collapsed default: only the followed apps, so the settings
-                // screen does not grow with every app installed on the phone.
-                if (followedApps.isEmpty()) {
-                    Text(
-                        text = "No sigues ninguna app todavía",
-                        style = AppTypography.bodySmall,
-                        color = TextSecondary
-                    )
-                } else {
-                    followedApps.forEach { app ->
-                        AppFollowRow(
-                            app = app,
-                            followed = settings.followedApps,
-                            onToggle = onToggleApp
+            when {
+                state.isLoading -> Unit
+                state.inventory.isEmpty -> {
+                    if (state.errorMessage == null) {
+                        Text(
+                            text = "No hay apps instaladas",
+                            style = AppTypography.bodySmall,
+                            color = TextSecondary
                         )
                     }
                 }
-
-                TextButton(onClick = onToggleExpanded) {
-                    Text(
-                        text = if (state.expanded) {
-                            "Ocultar lista"
-                        } else {
-                            "Ver todas las apps (${state.inventory.all.size})"
-                        },
-                        style = AppTypography.labelSmall,
-                        color = PrimaryIndigo
-                    )
-                }
-
-                AnimatedVisibility(
-                    visible = state.expanded,
-                    enter = expandVertically() + fadeIn(),
-                    exit = shrinkVertically() + fadeOut()
+                rows.isEmpty() -> Text(
+                    text = "No hay apps que coincidan",
+                    style = AppTypography.bodySmall,
+                    color = TextSecondary
+                )
+                else -> LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentPadding = PaddingValues(bottom = AppSpacing.xxxl),
+                    verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)
                 ) {
-                    Column(verticalArrangement = Arrangement.spacedBy(AppSpacing.xs)) {
-                        OutlinedTextField(
-                            value = query,
-                            onValueChange = { query = it },
-                            label = { Text("Buscar apps", style = AppTypography.bodySmall) },
-                            singleLine = true,
-                            colors = inboxFieldColors(),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        // Bounded height: the settings screen scrolls
-                        // vertically, so this list must own a finite height
-                        // instead of an endless nested scroll.
-                        LazyColumn(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(max = AppSpacing.expandedListMaxHeight)
-                        ) {
-                            if (filtered.isEmpty()) {
-                                item(key = "apps-empty") {
-                                    Text(
-                                        text = if (query.isBlank()) {
-                                            "No hay apps instaladas"
-                                        } else {
-                                            "No hay apps que coincidan"
-                                        },
-                                        style = AppTypography.bodySmall,
-                                        color = TextSecondary
-                                    )
-                                }
-                            } else {
-                                items(filteredPresets, key = { it.packageName }) { app ->
-                                    AppFollowRow(
-                                        app = app,
-                                        followed = settings.followedApps,
-                                        onToggle = onToggleApp
-                                    )
-                                }
-                                if (filteredOthers.isNotEmpty()) {
-                                    item(key = "apps-others-label") {
-                                        Text(
-                                            text = "Otras apps",
-                                            style = AppTypography.bodySmall,
-                                            color = TextSecondary
-                                        )
-                                    }
-                                    items(filteredOthers, key = { it.packageName }) { app ->
-                                        AppFollowRow(
-                                            app = app,
-                                            followed = settings.followedApps,
-                                            onToggle = onToggleApp
-                                        )
-                                    }
-                                }
+                    items(rows, key = { it.packageName }) { app ->
+                        AppFollowRow(
+                            app = app,
+                            followed = settings.followedApps,
+                            onToggle = { appId, followed ->
+                                viewModel.setAppFollowed(appId, followed)
                             }
-                        }
+                        )
                     }
                 }
             }
         }
     }
+}
+
+/** Settings redesign T4: "Chats silenciados por IDUPI" as its own screen. */
+@Composable
+internal fun SilencedChatsScreen(
+    viewModel: InboxSettingsViewModel,
+    onBack: () -> Unit,
+) {
+    val settings by viewModel.inboxSettings.collectAsState()
+
+    SettingsSubScreen("Chats silenciados por IDUPI", onBack = onBack) {
+        SettingsSection {
+            SilencedChatsCard(
+                silenced = settings.silencedConversations,
+                onRemove = { conversationKey ->
+                    viewModel.setConversationSilenced(conversationKey, silenced = false)
+                }
+            )
+        }
+    }
+}
+
+/** Settings redesign T4: the PC analyst configuration as its own screen. */
+@Composable
+internal fun AlertAnalystScreen(
+    viewModel: InboxSettingsViewModel,
+    onBack: () -> Unit,
+) {
+    val config by viewModel.agentConfig.collectAsState()
+
+    LaunchedEffect(Unit) {
+        viewModel.loadConfig()
+    }
+
+    SettingsSubScreen("Analista en la PC", onBack = onBack) {
+        SettingsSection {
+            AgentConfigCard(
+                config = config,
+                onAgentSelect = viewModel::setAgent,
+                onModelChange = viewModel::setModel,
+                onEffortSelect = viewModel::setEffort,
+                onProactiveChange = viewModel::setProactive,
+                onSave = viewModel::saveConfig
+            )
+        }
+    }
+}
+
+/** Settings redesign T4: capture diagnostics and their recovery actions. */
+@Composable
+internal fun CaptureStatusScreen(
+    viewModel: InboxSettingsViewModel,
+    onBack: () -> Unit,
+) {
+    val captureStatus by viewModel.captureStatus.collectAsState()
+    val captureAction by viewModel.captureAction.collectAsState()
+    val context = LocalContext.current
+    val listenerEnabled = rememberListenerAccess()
+
+    LaunchedEffect(Unit) {
+        viewModel.refreshCaptureStatus()
+    }
+
+    SettingsSubScreen("Estado de captura", onBack = onBack) {
+        SettingsSection {
+            CaptureStatusCard(
+                enabled = listenerEnabled,
+                status = captureStatus,
+                action = captureAction,
+                onScanNow = {
+                    // "Instead of scanning" a dead listener, ask the system to
+                    // rebind it; the card still shows the requested status below.
+                    if (!captureStatus.listenerConnected && listenerEnabled) {
+                        requestInboxListenerRebind(context)
+                        Toast.makeText(context, "Reconectando el lector", Toast.LENGTH_SHORT).show()
+                    }
+                    viewModel.scanNow()
+                },
+                onReconnect = {
+                    val requested = requestInboxListenerRebind(context)
+                    Toast.makeText(
+                        context,
+                        if (requested) {
+                            "Reconectando el lector"
+                        } else {
+                            "No se pudo reconectar el lector"
+                        },
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            )
+        }
+    }
+}
+
+/**
+ * Notification access is granted in the system settings: re-check it every time
+ * the owner comes back instead of trusting the initial value.
+ */
+@Composable
+private fun rememberListenerAccess(): Boolean {
+    val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var enabled by remember { mutableStateOf(isInboxListenerEnabled(context)) }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                enabled = isInboxListenerEnabled(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    return enabled
 }
 
 @Composable

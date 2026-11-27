@@ -82,8 +82,6 @@ data class InstalledAppsState(
     val inventory: InstalledAppInventory = InstalledAppInventory(),
     val isLoading: Boolean = false,
     val errorMessage: String? = null,
-    /** "Ver todas las apps" panel; collapsed by default (phone-calendar T5). */
-    val expanded: Boolean = false,
 )
 
 /**
@@ -331,14 +329,6 @@ class InboxSettingsViewModel(
             val updated = if (followed) current + appId else current - appId
             settingsRepository.setInboxFollowedApps(updated)
         }
-    }
-
-    /**
-     * Collapsed "Apps a seguir" (phone-calendar T5): the card shows only the
-     * followed apps until the owner asks for the full installed list.
-     */
-    fun toggleAppsExpanded() {
-        _installedApps.update { it.copy(expanded = !it.expanded) }
     }
 
     /** Removes (or restores) one conversation from the silenced list. */

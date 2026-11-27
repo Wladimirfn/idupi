@@ -94,7 +94,7 @@ fun CalendarSection(viewModel: CalendarSettingsViewModel) {
         viewModel.updatePermission(CalendarPermissions.current(context))
     }
 
-    SettingsSection("CALENDARIO") {
+    SettingsSection {
         CalendarSharingCard(
             shareEnabled = shareEnabled,
             canRead = permission.canRead,

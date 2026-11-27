@@ -103,7 +103,7 @@ fun HealthSection(viewModel: HealthSettingsViewModel) {
         viewModel.onPermissionResult(granted)
     }
 
-    SettingsSection("SALUD") {
+    SettingsSection {
         HealthCard(
             state = state,
             report = report,
