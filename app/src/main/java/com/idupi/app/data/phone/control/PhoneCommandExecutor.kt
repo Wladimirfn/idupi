@@ -18,9 +18,14 @@ import com.idupi.app.data.phone.approval.ApprovalGate
 import com.idupi.app.data.phone.approval.ApprovalGateResult
 import com.idupi.app.data.phone.approval.ApprovalLedger
 import com.idupi.app.data.phone.shell.BatchStepOutcome
+import com.idupi.app.data.phone.shell.BridgeResult
+import com.idupi.app.data.phone.shell.BridgeUnavailableException
 import com.idupi.app.data.phone.shell.PhoneBatchSummary
 import com.idupi.app.data.phone.shell.PhoneScanCollector
+import com.idupi.app.data.phone.shell.ShellBridgeAvailability
 import com.idupi.app.data.phone.shell.ShellBridgeClient
+import com.idupi.app.data.phone.shell.ShellBridgeRecovery
+import com.idupi.app.data.phone.shell.ShellBridgeRecoveryPolicy
 import com.idupi.app.data.phone.shell.ShellCommandRules
 import com.idupi.app.data.phone.shell.ShellOperation
 import com.idupi.app.data.phone.shell.ShellRisk
@@ -483,12 +488,14 @@ class PhoneCommandExecutor(
      */
     private suspend fun batch(operation: ShellOperation.Batch): CommandOutcome {
         val outcomes = operation.steps.map { step ->
-            val result = shellBridge.execute(step)
+            val result = bridgeExecute(step)
             val bridge = result.getOrNull()
             BatchStepOutcome(
                 step = step,
                 ok = bridge?.ok == true,
-                text = bridge?.text ?: SHELL_UNAVAILABLE,
+                text = bridge?.text
+                    ?: result.exceptionOrNull()?.message?.takeIf { it.isNotBlank() }
+                    ?: SHELL_UNAVAILABLE,
             )
         }
         return CommandOutcome.success(buildJsonObject {
@@ -497,8 +504,39 @@ class PhoneCommandExecutor(
         })
     }
 
+    /**
+     * Runs one helper call and, when the bridge is unavailable, ONE recovery
+     * and ONE retry (phone-shell T7).
+     *
+     * The retry is deliberately bounded: a command never starts a second
+     * recovery, even when the retried call also finds the bridge down. An
+     * off-Wi-Fi skip surfaces the owner-facing "vuelve a tu Wi-Fi de casa"
+     * message instead of a bare "puente no disponible".
+     */
+    private suspend fun bridgeExecute(operation: ShellOperation): Result<BridgeResult> {
+        val first = shellBridge.execute(operation)
+        if (!ShellBridgeAvailability.isUnavailable(first)) return first
+        val recovery = ShellBridgeRecovery.recover(service, trigger = "command")
+        return when (
+            val decision = ShellBridgeRecoveryPolicy.retryDecision(recovery, alreadyRetried = false)
+        ) {
+            ShellBridgeRecoveryPolicy.RetryDecision.RetryOnce -> {
+                val retried = shellBridge.execute(operation)
+                if (ShellBridgeAvailability.isUnavailable(retried)) {
+                    Result.failure(
+                        BridgeUnavailableException(ShellBridgeRecoveryPolicy.RETRY_FAILED_MESSAGE)
+                    )
+                } else {
+                    retried
+                }
+            }
+            is ShellBridgeRecoveryPolicy.RetryDecision.Fail ->
+                Result.failure(BridgeUnavailableException(decision.message))
+        }
+    }
+
     private suspend fun executeShellOperation(operation: ShellOperation): CommandOutcome {
-        val result = shellBridge.execute(operation)
+        val result = bridgeExecute(operation)
         return result.fold(
             onSuccess = { bridge ->
                 if (!bridge.ok) {
@@ -512,7 +550,11 @@ class PhoneCommandExecutor(
                     })
                 }
             },
-            onFailure = { CommandOutcome.failure(SHELL_UNAVAILABLE) },
+            onFailure = { error ->
+                CommandOutcome.failure(
+                    error.message?.takeIf { it.isNotBlank() } ?: SHELL_UNAVAILABLE
+                )
+            },
         )
     }
 

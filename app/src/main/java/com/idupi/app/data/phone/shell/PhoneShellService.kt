@@ -84,6 +84,13 @@ class PhoneShellService : Service() {
                 startForegroundNow(BRIDGE_TITLE, BRIDGE_INITIAL_TEXT, withCode = false)
                 startBridgeFlow()
             }
+            ACTION_RECOVER_BOOT -> {
+                if (flowJob?.isActive == true) return START_NOT_STICKY
+                notificationTitle = RECOVERY_TITLE
+                flowFinished = false
+                startForegroundNow(RECOVERY_TITLE, RECOVERY_INITIAL_TEXT, withCode = false)
+                startRecoveryFlow(boot = true)
+            }
             ACTION_CODE -> {
                 val code = intent.getStringExtra(EXTRA_CODE) ?: return START_NOT_STICKY
                 codeChannel?.trySend(code)
@@ -310,21 +317,87 @@ class PhoneShellService : Service() {
             return
         }
         PhoneShellStatus.working("Preparando el puente…")
+        startRecoveryFlow(boot = false)
+    }
+
+    /**
+     * Runs the shared T6/T7 recovery. The boot trigger first waits up to two
+     * minutes for Wi-Fi and stays quiet when there is nothing to report; the
+     * Ajustes button is forced and mirrors every outcome in the notification.
+     */
+    private fun startRecoveryFlow(boot: Boolean) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            finishFailure(UNAVAILABLE_TEXT, PhoneShellStage.UNAVAILABLE)
+            return
+        }
         flowJob = scope.launch {
-            val result = withTimeoutOrNull(SERVICE_TIMEOUT_MS) {
-                ShellBridgeBootstrap(this@PhoneShellService, onStep = ::step).run()
+            val outcome = withTimeoutOrNull(SERVICE_TIMEOUT_MS) {
+                if (boot &&
+                    !ShellRecoveryNetwork.awaitWifi(this@PhoneShellService, BOOT_WIFI_TIMEOUT_MS)
+                ) {
+                    Log.i(
+                        TAG,
+                        "recovery(boot): skipped: no wifi after ${BOOT_WIFI_TIMEOUT_MS / 1000}s",
+                    )
+                    ShellBridgeRecoveryOutcome.Skipped(ShellBridgeRecoverySkip.NOT_ON_WIFI)
+                } else {
+                    ShellBridgeRecovery.recover(
+                        context = this@PhoneShellService,
+                        forced = !boot,
+                        trigger = if (boot) "boot" else "settings",
+                        onStep = if (boot) {
+                            { message -> updateNotification(message, withCode = false) }
+                        } else {
+                            ::step
+                        },
+                    )
+                }
             }
-            if (result == null) {
-                finishFailure("Se agotó el tiempo. Vuelve a intentarlo.", PhoneShellStage.PAIRED)
+            if (boot) {
+                finishBootRecovery(outcome)
             } else {
-                result.fold(
-                    onSuccess = { finishSuccess() },
-                    onFailure = { error ->
-                        finishFailure(error.message ?: GENERIC_ERROR, PhoneShellStage.PAIRED)
-                    },
-                )
+                finishSettingsRecovery(outcome)
             }
         }
+    }
+
+    private fun finishBootRecovery(outcome: ShellBridgeRecoveryOutcome?) {
+        when (outcome) {
+            null -> stopQuietly()
+            is ShellBridgeRecoveryOutcome.Failed -> {
+                Log.w(TAG, "recovery(boot) failed: ${outcome.reason}")
+                finishFailure(outcome.reason, PhoneShellStage.PAIRED)
+            }
+            else -> stopQuietly()
+        }
+    }
+
+    private fun finishSettingsRecovery(outcome: ShellBridgeRecoveryOutcome?) {
+        when (outcome) {
+            null -> finishFailure(
+                "Se agotó el tiempo. Vuelve a intentarlo.",
+                PhoneShellStage.PAIRED,
+            )
+            ShellBridgeRecoveryOutcome.Recovered,
+            ShellBridgeRecoveryOutcome.AlreadyActive,
+            -> finishSuccess()
+            is ShellBridgeRecoveryOutcome.Skipped -> {
+                val stage = if (outcome.reason == ShellBridgeRecoverySkip.NOT_PAIRED) {
+                    PhoneShellStage.NOT_PAIRED
+                } else {
+                    PhoneShellStage.PAIRED
+                }
+                finishFailure(ShellBridgeRecoveryPolicy.skippedMessage(outcome.reason), stage)
+            }
+            is ShellBridgeRecoveryOutcome.Failed ->
+                finishFailure(outcome.reason, PhoneShellStage.PAIRED)
+        }
+    }
+
+    private fun stopQuietly() {
+        flowFinished = true
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     // --- notification ----------------------------------------------------
@@ -465,6 +538,7 @@ class PhoneShellService : Service() {
     companion object {
         const val ACTION_PAIR = "com.idupi.app.phone_shell.action.PAIR"
         const val ACTION_START_BRIDGE = "com.idupi.app.phone_shell.action.START_BRIDGE"
+        const val ACTION_RECOVER_BOOT = "com.idupi.app.phone_shell.action.RECOVER_BOOT"
         const val ACTION_CODE = "com.idupi.app.phone_shell.action.CODE"
         const val ACTION_REPLY = "com.idupi.app.phone_shell.action.REPLY"
         const val EXTRA_CODE = "com.idupi.app.phone_shell.extra.CODE"
@@ -480,6 +554,7 @@ class PhoneShellService : Service() {
         private const val REQUEST_REPLY = 8792
 
         private const val SERVICE_TIMEOUT_MS = 5 * 60_000L
+        private const val BOOT_WIFI_TIMEOUT_MS = 2 * 60_000L
         private const val PORT_REMINDER_MS = 30_000L
         private const val MAX_PAIR_ATTEMPTS = 5
 
@@ -498,6 +573,8 @@ class PhoneShellService : Service() {
 
         private const val BRIDGE_TITLE = "Acceso avanzado del teléfono"
         private const val BRIDGE_INITIAL_TEXT = "Conectando con la depuración inalámbrica…"
+        private const val RECOVERY_TITLE = "Recuperando el puente"
+        private const val RECOVERY_INITIAL_TEXT = "Buscando Wi-Fi…"
         private const val SUCCESS_TITLE = "Puente activo"
         private const val SUCCESS_TEXT = "El puente de IDUPI está activo."
         private const val FAILURE_TITLE = "No se pudo completar"
@@ -514,6 +591,17 @@ class PhoneShellService : Service() {
             ContextCompat.startForegroundService(
                 context,
                 Intent(context, PhoneShellService::class.java).setAction(ACTION_START_BRIDGE),
+            )
+
+        /**
+         * Boot trigger (phone-shell T6): the service waits for Wi-Fi and then
+         * runs the shared recovery. A foreground service keeps the process
+         * alive past the broadcast's short lifetime.
+         */
+        fun startBootRecovery(context: Context) =
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, PhoneShellService::class.java).setAction(ACTION_RECOVER_BOOT),
             )
 
         /**

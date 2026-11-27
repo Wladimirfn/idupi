@@ -8,7 +8,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
 /** A bootstrap step failed; [message] is owner-facing neutral Spanish. */
-class ShellBootstrapException(message: String) : Exception(message)
+class ShellBootstrapException(
+    message: String,
+    /** True when the adb connection itself failed (T6: the key may have expired). */
+    val connectFailed: Boolean = false,
+) : Exception(message)
 
 /**
  * Turns a paired adb session into an installed helper and a running bridge
@@ -48,7 +52,8 @@ class ShellBridgeBootstrap(
         onStep("Conectando con la depuración inalámbrica…")
         if (!connectWithRetry()) {
             throw ShellBootstrapException(
-                "No se pudo conectar. Abre Depuración inalámbrica y vuelve a intentarlo."
+                "No se pudo conectar. Abre Depuración inalámbrica y vuelve a intentarlo.",
+                connectFailed = true,
             )
         }
 

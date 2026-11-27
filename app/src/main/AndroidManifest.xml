@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Phone shell (phone-shell T6): the boot receiver re-enables Wireless
+         debugging and restarts the helper after a reboot. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- Phone control (phone-agent T3): the signal collector fills
          signal.networkType (4G/5G) only when this runtime permission is granted;
          Ajustes requests it. -->
@@ -213,6 +216,19 @@
         <receiver
             android:name="com.idupi.app.data.phone.shell.PhoneShellPairingReceiver"
             android:exported="false" />
+
+        <!-- Phone shell T6: after a reboot Android turns Wireless debugging off
+             and the helper is gone. Only the system sends BOOT_COMPLETED; the
+             receiver hands off to the phone-shell foreground service, which
+             waits for Wi-Fi and runs the shared recovery. Unexported because no
+             other app may trigger it. -->
+        <receiver
+            android:name="com.idupi.app.data.phone.shell.BootRecoveryReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
 
         <!-- Phone shell T7b: after an update the accessibility grant may stay
              recorded while the service never rebinds. The system sends this

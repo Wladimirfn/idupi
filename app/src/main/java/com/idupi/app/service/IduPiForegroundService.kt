@@ -7,20 +7,35 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.idupi.app.MainActivity
+import com.idupi.app.data.phone.shell.ShellBridgeRecovery
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 class IduPiForegroundService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var connectivity: ConnectivityManager? = null
+    private var wifiCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         acquireWakeLock()
+        registerWifiRecovery()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -69,8 +84,48 @@ class IduPiForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        unregisterWifiRecovery()
+        serviceScope.cancel()
         releaseWakeLock()
         super.onDestroy()
+    }
+
+    /**
+     * Phone-shell T7: while this foreground service runs, a Wi-Fi connection
+     * becoming available is a recovery trigger. Registering the callback also
+     * fires it once when Wi-Fi is already up; the recovery's cooldown and
+     * active-bridge check make that a cheap no-op.
+     */
+    private fun registerWifiRecovery() {
+        val manager = getSystemService(ConnectivityManager::class.java) ?: return
+        connectivity = manager
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                val capabilities = manager.getNetworkCapabilities(network) ?: return
+                if (!capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return
+                serviceScope.launch {
+                    ShellBridgeRecovery.recover(applicationContext, trigger = "wifi")
+                }
+            }
+        }
+        runCatching {
+            manager.registerNetworkCallback(
+                NetworkRequest.Builder()
+                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                    .build(),
+                callback,
+            )
+            wifiCallback = callback
+        }.onFailure { error ->
+            Log.w(TAG, "recovery(wifi): could not register callback: ${error.javaClass.simpleName}")
+        }
+    }
+
+    private fun unregisterWifiRecovery() {
+        val manager = connectivity ?: return
+        val callback = wifiCallback ?: return
+        wifiCallback = null
+        runCatching { manager.unregisterNetworkCallback(callback) }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -116,6 +171,8 @@ class IduPiForegroundService : Service() {
         const val ACTION_START_SERVICE = "ACTION_START_IDUPI_SERVICE"
         const val ACTION_STOP_SERVICE = "ACTION_STOP_IDUPI_SERVICE"
         const val EXTRA_TASK_MESSAGE = "EXTRA_TASK_MESSAGE"
+
+        private const val TAG = "IdupiPhoneShell"
 
         fun start(context: Context, taskMessage: String = "Procesando en tu PC...") {
             val intent = Intent(context, IduPiForegroundService::class.java).apply {
