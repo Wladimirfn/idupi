@@ -137,6 +137,33 @@ whole set, never one per app.
   replies with the proposal list, then sends ONE `shell batch`; falls back to
   `settings` navigation only when the bridge is unavailable.
 
+## T4c changes after the first live plans (owner, 2026-11-27 12:10)
+
+Evidence (turns pat-5ca884e208cc .. pat-6f8504b15c9a, 11:50-12:05): trim-caches
+worked (reclaimable cache 8.8 GB -> 1 GB); 19/19 uninstalls failed with an
+Android NullPointerException (`pm uninstall` run as a child of the helper);
+the owner approved three plans in three turns; a follow-up turn ("aprobado
+pero deja MiniMax") could not see the previous proposal. Owner: "siento que
+estamos siendo muy estrictos ... con tanta aprobación que no logra ejecutar".
+
+- Approval: a `batch` plan inside an owner turn is auto-approved (the owner's
+  own request is the consent), on the server AND on the phone gate. Outside an
+  owner turn it stays ONE `plan` approval. Single destructive shell actions in
+  an owner turn follow the same rule.
+- Agent: if the request already authorizes the actions ("borra la caché",
+  "desinstala lo que no uso menos X") run ONE batch directly. For a generic
+  "optimiza", run the safe steps at once (trim-caches, background limits) and
+  PROPOSE uninstall/disable as a numbered list; execute them when the owner
+  confirms in a later turn.
+- Cross-turn context: the agent prompt includes the owner's recent turns
+  (last 3 within 15 minutes: request + answer) so a confirmation like "sí,
+  todas menos MiniMax" resolves against the previous proposal.
+- Uninstall: run in-process in the helper with `PackageInstaller.uninstall`
+  (caller package `com.idupi.shell`, DELETE_PACKAGES via the adopted shell
+  identity, result through an IntentSender/BroadcastReceiver, 30 s timeout);
+  `pm uninstall` stays only as a fallback.
+- Bootstrap failure text no longer says "Reinicia el teléfono".
+
 ## Tasks
 
 - [x] T1 Device spike over PC adb on the S24 (see evidence). Result: plain
@@ -164,6 +191,7 @@ whole set, never one per app.
       (`idupi-phone.mjs`), app parser/model/executor calling the helper,
       approval gate; tests on both sides.
 - [~] T4b Scan, uninstall and one-approval batch (contract above).
+- [ ] T4c Approval relax, cross-turn context, PackageInstaller uninstall.
 - [~] T5 Agent: phone-agent prompt uses `shell` for optimization (trim caches,
       stop heavy background apps, report freed space) and falls back to
       `settings` when the channel is unavailable.
