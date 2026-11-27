@@ -49,6 +49,7 @@ import com.idupi.app.data.inbox.InboxNotifier
 import com.idupi.app.data.phone.approval.ApprovalNotifier
 import com.idupi.app.data.phone.approval.ApprovalVoiceFallback
 import com.idupi.app.data.phone.approval.ApprovalVoiceHost
+import com.idupi.app.data.phone.approval.ApprovalVoiceKind
 import com.idupi.app.data.phone.approval.ApprovalVoiceRoute
 import com.idupi.app.data.phone.approval.ApprovalVoiceRouting
 import com.idupi.app.data.phone.approval.OwnerTurnRegistry
@@ -208,6 +209,12 @@ class PhoneBubbleOverlay(
     /** Read-back line of the spoken loop: the approval question (T21/T23). */
     private var confirmPrompt: TextView? = null
 
+    /**
+     * Aprobar / Rechazar under the read-back line (phone-dashboard T4). Shown
+     * only while a bubble approval owns the loop.
+     */
+    private var confirmButtons: View? = null
+
     /** Text currently on the read-back line; null hides it. */
     private var confirmPromptText: String? = null
 
@@ -222,6 +229,9 @@ class PhoneBubbleOverlay(
      * or rejected by voice; cleared as soon as the loop leaves it.
      */
     private var voiceApproval: PhoneApproval? = null
+
+    /** Which sentence the loop speaks: message (T23), cache or uninstall (T4). */
+    private var voiceApprovalKind: ApprovalVoiceKind = ApprovalVoiceKind.MESSAGE
 
     /**
      * The routed approval was seen in a pending poll. From then on, a poll
@@ -272,6 +282,22 @@ class PhoneBubbleOverlay(
     private var idleAnimator: ValueAnimator? = null
     private var dockAnimator: ValueAnimator? = null
 
+    /**
+     * True when this panel was opened for a Dashboard request while the
+     * visibility gate had it hidden (phone-dashboard T2). Minimizing then
+     * removes the window again instead of leaving a bubble the owner's setting
+     * keeps off.
+     */
+    private var ownerRequestSessionOnly = false
+
+    init {
+        // The Dashboard's "Optimizar teléfono" sends through the bubble, so the
+        // turn is registered as owner-initiated. The overlay only exists while
+        // the accessibility service is bound, which is the grant this host
+        // checks; when it is off, the host refuses and the screen explains.
+        BubbleRequestHost.attach(::openForOwnerRequest)
+    }
+
     /** Adds the window when the gate turns on, removes it when it turns off. */
     fun setVisible(show: Boolean) {
         if (show == visible) return
@@ -306,6 +332,41 @@ class PhoneBubbleOverlay(
         }
         if (mode == BubbleMode.COLLAPSED) expand()
         onMicTapped()
+        return true
+    }
+
+    /**
+     * Opens the panel and sends a request started outside the bubble
+     * (phone-dashboard T2: the Dashboard's "Optimizar teléfono" button).
+     *
+     * The request uses [BubbleChatController.send] — the same path as a typed
+     * draft — so `OwnerTurnRegistry` registers the turn as owner-initiated,
+     * which is what approvals rely on. A request started while the gate has the
+     * bubble hidden brings up a session-only panel: collapsing removes it again
+     * so the owner's bubble setting stays respected.
+     *
+     * @return true when the panel is up and the request was accepted.
+     */
+    fun openForOwnerRequest(text: String): Boolean {
+        val request = text.trim()
+        if (request.isEmpty()) return false
+        if (!visible) {
+            setVisible(true)
+            if (!visible) return false
+            ownerRequestSessionOnly = true
+        }
+        if (mode == BubbleMode.COLLAPSED) expand()
+        // Same preparation as a typed send: a spoken loop from a previous
+        // request must not keep the microphone open, and a late transcript may
+        // not land in the new request.
+        cancelConfirmLoop()
+        stopTts()
+        abandonVoice(render = true)
+        input?.setText("")
+        dictatedDraft = false
+        requestOrigin = BubbleRequestOrigin.TYPED
+        IduPiClientProvider.configureFromStorage(service)
+        controller.send(request)
         return true
     }
 
@@ -356,6 +417,7 @@ class PhoneBubbleOverlay(
     }
 
     fun destroy() {
+        BubbleRequestHost.detach()
         visible = false
         detach()
         shutdownTts()
@@ -428,6 +490,7 @@ class PhoneBubbleOverlay(
         // A session-only show dies with its window; the service clears the
         // temporary gate separately (assistant-key T1).
         assistantSessionEnded = null
+        ownerRequestSessionOnly = false
         stateJob?.cancel()
         stateJob = null
         voiceJob?.cancel()
@@ -471,6 +534,7 @@ class PhoneBubbleOverlay(
         voiceListeningRow = null
         voiceLevels = null
         confirmPrompt = null
+        confirmButtons = null
         try {
             windowManager.removeView(view)
         } catch (error: Exception) {
@@ -487,6 +551,9 @@ class PhoneBubbleOverlay(
                 val previousPhase = chatState.phase
                 chatState = state
                 approvalUi = BubbleApprovalState.of(state.phase, pending.size)
+                // phone-dashboard T7: the panel collapses while the agent works
+                // and opens again when the turn has something to read.
+                applyTurnPanel(previousPhase, state)
                 render()
                 maybeReopenForVoice(previousPhase, state)
                 // T23: an approval that leaves the pending poll was decided by
@@ -557,7 +624,7 @@ class PhoneBubbleOverlay(
                 setColor(style.circleFill)
                 setStroke(dp(1), style.circleRim)
             }
-            contentDescription = "Abrir la burbuja de IDUPI"
+            contentDescription = OPEN_DESCRIPTION
             isClickable = false
             layoutParams = FrameLayout.LayoutParams(size, size)
             installDrag(this)
@@ -621,6 +688,7 @@ class PhoneBubbleOverlay(
         voiceListeningRow = null
         voiceLevels = null
         confirmPrompt = null
+        confirmButtons = null
         startIdleAnimation(circle, sheen)
     }
 
@@ -698,6 +766,7 @@ class PhoneBubbleOverlay(
 
         card.addView(buildStatusLine())
         card.addView(buildConfirmPrompt())
+        card.addView(buildConfirmButtons())
         card.addView(buildRetryButton())
         card.addView(buildInputRow())
 
@@ -821,6 +890,31 @@ class PhoneBubbleOverlay(
             confirmPrompt = it
             renderConfirmPrompt()
         }
+
+    /**
+     * Aprobar / Rechazar under the prompt (T4): owners who type instead of
+     * speak decide through the same path as a voice answer. Hidden unless a
+     * bubble approval owns the loop.
+     */
+    private fun buildConfirmButtons(): View {
+        val row = LinearLayout(service).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            visibility = View.GONE
+            setPadding(0, dp(2), 0, dp(2))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            )
+        }
+        row.addView(filledButton("Aprobar") { onApprovalButton(approve = true) }
+            .apply { layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { rightMargin = dp(8) } })
+        row.addView(glassButton("Rechazar") { onApprovalButton(approve = false) })
+        return row.also { confirmButtons = it }
+    }
 
     private fun buildRetryButton(): View =
         filledButton("Reintentar") { controller.retry() }.apply {
@@ -1411,7 +1505,7 @@ class PhoneBubbleOverlay(
     private fun dispatchConfirm(event: BubbleConfirmEvent) {
         val wasActive = confirmState != BubbleConfirmState.Idle
         val decision = if (voiceApproval != null) {
-            BubbleVoiceApprovalReducer.reduce(confirmState, event)
+            BubbleVoiceApprovalReducer.reduce(confirmState, event, voiceApprovalKind)
         } else {
             BubbleVoiceConfirmReducer.reduce(confirmState, event)
         }
@@ -1470,6 +1564,8 @@ class PhoneBubbleOverlay(
         val text = confirmPromptText
         line.text = text.orEmpty()
         line.visibility = if (text.isNullOrEmpty()) View.GONE else View.VISIBLE
+        confirmButtons?.visibility =
+            if (!text.isNullOrEmpty() && voiceApproval != null) View.VISIBLE else View.GONE
     }
 
     // --- voice approval of the outbound message (T23) ---------------------
@@ -1496,9 +1592,12 @@ class PhoneBubbleOverlay(
      * claimed approval is never dropped.
      */
     private fun startVoiceApproval(approval: PhoneApproval) {
+        val turnId = approval.ownerTurnId
+        val ownerTurnActive = OwnerTurnRegistry.hasActiveTurn() &&
+            (turnId.isNullOrBlank() || OwnerTurnRegistry.isActive(turnId))
         val route = ApprovalVoiceRouting.decide(
             approval = approval,
-            ownerTurnActive = OwnerTurnRegistry.hasActiveTurn(),
+            ownerTurnActive = ownerTurnActive,
             bubbleAttached = visible && root != null,
             nowMillis = System.currentTimeMillis(),
         )
@@ -1512,7 +1611,14 @@ class PhoneBubbleOverlay(
             postApprovalNotification(approval, stillPending = true)
             return
         }
+        val kind = ApprovalVoiceRouting.voiceKind(approval)
+        if (kind == null) {
+            Log.i(TAG, "voice approval skipped: ${approval.id}")
+            postApprovalNotification(approval, stillPending = true)
+            return
+        }
         voiceApproval = approval
+        voiceApprovalKind = kind
         // The same poll already replaced the pending list before offering new
         // rows, so this is the freshest local evidence that the approval is
         // still pending; a later poll without it means it was decided or
@@ -1523,12 +1629,32 @@ class PhoneBubbleOverlay(
         // The app behind must keep the input focus and stay the accessibility
         // active window; the panel is only a mirror of the spoken question.
         releaseFocusForVoiceApproval()
+        // T23 names the messaging app from the command/window; T4/T6 name the
+        // Settings app or the selected screen item from the title the owner is
+        // looking at (one read for both the app and the generic subject).
+        val screenTitle = if (kind == ApprovalVoiceKind.MESSAGE) null else resolveSettingsTitle()
+        val appLabel = if (kind == ApprovalVoiceKind.MESSAGE) {
+            resolveAppLabel(approval)
+        } else {
+            screenTitle
+        }
+        val subject = if (kind == ApprovalVoiceKind.DESTRUCTIVE) screenTitle else null
+        val action = if (kind == ApprovalVoiceKind.DESTRUCTIVE) {
+            ApprovalVoiceRouting.destructiveAction(approval)
+        } else {
+            null
+        }
         dispatchConfirm(
             BubbleConfirmEvent.StartApproval(
-                ApprovalVoiceCopy.sendPrompt(resolveAppLabel(approval)),
+                ApprovalVoiceCopy.promptFor(kind, appLabel, subject = subject, action = action),
             ),
         )
     }
+
+    /** Settings screen title read for a cache/uninstall prompt, or null. */
+    private fun resolveSettingsTitle(): String? = runCatching {
+        screenReader.read().recipient?.trim()?.takeIf { it.isNotEmpty() }
+    }.getOrNull()
 
     private fun releaseFocusForVoiceApproval() {
         hideKeyboard()
@@ -1575,6 +1701,7 @@ class PhoneBubbleOverlay(
     private fun decideVoiceApproval(approve: Boolean) {
         val approval = voiceApproval ?: return
         voiceApproval = null
+        voiceApprovalKind = ApprovalVoiceKind.MESSAGE
         voiceApprovalSeenPending = false
         Log.i(TAG, "voice approval ${approval.id}: ${if (approve) "approved" else "rejected"}")
         scope.launch(Dispatchers.IO) {
@@ -1594,7 +1721,22 @@ class PhoneBubbleOverlay(
     private fun readVoiceApprovalScreen() {
         // Screen text is data only: it is spoken, never classified or logged.
         val content = screenReader.read()
-        postConfirm(BubbleConfirmEvent.ReadDone(content.recipient, content.text))
+        postConfirm(
+            BubbleConfirmEvent.ReadDone(content.recipient, content.text, content.detail),
+        )
+    }
+
+    /**
+     * Aprobar / Rechazar (T4): stops the microphone and the spoken prompt, then
+     * uses the same reducer decision as the spoken answer ("sí" / "no").
+     */
+    private fun onApprovalButton(approve: Boolean) {
+        if (voiceApproval == null) return
+        stopTts()
+        abandonVoice(render = true)
+        dispatchConfirm(
+            if (approve) BubbleConfirmEvent.ButtonApprove else BubbleConfirmEvent.ButtonReject,
+        )
     }
 
     private fun appendVoiceApprovalText(text: String) {
@@ -1618,6 +1760,7 @@ class PhoneBubbleOverlay(
         val stillPending = !voiceApprovalSeenPending ||
             approvals.pending.value.any { it.id == approval.id }
         voiceApproval = null
+        voiceApprovalKind = ApprovalVoiceKind.MESSAGE
         voiceApprovalSeenPending = false
         postApprovalNotification(approval, stillPending)
     }
@@ -1649,6 +1792,7 @@ class PhoneBubbleOverlay(
         // Neither event leaves a surface behind: the approval is already gone.
         if (confirmState == BubbleConfirmState.Idle) {
             voiceApproval = null
+            voiceApprovalKind = ApprovalVoiceKind.MESSAGE
             voiceApprovalSeenPending = false
         }
     }
@@ -1984,7 +2128,12 @@ class PhoneBubbleOverlay(
         controller.resume()
     }
 
-    private fun collapse() {
+    /**
+     * @param endSession false only for the agent's working collapse (T7): a
+     *   session-only panel (Dashboard or system assistant) shrinks to the
+     *   circle while the turn runs and lives on until the owner minimizes it.
+     */
+    private fun collapse(keepFollowing: Boolean = false, endSession: Boolean = true) {
         // T21/T23: the spoken loop dies with the panel; a routed approval falls
         // back to its notification and the request text stays in the field.
         cancelConfirmLoop()
@@ -1997,7 +2146,7 @@ class PhoneBubbleOverlay(
         // bubble is minimized, so a question answer can reopen it with the mic
         // ready. A typed request keeps the T6/T18 rule: minimizing stops the
         // poll and this turn stops approving steps on the phone.
-        if (requestOrigin != BubbleRequestOrigin.DICTATED || !chatState.isBusy) {
+        if (!keepFollowing && (requestOrigin != BubbleRequestOrigin.DICTATED || !chatState.isBusy)) {
             controller.close()
         }
         focusState = BubbleFocusState()
@@ -2022,6 +2171,7 @@ class PhoneBubbleOverlay(
         buildPill()
         render()
         scheduleDock()
+        if (!endSession) return
         // assistant-key T1: a panel opened by the system assistant lasts for
         // that session. Ending it lets the service gate hide a temporary panel
         // again; with the owner's bubble setting on, the pill simply stays.
@@ -2029,6 +2179,41 @@ class PhoneBubbleOverlay(
             assistantSessionEnded = null
             ended()
         }
+        // phone-dashboard T2: a panel opened from the Dashboard while the gate
+        // had it hidden lasts for this request only.
+        if (ownerRequestSessionOnly) {
+            ownerRequestSessionOnly = false
+            setVisible(false)
+        }
+    }
+
+    // --- auto collapse while the agent works (T7) --------------------------
+
+    /**
+     * Applies [BubbleTurnPanel] on every chat emission. A request started from
+     * the expanded panel collapses it before the agent reads the screen; the
+     * answer (or the error) opens it again so the owner reads it without
+     * tapping. A bubble approval and the T17 voice follow-up still expand the
+     * panel on their own paths.
+     */
+    private fun applyTurnPanel(previousPhase: BubbleChatPhase, state: BubbleChatState) {
+        when (BubbleTurnPanel.onPhaseChange(previousPhase, state.phase, mode)) {
+            BubbleTurnPanelAction.COLLAPSE -> collapseForTurn()
+            BubbleTurnPanelAction.EXPAND -> expand()
+            BubbleTurnPanelAction.NONE -> Unit
+        }
+    }
+
+    /**
+     * Collapses without stopping the poll: the answer must be able to reopen
+     * the panel. A session-only panel (the Dashboard with the bubble setting
+     * off, or the system assistant) shrinks to the circle too but keeps its
+     * session: the owner's live check showed a panel that stayed open covering
+     * the screen while the agent navigated (turn pat-f741174ac8c6).
+     */
+    private fun collapseForTurn() {
+        if (mode != BubbleMode.EXPANDED || !visible || root == null) return
+        collapse(keepFollowing = true, endSession = false)
     }
 
     private fun sendDraft() {
@@ -2249,6 +2434,16 @@ class PhoneBubbleOverlay(
         badge?.visibility = if (approvalUi.badgeVisible) View.VISIBLE else View.GONE
         updateBadgePlacement()
         pill?.alpha = if (docked) style.dockedAlpha else 1f
+        // phone-dashboard T7: while a turn runs the panel is tucked away as the
+        // circle. The breathing animation is the "working" cue; the accent mark
+        // and the description make the state explicit without new views.
+        val working = chatState.isBusy
+        mark?.imageTintList = ColorStateList.valueOf(if (working) style.primary else style.markTint)
+        pill?.contentDescription = if (working) {
+            BubbleTurnPanel.WORKING_DESCRIPTION
+        } else {
+            OPEN_DESCRIPTION
+        }
     }
 
     private fun renderPanel() {
@@ -2462,6 +2657,9 @@ class PhoneBubbleOverlay(
 
         /** Compact keyboard glyph on the hide-keyboard glass button. */
         private const val HIDE_KEYBOARD_GLYPH = "⌨"
+
+        /** Accessible name of the circle when no turn is running. */
+        private const val OPEN_DESCRIPTION = "Abrir la burbuja de IDUPI"
 
         /** Utterance id of the spoken prompt (T21/T23). */
         private const val TTS_UTTERANCE_ID = "idupi-bubble-confirm"

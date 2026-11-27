@@ -172,6 +172,19 @@ class PhoneStatusCollectors(private val context: Context) {
         )
     }.getOrNull()
 
+    /**
+     * The platform's low-memory flag for the Dashboard's RAM card. It is not
+     * part of the status contract the PC receives, so it stays out of
+     * [PhoneStatus] and is read on demand instead.
+     */
+    fun isLowMemory(): Boolean = runCatching {
+        val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE)
+            as? ActivityManager ?: return@runCatching false
+        val info = ActivityManager.MemoryInfo()
+        activityManager.getMemoryInfo(info)
+        info.lowMemory
+    }.getOrDefault(false)
+
     // --- Usage stats and foreground app ---------------------------------
 
     /**

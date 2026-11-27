@@ -35,6 +35,10 @@ class PhoneRiskTextTest {
             "post",
             "Share",
             "compartir",
+            // phone-dashboard T3: uninstalling is irreversible.
+            "Desinstalar",
+            "desinstala",
+            "Uninstall",
         ).forEach { verb ->
             assertTrue("expected risky: $verb", PhoneRiskText.isRisky(verb))
         }
@@ -59,10 +63,54 @@ class PhoneRiskTextTest {
             "El poste",
             "Compra",
             "Transferencia",
+            "Desinstalado",
             "",
             "   ",
         ).forEach { text ->
             assertFalse("expected free: $text", PhoneRiskText.isRisky(text))
+        }
+    }
+
+    @Test
+    fun `a data wipe phrase is risky even when its verb is clear`() {
+        // "clear" alone is not a risky verb: only the full data-wipe phrase
+        // is gated, so an English cache clear stays an ordinary tap.
+        assertTrue(PhoneRiskText.isRisky("Borrar datos"))
+        assertTrue(PhoneRiskText.isRisky("Clear data"))
+        assertTrue(PhoneRiskText.isRisky("clear storage"))
+        assertFalse(PhoneRiskText.isRisky("Clear cache"))
+        assertFalse(PhoneRiskText.isRisky("Limpiar caché"))
+    }
+
+    @Test
+    fun `clearing data or storage is recognized as a data wipe`() {
+        listOf(
+            "Borrar datos",
+            "BORRAR DATOS",
+            "Borrar los datos",
+            "Borrar almacenamiento",
+            "borrar el almacenamiento",
+            "Eliminar datos",
+            "eliminar los datos de la app",
+            "Clear data",
+            "clear app data",
+            "Clear storage",
+        ).forEach { text ->
+            assertTrue("expected data wipe: $text", PhoneRiskText.isDataWipe(text))
+        }
+
+        listOf(
+            "Borrar caché",
+            "Borrar cache",
+            "Clear cache",
+            "Eliminar chat",
+            "Borrar",
+            "Almacenamiento",
+            "Caché 1,2 GB",
+            "",
+            "   ",
+        ).forEach { text ->
+            assertFalse("expected not data wipe: $text", PhoneRiskText.isDataWipe(text))
         }
     }
 

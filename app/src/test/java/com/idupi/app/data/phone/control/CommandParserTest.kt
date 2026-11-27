@@ -156,6 +156,76 @@ class CommandParserTest {
     }
 
     @Test
+    fun `parses every settings screen from the fixed allowlist`() {
+        assertEquals(
+            PhoneCommand.Settings("phc-1", null, SettingsScreen.DEVICE_CARE),
+            valid("""{"id":"phc-1","type":"settings","args":{"screen":"device-care"}}"""),
+        )
+        assertEquals(
+            PhoneCommand.Settings("phc-1", null, SettingsScreen.STORAGE),
+            valid("""{"id":"phc-1","type":"settings","args":{"screen":"storage"}}"""),
+        )
+        assertEquals(
+            PhoneCommand.Settings("phc-1", null, SettingsScreen.BATTERY),
+            valid("""{"id":"phc-1","type":"settings","args":{"screen":"battery"}}"""),
+        )
+        assertEquals(
+            PhoneCommand.Settings("phc-1", null, SettingsScreen.APPS),
+            valid("""{"id":"phc-1","type":"settings","args":{"screen":"apps"}}"""),
+        )
+        assertEquals(
+            PhoneCommand.Settings("phc-1", null, SettingsScreen.APP, "com.whatsapp"),
+            valid(
+                """{"id":"phc-1","type":"settings","args":{"screen":"app","package":"com.whatsapp"}}"""
+            ),
+        )
+    }
+
+    @Test
+    fun `rejects settings outside the fixed allowlist`() {
+        assertTrue(
+            invalid("""{"id":"phc-1","type":"settings","args":{}}""").error.contains("screen"),
+        )
+        assertTrue(
+            invalid("""{"id":"phc-1","type":"settings","args":{"screen":"wifi"}}""")
+                .error.contains("screen"),
+        )
+        // A free-form intent is exactly what the allowlist forbids.
+        assertTrue(
+            invalid(
+                """{"id":"phc-1","type":"settings",
+                    "args":{"screen":"device-care","intent":"android.settings.SETTINGS"}}"""
+            ).error.contains("argumento desconocido"),
+        )
+        assertTrue(
+            invalid(
+                """{"id":"phc-1","type":"settings",
+                    "args":{"screen":"storage","package":"com.whatsapp"}}"""
+            ).error.contains("package"),
+        )
+        // The package must be a package id, and only `screen: app` takes one.
+        assertTrue(
+            invalid("""{"id":"phc-1","type":"settings","args":{"screen":"app"}}""")
+                .error.contains("package"),
+        )
+        assertTrue(
+            invalid(
+                """{"id":"phc-1","type":"settings","args":{"screen":"app","package":"whatsapp"}}"""
+            ).error.contains("package"),
+        )
+        assertTrue(
+            invalid(
+                """{"id":"phc-1","type":"settings","args":{"screen":"app","package":"com..x"}}"""
+            ).error.contains("package"),
+        )
+        assertTrue(
+            invalid(
+                """{"id":"phc-1","type":"settings","args":{"screen":"app","package":"-com.x"}}"""
+            ).error.contains("package"),
+        )
+    }
+
+    @Test
     fun `waits are bounded integers`() {
         assertEquals(
             PhoneCommand.Wait("phc-1", null, 0),

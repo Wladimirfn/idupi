@@ -28,6 +28,14 @@ class PhoneStatusSerializationTest {
         storage = PhoneStorage(usedBytes = 51_539_607_552, totalBytes = 137_438_953_472),
         foregroundApp = PhoneAppRef(label = "WhatsApp", packageName = "com.whatsapp"),
         topAppsToday = listOf(PhoneTopApp("WhatsApp", "com.whatsapp", 42)),
+        largestApps = listOf(
+            PhoneLargestApp(
+                label = "WhatsApp",
+                packageName = "com.whatsapp",
+                totalBytes = 2_147_483_648,
+                cacheBytes = 1_073_741_824,
+            )
+        ),
         collectedAt = "2026-11-24T12:00:00Z",
         appVersion = "1.41-phone-agent",
     )
@@ -45,6 +53,7 @@ class PhoneStatusSerializationTest {
                 "storage",
                 "foregroundApp",
                 "topAppsToday",
+                "largestApps",
                 "collectedAt",
                 "appVersion",
             ),
@@ -81,6 +90,10 @@ class PhoneStatusSerializationTest {
             setOf("label", "packageName", "minutes"),
             element["topAppsToday"]!!.jsonArray.single().jsonObject.keys
         )
+        assertEquals(
+            setOf("label", "packageName", "totalBytes", "cacheBytes"),
+            element["largestApps"]!!.jsonArray.single().jsonObject.keys
+        )
     }
 
     @Test
@@ -94,6 +107,9 @@ class PhoneStatusSerializationTest {
         assertTrue(battery["charging"]!!.jsonPrimitive.content.toBoolean())
         assertEquals(8_589_934_592L, memory["totalBytes"]!!.jsonPrimitive.content.toLong())
         assertEquals("2026-11-24T12:00:00Z", element["collectedAt"]!!.jsonPrimitive.content)
+        val largest = element["largestApps"]!!.jsonArray.single().jsonObject
+        assertEquals(2_147_483_648L, largest["totalBytes"]!!.jsonPrimitive.content.toLong())
+        assertEquals(1_073_741_824L, largest["cacheBytes"]!!.jsonPrimitive.content.toLong())
     }
 
     @Test
@@ -121,6 +137,10 @@ class PhoneStatusSerializationTest {
               "topAppsToday": [
                 { "label": "WhatsApp", "packageName": "com.whatsapp", "minutes": 42 }
               ],
+              "largestApps": [
+                { "label": "WhatsApp", "packageName": "com.whatsapp",
+                  "totalBytes": 2147483648, "cacheBytes": 1073741824 }
+              ],
               "collectedAt": "2026-11-24T12:00:00Z",
               "appVersion": "1.41-phone-agent"
             }
@@ -137,6 +157,7 @@ class PhoneStatusSerializationTest {
         assertEquals(8_589_934_592L, status.memory?.totalBytes)
         assertEquals("com.whatsapp", status.foregroundApp?.packageName)
         assertEquals(42, status.topAppsToday?.single()?.minutes)
+        assertEquals(1_073_741_824L, status.largestApps?.single()?.cacheBytes)
     }
 
     @Test

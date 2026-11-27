@@ -62,6 +62,7 @@ object PhoneCommandSummaries {
         is PhoneCommand.Scroll -> "scroll"
         is PhoneCommand.Global -> "global"
         is PhoneCommand.OpenApp -> "open"
+        is PhoneCommand.Settings -> "settings"
         is PhoneCommand.Wait -> "wait"
         is PhoneCommand.ReportStatus -> "status"
     }
@@ -75,6 +76,8 @@ object PhoneCommandSummaries {
         is PhoneCommand.Scroll -> command.direction.name.lowercase()
         is PhoneCommand.Global -> command.action.name.lowercase()
         is PhoneCommand.OpenApp -> command.app.take(MAX_TEXT_CHARS)
+        is PhoneCommand.Settings -> command.packageName?.take(MAX_TEXT_CHARS)
+            ?: command.screen.wire
         is PhoneCommand.Wait -> "${command.millis} ms"
         is PhoneCommand.ReportStatus -> "estado"
     }

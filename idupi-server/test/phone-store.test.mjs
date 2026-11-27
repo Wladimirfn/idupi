@@ -62,6 +62,25 @@ test("recordStatus keeps the latest snapshot plus a server receivedAt", async (t
     assert.equal(info.history.length, 1);
 });
 
+test("recordStatus passes largestApps through untouched", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const store = createPhoneStore({ dataDir: dir, now: clock.now, log: silentLog });
+    const largestApps = [
+        { label: "WhatsApp", packageName: "com.whatsapp", totalBytes: 2_147_483_648, cacheBytes: 1_073_741_824 },
+        { label: "Chrome", packageName: "com.android.chrome", totalBytes: 1_073_741_824, cacheBytes: 536_870_912 },
+    ];
+
+    const latest = store.recordStatus(snapshot({ largestApps }));
+
+    assert.deepEqual(latest.largestApps, largestApps);
+    assert.deepEqual(store.getStatusInfo().latest.largestApps, largestApps);
+
+    // The field is additive: a snapshot without it stays valid.
+    store.recordStatus(snapshot());
+    assert.equal(store.getStatusInfo().latest.largestApps, undefined);
+});
+
 test("recordStatus persists and a new store reloads latest + history", async (t) => {
     const dir = await makeDir(t);
     const clock = makeClock();
@@ -186,6 +205,20 @@ test("normalizeCommandArgs validates every command type", () => {
     });
     assert.deepEqual(normalizeCommandArgs("wait", { ms: 0 }), { ms: 0 });
 
+    // phone-dashboard T7: a fixed allowlist of settings screens, never a
+    // free-form intent, and an app screen keyed by package name.
+    for (const screen of ["device-care", "storage", "battery", "apps"]) {
+        assert.deepEqual(normalizeCommandArgs("settings", { screen }), { screen });
+    }
+    assert.deepEqual(
+        normalizeCommandArgs("settings", { screen: "app", package: "com.whatsapp" }),
+        { screen: "app", package: "com.whatsapp" },
+    );
+    assert.deepEqual(
+        normalizeCommandArgs("settings", { screen: "app", package: "com.whatsapp.w4b" }),
+        { screen: "app", package: "com.whatsapp.w4b" },
+    );
+
     const invalid = [
         ["nope", {}],
         ["screen", { extra: 1 }],
@@ -203,6 +236,18 @@ test("normalizeCommandArgs validates every command type", () => {
         ["open", { app: "x", extra: true }],
         ["wait", { ms: 10_001 }],
         ["wait", { ms: 1.5 }],
+        // settings: the allowlist is closed and its args are exact.
+        ["settings", {}],
+        ["settings", { screen: "wifi" }],
+        ["settings", { screen: "APP" }],
+        ["settings", { screen: "device-care", package: "com.whatsapp" }],
+        ["settings", { screen: "device-care", intent: "android.settings.SETTINGS" }],
+        ["settings", { screen: "app" }],
+        ["settings", { screen: "app", package: "" }],
+        ["settings", { screen: "app", package: "whatsapp" }],
+        ["settings", { screen: "app", package: "com..x" }],
+        ["settings", { screen: "app", package: "com.whatsapp", extra: true }],
+        ["settings", { screen: "app", package: `com.${"a".repeat(300)}` }],
     ];
     for (const [type, args] of invalid) {
         assert.throws(
@@ -427,6 +472,25 @@ test("a risky command parks in awaiting_approval and is never delivered", async 
     clock.advance(5 * 60_000);
     assert.equal(store.takeNext(), null);
     assert.equal(store.getCommand(command.id).state, "awaiting_approval");
+});
+
+test("a settings command stays free and is delivered without approval (T7)", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+    // A sensitive app in front does not matter: a settings intent opens a
+    // screen, it never taps or types inside that app.
+    store.recordStatus({ foregroundApp: { packageName: "com.whatsapp", label: "WhatsApp" } });
+
+    const command = store.createCommand({
+        type: "settings",
+        args: { screen: "app", package: "com.whatsapp" },
+    });
+
+    assert.equal(command.state, "pending");
+    assert.equal(command.approvalId, undefined);
+    assert.equal(approvals.listApprovals().length, 0);
+    assert.equal(store.takeNext()?.id, command.id);
 });
 
 test("approve requeues the command with a fresh TTL, approvalId and approvedTarget", async (t) => {
@@ -748,4 +812,154 @@ test("a manual decision leaves decidedBy empty and still requeues", async (t) =>
     assert.equal(outcome.ok, true);
     assert.equal(approvals.getApproval(command.approvalId).decidedBy ?? null, null);
     assert.equal(store.getCommand(command.id).state, "pending");
+});
+
+
+// --- data wipe is a gated destructive step (phone-dashboard, T3 + T6) -----
+
+test("a data wipe tap creates a gated destructive approval", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+
+    const wipes = ["Borrar datos", "clear storage", "Eliminar datos", "borrar todos los datos"];
+    for (const type of ["tap", "long_press"]) {
+        for (const text of wipes) {
+            const command = store.createCommand({ type, args: { text } });
+
+            assert.equal(command.state, "awaiting_approval", `${type} ${text}`);
+            assert.equal(command.approvalReason, "risky_text", `${type} ${text}`);
+            assert.equal(command.approvalTarget, text);
+            assert.match(command.approvalId, APPROVAL_ID_PATTERN);
+
+            const approval = approvals.getApproval(command.approvalId);
+            assert.equal(approval.state, "pending");
+            assert.equal(approval.riskKind, "data_wipe");
+            assert.equal(approval.target, text);
+            assert.equal(approval.command.type, type);
+            assert.deepEqual(approval.command.args, { text });
+        }
+    }
+
+    // It is a normal gate: approving requeues the command with the same
+    // approvalId/approvedTarget a cache clear gets.
+    const first = approvals.listApprovals({ state: "pending" })[0];
+    const decided = store.decideApproval(first.id, "approve");
+    assert.equal(decided.ok, true);
+    assert.equal(decided.command.state, "pending");
+    assert.equal(decided.command.args.approvalId, first.id);
+    assert.equal(decided.command.args.approvedTarget, first.target);
+});
+
+test("an owner turn never auto-approves a data wipe", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+
+    const command = store.createCommand({
+        type: "tap",
+        args: { text: "Borrar datos" },
+        ownerTurnId: OWNER_TURN,
+    });
+
+    assert.equal(command.state, "awaiting_approval");
+    const approval = approvals.getApproval(command.approvalId);
+    assert.equal(approval.state, "pending", "the owner still decides");
+    assert.equal(approval.ownerTurnId, OWNER_TURN);
+    assert.equal(approval.riskKind, "data_wipe");
+});
+
+test("a phone-detected data wipe carries the data-wipe kind", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+
+    // A coordinate tap is free at creation; the phone refuses the wipe node it
+    // found under the point and the server turns that into an approval.
+    const command = store.createCommand({ type: "tap", args: { x: 540, y: 1200 } });
+    assert.equal(command.state, "pending");
+
+    const outcome = store.finishCommand(command.id, {
+        ok: false,
+        error: "APPROVAL_REQUIRED",
+        result: { nodeText: "Borrar datos" },
+    });
+
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.command.state, "awaiting_approval");
+    const approval = approvals.getApproval(outcome.command.approvalId);
+    assert.equal(approval.reason, "phone_detected_risky_target");
+    assert.equal(approval.riskKind, "data_wipe");
+    assert.equal(approval.target, "Borrar datos");
+});
+
+test("clearing the cache is gated without the data-wipe kind", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+
+    const command = store.createCommand({ type: "tap", args: { text: "Borrar caché" } });
+
+    assert.equal(command.state, "awaiting_approval");
+    assert.equal(command.approvalReason, "risky_text");
+    const approval = approvals.getApproval(command.approvalId);
+    assert.equal(approval.state, "pending");
+    assert.equal(approval.riskKind, null);
+});
+
+test("an owner turn marks a destructive approval with its turn id", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+
+    const command = store.createCommand({
+        type: "tap",
+        args: { text: "Borrar caché" },
+        ownerTurnId: OWNER_TURN,
+    });
+
+    assert.equal(command.state, "awaiting_approval");
+    const approval = approvals.getApproval(command.approvalId);
+    assert.equal(approval.state, "pending");
+    assert.equal(approval.ownerTurnId, OWNER_TURN);
+    assert.equal(approval.requestedBy, "cli");
+});
+
+test("a phone-detected approval inherits the owner turn of its command", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+
+    // A coordinate tap is free at creation; the phone then refuses the risky
+    // node it found under the point and the server turns that into an approval.
+    const command = store.createCommand({
+        type: "tap",
+        args: { x: 540, y: 1200 },
+        ownerTurnId: OWNER_TURN,
+    });
+    assert.equal(command.state, "pending");
+
+    const outcome = store.finishCommand(command.id, {
+        ok: false,
+        error: "APPROVAL_REQUIRED",
+        result: { nodeText: "Borrar caché" },
+    });
+    assert.equal(outcome.ok, true);
+    assert.equal(outcome.command.state, "awaiting_approval");
+    assert.equal(outcome.command.approvalReason, "phone_detected_risky_target");
+
+    const approval = approvals.getApproval(outcome.command.approvalId);
+    assert.equal(approval.state, "pending");
+    assert.equal(approval.ownerTurnId, OWNER_TURN);
+    assert.equal(approval.requestedBy, "phone");
+});
+
+test("a manual approval never carries an owner turn id", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+
+    const command = store.createCommand({ type: "tap", args: { text: "Borrar caché" } });
+
+    assert.equal(approvals.getApproval(command.approvalId).ownerTurnId ?? null, null);
 });

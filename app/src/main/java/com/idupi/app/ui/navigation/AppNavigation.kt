@@ -72,6 +72,7 @@ fun AppNavigation() {
     val remoteViewModel: RemoteScreenViewModel = viewModel()
     val deliveriesViewModel: DeliveriesViewModel = viewModel()
     val dashboardViewModel: DashboardViewModel = viewModel()
+    val phoneDashboardViewModel: PhoneDashboardViewModel = viewModel()
 
     // Drawer badge = open high-importance inbox items (phone-inbox T5). The
     // ViewModel publishes this while Alertas polls, so the badge is live.
@@ -272,6 +273,7 @@ fun AppNavigation() {
                             Screen.DASHBOARD -> DashboardScreen(
                                 mainViewModel = mainViewModel,
                                 viewModel = dashboardViewModel,
+                                phoneViewModel = phoneDashboardViewModel,
                                 onMenuClick = { scope.launch { drawerState.open() } }
                             )
                             Screen.TERMINALS -> TerminalsScreen(

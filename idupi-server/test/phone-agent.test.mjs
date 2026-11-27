@@ -207,7 +207,7 @@ test("the prompt separates the trusted request from untrusted tool output", () =
     assert.match(prompt, /TRUSTED/);
     assert.match(prompt, /UNTRUSTED DATA/);
     assert.match(prompt, /<owner_request>\nrevisa mi correo y dime quién escribió\n<\/owner_request>/);
-    assert.match(prompt, /at most 15 commands/);
+    assert.match(prompt, /at most 40 commands/);
     assert.match(prompt, /at most 600 characters/);
     assert.match(prompt, /neutral Latin American Spanish/);
     assert.match(prompt, /no voseo/);
@@ -221,9 +221,70 @@ test("the prompt separates the trusted request from untrusted tool output", () =
     assert.ok(prompt.includes(`node ${CLI}`));
     // The usage list comes from bin/idupi-phone.mjs.
     for (const subcommand of ["status", "screen", "tap", "long-press", "type", "scroll",
-        "open", "wait", "calendar", "health", "approvals", "log"]) {
+        "open", "settings", "wait", "calendar", "health", "approvals", "log"]) {
         assert.ok(prompt.includes(subcommand), `prompt lists ${subcommand}`);
     }
+});
+
+test("the prompt sends the agent to settings instead of wandering Settings (T7)", () => {
+    const prompt = buildPhonePrompt({ text: "optimiza mi teléfono", cliPath: CLI });
+
+    // The allowlisted settings command replaces hunting through Settings.
+    assert.match(prompt, /settings device-care/);
+    assert.match(prompt, /settings app <package>/);
+    assert.match(prompt, /never search Settings by hand/i);
+    // The bubble panel is the agent's own window; it must never touch it.
+    assert.match(prompt, /Never tap IDUPI/i);
+    // `open "Cuidado del dispositivo"` failed on the owner's Samsung and sent
+    // the agent wandering; the playbook no longer teaches it.
+    assert.doesNotMatch(prompt, /`open` "Cuidado del dispositivo"/);
+});
+
+test("the prompt carries the optimization playbook", () => {
+    const prompt = buildPhonePrompt({ text: "optimiza mi teléfono", cliPath: CLI });
+
+    // (a) status first, with storage and the largest apps.
+    assert.match(prompt, /optimiz/i);
+    assert.match(prompt, /run `?status`? first/i);
+    assert.match(prompt, /largestApps/);
+    // (b) Samsung Device Care first, another cleaner elsewhere.
+    assert.match(prompt, /Cuidado del dispositivo/i);
+    assert.match(prompt, /Optimizar ahora/i);
+    assert.match(prompt, /Almacenamiento/);
+    // (c) cache per app, always through an approval.
+    assert.match(prompt, /Aplicaciones/);
+    assert.match(prompt, /Borrar caché/i);
+    assert.match(prompt, /3-5 apps/);
+    // (c2) destructive steps are reasoned, not forbidden (owner correction):
+    // only when the owner asked for that deletion, saying what is lost, and
+    // never a data wipe on the agent's own initiative.
+    assert.match(prompt, /Destructive steps/i);
+    assert.match(prompt, /only when the owner explicitly asked/i);
+    assert.match(prompt, /Before tapping, say/i);
+    assert.match(prompt, /what will be lost/i);
+    assert.match(prompt, /never wipe data on your own initiative/i);
+    assert.match(prompt, /clear the cache only/i);
+    assert.doesNotMatch(prompt, /NEVER "Borrar datos"/);
+    assert.doesNotMatch(prompt, /DATA_WIPE_BLOCKED/);
+    // (d) uninstall only with explicit agreement.
+    assert.match(prompt, /not used recently/i);
+    assert.match(prompt, /explicitly agrees/i);
+    // (e) status again and report the space freed.
+    assert.match(prompt, /running `status` again/i);
+    assert.match(prompt, /how much space (?:was )?freed/i);
+});
+
+test("the prompt allows a data wipe only when the owner asked for it", () => {
+    const prompt = buildPhonePrompt({ text: "borra los datos de WhatsApp", cliPath: CLI });
+
+    // The rule names data/storage as a destructive step, keeps it behind the
+    // owner's explicit request and the approval queue, and never forbids it.
+    assert.match(prompt, /clear data or storage/i);
+    assert.match(prompt, /only when the owner explicitly asked/i);
+    assert.match(prompt, /never wipe data on your own initiative/i);
+    assert.match(prompt, /clear the cache only/i);
+    assert.doesNotMatch(prompt, /never allowed/i);
+    assert.doesNotMatch(prompt, /refuses them/i);
 });
 
 test("the prompt explains that an owner turn already approves its messaging steps", () => {
@@ -294,7 +355,7 @@ test("the owner block is clipped to the turn text cap", () => {
 
 // --- runner ----------------------------------------------------------------
 
-test("runPhoneTurn spawns without a shell, in an empty temp dir, and streams steps", async () => {
+test("runPhoneTurn spawns without a shell, in an empty temp dir, and streams steps", { timeout: 5_000 }, async () => {
     const deps = fakeSpawn({
         stdout: frameLines([
             toolUseFrame(`node ${CLI} status`),
@@ -342,7 +403,7 @@ test("runPhoneTurn spawns without a shell, in an empty temp dir, and streams ste
     assert.equal(removed[1].options.recursive, true);
 });
 
-test("the owner turn grant reaches the CLI env but never the prompt", async () => {
+test("the owner turn grant reaches the CLI env but never the prompt", { timeout: 5_000 }, async () => {
     const deps = fakeSpawn({ stdout: frameLines([resultFrame("Listo.")]) });
     const { runner } = makeRunner(deps);
     const grant = "a".repeat(64);
@@ -360,7 +421,7 @@ test("the owner turn grant reaches the CLI env but never the prompt", async () =
     assert.equal(JSON.stringify(args).includes(grant), false);
 });
 
-test("an inherited grant from the server env is scrubbed when the turn has none", async () => {
+test("an inherited grant from the server env is scrubbed when the turn has none", { timeout: 5_000 }, async () => {
     const deps = fakeSpawn({ stdout: frameLines([resultFrame("Listo.")]) });
     const { runner } = makeRunner(deps, {
         env: { PATH: "C:\\Windows", IDUPI_PHONE_TURN_GRANT: "stale-turn-secret" },
@@ -375,7 +436,7 @@ test("an inherited grant from the server env is scrubbed when the turn has none"
     assert.equal(options.env.IDUPI_PHONE_TURN_GRANT, undefined);
 });
 
-test("an unsupported agent never spawns a process", async () => {
+test("an unsupported agent never spawns a process", { timeout: 5_000 }, async () => {
     const deps = fakeSpawn({ stdout: resultFrame("nunca") });
     const { runner } = makeRunner(deps);
 
@@ -386,7 +447,7 @@ test("an unsupported agent never spawns a process", async () => {
     assert.equal(deps.calls.length, 0);
 });
 
-test("a non-zero exit fails without leaking stderr or the prompt", async () => {
+test("a non-zero exit fails without leaking stderr or the prompt", { timeout: 5_000 }, async () => {
     const deps = fakeSpawn({
         stdout: "",
         stderr: "provider exploded with the owner text revisa mi correo",
@@ -409,7 +470,7 @@ test("a non-zero exit fails without leaking stderr or the prompt", async () => {
     assert.equal(removed.length, 2, "the temp directory is removed even on failure");
 });
 
-test("an error result frame and a missing result are distinct failures", async () => {
+test("an error result frame and a missing result are distinct failures", { timeout: 5_000 }, async () => {
     const errorDeps = fakeSpawn({ stdout: frameLines([resultFrame("no pude", { isError: true })]) });
     const { runner: errorRunner } = makeRunner(errorDeps);
     await assert.rejects(
@@ -425,7 +486,7 @@ test("an error result frame and a missing result are distinct failures", async (
     );
 });
 
-test("the turn times out and kills the child", async () => {
+test("the turn times out and kills the child", { timeout: 5_000 }, async () => {
     const deps = fakeSpawn({ stdout: "", autoClose: false });
     const { runner } = makeRunner(deps, { timeoutMs: 20 });
 
@@ -440,9 +501,11 @@ test("the turn times out and kills the child", async () => {
     assert.deepEqual(deps.calls[0].child.signals, ["SIGTERM"]);
 });
 
-test("aborting the signal kills the child and rejects as aborted", async () => {
+test("aborting the signal kills the child and rejects as aborted", { timeout: 5_000 }, async () => {
     const deps = fakeSpawn({ stdout: "", autoClose: false });
-    const { runner } = makeRunner(deps);
+    // A short injected turn timeout keeps a stuck fake child from relying on
+    // the ten-minute production default; the abort still wins long before it.
+    const { runner } = makeRunner(deps, { timeoutMs: 250 });
     const controller = new AbortController();
 
     const pending = runner.runPhoneTurn(
@@ -456,13 +519,14 @@ test("aborting the signal kills the child and rejects as aborted", async () => {
     assert.deepEqual(deps.calls[0].child.signals, ["SIGTERM"]);
 });
 
-test("the sixteenth CLI call is killed and fails the turn", async () => {
+test("the forty-first CLI call is killed and fails the turn", { timeout: 5_000 }, async () => {
     const frames = [];
     for (let index = 0; index < MAX_PHONE_CLI_CALLS + 1; index += 1) {
         frames.push(toolUseFrame(`node ${CLI} status`));
     }
     const deps = fakeSpawn({ stdout: frameLines(frames), autoClose: false });
-    const { runner } = makeRunner(deps);
+    // Same as the abort test: never lean on the ten-minute default here.
+    const { runner } = makeRunner(deps, { timeoutMs: 1_000 });
     const steps = [];
 
     await assert.rejects(
@@ -472,7 +536,7 @@ test("the sixteenth CLI call is killed and fails the turn", async () => {
         ),
         (error) => {
             assert.equal(error.code, "PHONE_TURN_STEP_BUDGET");
-            assert.match(error.message, /15/);
+            assert.match(error.message, /40/);
             return true;
         },
     );
@@ -480,7 +544,7 @@ test("the sixteenth CLI call is killed and fails the turn", async () => {
     assert.deepEqual(deps.calls[0].child.signals, ["SIGTERM"]);
 });
 
-test("exactly fifteen CLI calls are still allowed", async () => {
+test("exactly forty CLI calls are still allowed", { timeout: 5_000 }, async () => {
     const frames = [];
     for (let index = 0; index < MAX_PHONE_CLI_CALLS; index += 1) {
         frames.push(toolUseFrame(`node ${CLI} screen`));
@@ -497,7 +561,7 @@ test("exactly fifteen CLI calls are still allowed", async () => {
     assert.equal(deps.calls[0].child.signals.length, 0);
 });
 
-test("the default timeout is five minutes and the step budget is fifteen", () => {
-    assert.equal(DEFAULT_PHONE_TURN_TIMEOUT_MS, 5 * 60 * 1000);
-    assert.equal(MAX_PHONE_CLI_CALLS, 15);
+test("the default timeout is ten minutes and the step budget is forty", () => {
+    assert.equal(DEFAULT_PHONE_TURN_TIMEOUT_MS, 10 * 60 * 1000);
+    assert.equal(MAX_PHONE_CLI_CALLS, 40);
 });

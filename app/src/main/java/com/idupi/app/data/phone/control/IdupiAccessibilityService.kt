@@ -17,6 +17,7 @@ import com.idupi.app.data.phone.approval.PhoneApprovalReporting
 import com.idupi.app.data.phone.approval.PhoneApprovals
 import com.idupi.app.data.phone.bubble.AssistDictationHost
 import com.idupi.app.data.phone.bubble.BubbleGate
+import com.idupi.app.data.phone.bubble.BubbleRequestHost
 import com.idupi.app.data.phone.bubble.PhoneBubbleOverlay
 import com.idupi.app.data.settings.SettingsProvider
 import kotlinx.coroutines.CoroutineScope
@@ -177,6 +178,9 @@ class IdupiAccessibilityService : AccessibilityService() {
         PhoneApprovalReporting.stop()
         // assistant-key T1: no launch may reach a dead service.
         AssistDictationHost.detach()
+        // phone-dashboard T2: the Dashboard button must not reach an overlay
+        // whose service is unbinding either.
+        BubbleRequestHost.detach()
         unregisterKeyguardReceiver()
         assistSessionActive.value = false
         bubbleOverlay.setVisible(false)

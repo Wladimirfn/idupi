@@ -25,7 +25,7 @@ import { randomBytes } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { RISK_REASONS, classifyCommand } from "./phone-risk.mjs";
+import { RISK_KINDS, RISK_REASONS, classifyCommand, isDataWipeText } from "./phone-risk.mjs";
 
 // Status body: one snapshot is a few hundred bytes; 64 KiB covers every field
 // without letting a client buffer an arbitrary payload.
@@ -56,6 +56,7 @@ export const COMMAND_TYPES = [
     "scroll",
     "global",
     "open",
+    "settings",
     "wait",
     "status",
 ];
@@ -69,6 +70,19 @@ export const COMMAND_STATES = [
 ];
 export const SCROLL_DIRECTIONS = ["up", "down", "left", "right"];
 export const GLOBAL_ACTIONS = ["back", "home", "recents", "notifications", "quick_settings"];
+
+// Phone-dashboard T7: the settings command is a fixed allowlist, never a
+// free-form intent from the PC. `app` is the one screen that takes a package.
+export const SETTINGS_SCREENS = ["device-care", "storage", "battery", "apps"];
+export const SETTINGS_APP_SCREEN = "app";
+
+// A package id: at least two dot-separated segments, each starting with a
+// letter (the first) or a letter/underscore (the rest). Same rule on the phone.
+export const PACKAGE_NAME_PATTERN = /^[a-zA-Z][\w]*(\.[a-zA-Z_][\w]*)+$/;
+
+export function isValidPackageName(value) {
+    return typeof value === "string" && PACKAGE_NAME_PATTERN.test(value);
+}
 
 // Error codes the approval gate writes on a command. APPROVAL_REQUIRED travels
 // the other way: the phone sends it as the error of a refused execution.
@@ -234,6 +248,33 @@ export function normalizeCommandArgs(type, rawArgs) {
         case "open":
             rejectUnknownArgs(args, ["app"]);
             return { app: requireString(args.app, "app", MAX_APP_CHARS) };
+        case "settings": {
+            // A fixed allowlist: the PC names a screen key, never an action,
+            // extras or a free-form intent (phone-dashboard T7).
+            rejectUnknownArgs(args, ["screen", "package"]);
+            if (args.screen === SETTINGS_APP_SCREEN) {
+                if (!isValidPackageName(args.package)) {
+                    throw typedError("INVALID_COMMAND", "package must be a valid package name");
+                }
+                if (args.package.length > MAX_APP_CHARS) {
+                    throw typedError(
+                        "INVALID_COMMAND",
+                        `package exceeds ${MAX_APP_CHARS} characters`,
+                    );
+                }
+                return { screen: SETTINGS_APP_SCREEN, package: args.package };
+            }
+            if (!SETTINGS_SCREENS.includes(args.screen)) {
+                throw typedError(
+                    "INVALID_COMMAND",
+                    "screen must be one of: " + SETTINGS_SCREENS.join(", ") + ", " + SETTINGS_APP_SCREEN,
+                );
+            }
+            if (args.package !== undefined) {
+                throw typedError("INVALID_COMMAND", "package is only allowed with screen app");
+            }
+            return { screen: args.screen };
+        }
         case "wait":
             rejectUnknownArgs(args, ["ms"]);
             if (!Number.isInteger(args.ms) || args.ms < 0 || args.ms > MAX_WAIT_MS) {
@@ -296,6 +337,15 @@ export function createPhoneStore({
 
     /** @type {object[]} insertion order: oldest first */
     const commands = [];
+
+    /**
+     * Owner bubble turn that created each command, for the approvals the phone
+     * detects later. Memory-only like the queue itself: a stale command is
+     * worthless after 60 s and the approvals it may create are created while
+     * the command is still alive.
+     * @type {Map<string, string>}
+     */
+    const ownerTurns = new Map();
 
     let tempCounter = 0;
 
@@ -475,14 +525,26 @@ export function createPhoneStore({
      * Parks one command as `awaiting_approval` and creates its persisted
      * approval. Does not notify; the caller owns that after the transition.
      */
-    function beginApproval(command, { reason, target = null, requestedBy = "cli" } = {}) {
+    function beginApproval(
+        command,
+        { reason, target = null, riskKind = null, requestedBy = "cli", ownerTurnId = null } = {},
+    ) {
+        const turnId = typeof ownerTurnId === "string" && ownerTurnId.trim().length > 0
+            ? ownerTurnId.trim()
+            : (ownerTurns.get(command.id) ?? null);
         const approval = approvalStore.createApproval({
             command: approvalArgs(command),
             reason,
             target,
+            riskKind,
             foregroundApp: latestForegroundApp(),
             requestedBy,
             commandId: command.id,
+            // The phone gets the turn provenance of a destructive approval of
+            // an owner turn and checks that exact turn is still active before
+            // voicing it (phone-dashboard, T4 + T6). Manual or PC-created
+            // approvals carry null.
+            ownerTurnId: turnId,
         });
         command.state = "awaiting_approval";
         command.deliveredAt = null;
@@ -586,7 +648,10 @@ export function createPhoneStore({
         const excess = finished.length - maxFinished;
         const drop = new Set(finished.slice(0, excess));
         for (let index = commands.length - 1; index >= 0; index -= 1) {
-            if (drop.has(commands[index])) commands.splice(index, 1);
+            if (drop.has(commands[index])) {
+                ownerTurns.delete(commands[index].id);
+                commands.splice(index, 1);
+            }
         }
     }
 
@@ -604,6 +669,10 @@ export function createPhoneStore({
             ? ownerTurnId.trim()
             : null;
         const normalizedArgs = normalizeCommandArgs(type, args);
+        // A data wipe is destructive like any other delete: it is classified
+        // and parked for the owner, never refused (owner correction, T6). The
+        // phrase still decides which approval is created so the phone can word
+        // it with what is lost.
         const requester = requestedBy.trim().length > 0 ? requestedBy.trim() : "cli";
         const foreground = latestForegroundApp();
         const verdict = approvalsEnabled
@@ -627,11 +696,14 @@ export function createPhoneStore({
             error: null,
         };
         commands.push(command);
+        if (turnId !== null) ownerTurns.set(command.id, turnId);
         if (verdict.gated) {
             const approval = beginApproval(command, {
                 reason: verdict.reason,
                 target: verdict.target ?? null,
+                riskKind: verdict.riskKind ?? null,
                 requestedBy: requester,
+                ownerTurnId: turnId,
             });
             // An owner bubble turn is the approval for its messaging steps
             // (owner rule 2026-11-26). Money, destructive, confirmation and
@@ -749,9 +821,14 @@ export function createPhoneStore({
                 )
                 : null;
             command.result = storedResult;
+            const approvedTarget = nodeText.length > 0 ? nodeText : fallbackTarget;
+            // The phone caught a data-wipe node the server could not see
+            // (a tap by id or coordinates): keep the kind so the bubble words
+            // it with what is lost (T6).
             beginApproval(command, {
                 reason: RISK_REASONS.phoneDetected,
-                target: nodeText.length > 0 ? nodeText : fallbackTarget,
+                target: approvedTarget,
+                riskKind: isDataWipeText(approvedTarget) ? RISK_KINDS.dataWipe : null,
                 requestedBy: "phone",
             });
             notify();

@@ -19,6 +19,10 @@ control is the same trust level.
   `••••`, and the executor never types into a password field.
 - **Actions are unverified by the server.** The server is a queue; the phone
   decides whether a node matched and reports `ok` or `error`.
+- **Nothing is deleted without the owner.** Destructive steps (delete, clear
+  data or storage, uninstall) park for approval; during the owner's own bubble
+  turn the phone asks in the bubble and names what is lost (phone-dashboard
+  T4 + T6).
 
 ## Routes
 
@@ -54,6 +58,7 @@ command queue is memory-only; a server restart never replays a stale command.
 | `scroll` | `{direction}` where direction is `up`, `down`, `left`, `right` | Scroll |
 | `global` | `{action}` where action is `back`, `home`, `recents`, `notifications`, `quick_settings` | Global system action |
 | `open` | `{app}` | Launch an app by package name or visible label |
+| `settings` | `{screen}` where screen is `device-care`, `storage`, `battery` or `apps`; `{screen: "app", package}` for one app | Open a fixed Settings screen by intent |
 | `wait` | `{ms}` (0..10000) | Pause inside the phone executor |
 | `status` | `{}` | Ask the phone to report `POST /phone/status` now |
 
@@ -85,10 +90,39 @@ result carries a short `error`; a successful one may carry `result`.
 | Command | Successful `result` | CLI output |
 |---------|--------------------|------------|
 | `screen` | `{ "text": "<dump>" }` | the dump text (or the raw JSON with `--json`) |
+| `settings` | `{ "message": "..." }`, plus `"fallback": true` when `device-care` fell back to storage | `Listo: <message>` (a fallback appends `(fallback: true)`) |
 | every other type | `{}` or `{ "message": "..." }` | `Listo.` or `Listo: <message>` |
 
 A failed phone-side execution reports `{ ok: false, error: "<reason>" }`; the
 CLI prints `El teléfono falló: <reason>` and exits non-zero.
+
+### Settings screens (`settings`, phone-dashboard T7)
+
+`settings` is a fixed allowlist, never a free-form intent, so the PC can never
+send an arbitrary action to the phone:
+
+| `screen` | Intent |
+|----------|--------|
+| `device-care` | `Intent("com.samsung.android.sm.ACTION_DASHBOARD")` (Samsung Device Care; verified on the owner's phone: resolves to `com.samsung.android.lool/com.samsung.android.sm.score.ui.ScoreBoardActivity`) |
+| `storage` | `Settings.ACTION_INTERNAL_STORAGE_SETTINGS` |
+| `battery` | `Intent.ACTION_POWER_USAGE_SUMMARY` |
+| `apps` | `Settings.ACTION_APPLICATION_SETTINGS` |
+| `app` | `Settings.ACTION_APPLICATION_DETAILS_SETTINGS` with `Uri.fromParts("package", package, null)` |
+
+Every intent starts from the accessibility service with
+`FLAG_ACTIVITY_NEW_TASK`, the same way `open` starts an app.
+
+- `app` requires `package`, and the package must match
+  `^[a-zA-Z][\w]*(\.[a-zA-Z_][\w]*)+$` (same rule on the server and the phone).
+  The phone also refuses a package that is not installed
+  (`app no instalada: <package>`).
+- Any other screen rejects a `package` argument. An unknown screen, an extra
+  key or a free-form intent is `400 INVALID_COMMAND`: there are no extras.
+- If `device-care` cannot be started (a non-Samsung phone) the phone opens
+  `android.settings.INTERNAL_STORAGE_SETTINGS` instead and answers
+  `{ "message": "...", "fallback": true }`, so the agent knows it got the
+  storage screen.
+- `settings` is navigation: `phone-risk.mjs` classifies it free, like `open`.
 
 ## Approvals
 
@@ -101,7 +135,7 @@ they are never returned by `/commands/next`, the 60 s command TTL does not
 apply to them, and they wait for the owner's decision on the phone.
 
 Free commands: `screen`, `status`, `scroll`, `global` (`back`, `home`,
-`recents`, `notifications`, `quick_settings`), `open`, `wait`, and
+`recents`, `notifications`, `quick_settings`), `open`, `settings`, `wait`, and
 `tap`/`long_press` by text that is not risky.
 
 Gated commands:
@@ -109,14 +143,27 @@ Gated commands:
 - `type` with `submit: true`. The text may be harmless; the send is not.
 - `tap`/`long_press` whose text matches a risky verb as a whole word, ignoring
   case and accents: `enviar`, `send`, `pagar`, `pay`, `eliminar`, `borrar`,
-  `delete`, `aprobar`, `approve`, `confirmar`, `confirm`, `comprar`, `buy`,
-  `transferir`, `transfer`, `publicar`, `post`, `share`, `compartir`. So
-  "Reenviar", "Responder" and "Pagaré mañana" stay free.
+  `delete`, `desinstalar`, `desinstala`, `uninstall`, `aprobar`, `approve`,
+  `confirmar`, `confirm`, `comprar`, `buy`, `transferir`, `transfer`,
+  `publicar`, `post`, `share`, `compartir`. So "Reenviar", "Responder",
+  "Desinstalado" and "Pagaré mañana" stay free.
 - `tap`/`long_press` by `id` or `x + y` while the foreground app (from the
   latest status snapshot) is a messaging, email, payment or banking app:
   WhatsApp, Telegram, Messenger, Instagram, Gmail, Outlook, Samsung Messages,
   Google Messages, Signal, Mercado Pago, PayPal, Santander Chile, BCI,
   BancoEstado, and any package containing `bank`, `banco`, `pay` or `wallet`.
+
+Destructive steps include a `tap`/`long_press` whose text asks to clear app
+data or storage — `borrar datos`, `borrar almacenamiento`, `eliminar datos`,
+`clear data`, `clear storage`, including an article or up to two filler
+words. Owner correction (phone-dashboard T6): that step is gated like any
+other destructive action, never refused. The command parks as
+`awaiting_approval` and the approval carries `riskKind: "data_wipe"` so the
+phone can say what is lost before asking; approving it requeues the command
+with the same `approvalId` / `approvedTarget` every other approval uses.
+"Borrar caché" / "clear cache" are ordinary destructive commands without the
+data-wipe kind. `clear` alone is not a risky verb: only the full phrase is
+recognized.
 
 The phone performs a second check: an unapproved tap that resolves to a node
 whose text is risky is refused with `error: "APPROVAL_REQUIRED"` and optionally
@@ -142,14 +189,16 @@ Approval shape:
 {
   "id": "apr-1a2b3c4d5e6f",
   "state": "pending",
-  "command": { "type": "tap", "args": { "text": "Enviar" } },
+  "command": { "type": "tap", "args": { "text": "Borrar datos" } },
   "reason": "risky_text",
-  "target": "Enviar",
+  "riskKind": "data_wipe",
+  "target": "Borrar datos",
   "foregroundApp": { "packageName": "com.whatsapp", "label": "WhatsApp" },
   "requestedBy": "cli",
   "createdAt": "2026-11-24T12:00:00.000Z",
   "expiresAt": "2026-11-24T12:10:00.000Z",
   "decidedAt": null,
+  "ownerTurnId": null,
   "commandId": "phc-1a2b3c4d5e6f",
   "resultCommandId": null
 }
@@ -157,9 +206,15 @@ Approval shape:
 
 `state` is `pending`, `approved`, `rejected` or `expired`. `reason` is
 `risky_text`, `type_submit`, `sensitive_app` or
-`phone_detected_risky_target`. `resultCommandId` is the command that will
-actually run: the parked one, or a rebuilt one when the server restarted while
-the approval was pending.
+`phone_detected_risky_target`. `riskKind` is additive and currently only
+`data_wipe` (or null): it marks the destructive step that clears app data or
+storage so the phone itself can say what is lost before asking
+(phone-dashboard T6). `resultCommandId` is the command that will actually run:
+the parked one, or a rebuilt one when the server restarted while the approval
+was pending. `ownerTurnId` is the bubble turn that created the command, or
+null for a manual / PC-created approval; a destructive approval that carries
+it is voiced in the bubble only while that exact turn is still active on this
+device (the same `OwnerTurnRegistry` condition as T23).
 
 An approval is REQUIRED to change the command, never to authorize it lazily:
 
@@ -300,9 +355,22 @@ phone poll carrying the same `approvalId`, `approvedTarget` and `approvalReason`
 a manual approval produces, so no pending card and no notification appear.
 
 Money (`pay`, `buy`, `transfer`, bank/wallet packages), destructive
-(`delete`, `borrar`, `eliminar`), confirmation (`approve`, `confirm`) and any
-unclassified sensitive-app step keep the normal gate even inside an owner turn:
-they wait in the approval queue until the owner decides on the phone.
+(`delete`, `borrar`, `eliminar`, `desinstalar`, `uninstall`), confirmation
+(`approve`, `confirm`) and any unclassified sensitive-app step keep the normal
+gate even inside an owner turn: they wait in the approval queue until the owner
+decides on the phone. Every pending approval created by a command of that turn
+carries its `ownerTurnId`, whichever process classified it (`requestedBy:
+"cli"` from the server classifier, `requestedBy: "phone"` when the phone
+detected a risky node). On the phone, a pending destructive approval during an
+active bubble turn is asked in the bubble itself (voice or its Aprobar /
+Rechazar buttons): cache, uninstall, a data wipe and any other delete. Money
+keeps the notification, and a data-wipe question says that the session closes
+and the app's files on the phone are lost (phone-dashboard T6).
+
+Approval decisions still use the same enforcement point. Approving a cache
+clear or an uninstall requeues a normal gated command; the phone verifies the
+same `approvalId` / `approvedTarget` as any other approval, so nothing about
+the destructive path becomes automatic.
 
 The prompt marks the owner's request as TRUSTED, inside `owner_request`, and
 states that everything the CLI prints (screen dumps, notification and message
@@ -317,15 +385,44 @@ the screen and, when the text is still in the field, tap the send button by id
 (WhatsApp `com.whatsapp:id/send`) and read the screen again. Coordinates
 (`tap --xy`) are a last resort; a point tap is still checked by the phone.
 
+The prompt also carries the optimization playbook ("optimiza mi teléfono",
+"libera espacio", "limpia la RAM"): read `status` first (storage and
+`largestApps`); `settings device-care` -> "Optimizar ahora" -> read the result
+(if the answer carries `fallback: true` the phone has no Device Care, and
+`settings storage` is used instead); clear the cache of the 3-5 largest caches
+with `settings app <package>` -> "Almacenamiento" -> "Borrar caché" -> `back`
+(each waits for the owner's approval in the bubble); destructive steps (delete
+files, photos, folders or chats, clear data or storage, uninstall) only when the
+owner explicitly asked for that deletion in the request, saying what will be
+lost before the tap, and never a data wipe on the agent's own initiative during
+an optimization (cache only); suggest uninstalling only apps not used recently
+and uninstall only on explicit agreement; finish with `status` again and say how
+much space was freed. The prompt tells the agent to use `settings` instead of
+searching Settings by hand (no `open` "Ajustes", no typing in the search field,
+no scrolling through menus) and to never tap IDUPI's own controls (bubble,
+"Minimizar", "Enviar", "Aprobar", "Rechazar").
+
+While a bubble turn runs, the panel collapses to its circle so it does not cover
+the screen the agent is reading, and opens again when the turn ends with an
+answer or an error, when a bubble approval arrives, or when a dictated answer is
+a question (T17). Tapping the circle during the turn still opens it. The circle
+keeps its breathing animation as the "working" cue, with an accent mark and the
+accessibility description "IDUPI está trabajando en tu pedido".
+
 The step budget is enforced server-side: the CLI runs with
 `--output-format stream-json`, every Bash tool call becomes a `cli` step, and
-the 16th call kills the child and fails the turn ("El agente superó el límite
-de 15 pasos."). The whole turn has a 5 minute timeout, and the answer is capped.
+the 41st call kills the child and fails the turn ("El agente superó el límite
+de 40 pasos."). The whole turn has a 10 minute timeout, and the answer is capped.
 
 Every action still goes through the one enforcement point that already exists:
 the `idupi-phone` CLI -> `POST /phone/commands` -> `phone-risk.mjs` -> approval
 queue. This profile decides which CLI the agent may talk to, never what the
-phone may do. The bubble never approves anything.
+phone may do. The bubble shows the question and the owner decides: since
+phone-dashboard T4 + T6 a messaging or destructive approval during an owner
+turn is asked in the bubble (voice answer or Aprobar / Rechazar buttons):
+cache, uninstall, a data wipe and any other delete. The decision still flows
+through `PhoneApprovals.decisionFlow` / the server approval route. Money
+remains notification-only.
 
 Server logs carry the turn id and status only (`[phone] turn pat-… done`),
 never the request text, the screen text or the answer.
@@ -346,12 +443,26 @@ is overwritten. The CLI reads these fields, all optional:
   "foregroundApp": { "label": "WhatsApp", "packageName": "com.whatsapp" },
   "topAppsToday": [
     { "label": "WhatsApp", "packageName": "com.whatsapp", "minutes": 42 }
+  ],
+  "largestApps": [
+    {
+      "label": "WhatsApp",
+      "packageName": "com.whatsapp",
+      "totalBytes": 2147483648,
+      "cacheBytes": 1073741824
+    }
   ]
 }
 ```
 
 `network.kind` is `wifi`, `mobile`, `none` or another short word. Missing
 fields are simply not printed by `idupi-phone status`.
+
+`largestApps` is optional and additive (phone-dashboard T3): the 8 largest
+apps by total size, with the cache `Borrar caché` would free. The phone sends
+it only while usage access is granted and reuses the same 60 s cache as its
+Dashboard; `totalBytes` is app + data + cache. Older builds omit it, so the PC
+must treat it as optional. The formatter prints it as "Apps que más ocupan".
 
 ## Screen dump format
 
@@ -376,6 +487,12 @@ node, depth-first, in this exact shape:
 
 Password fields show their text as `••••`. Invisible nodes are skipped. When
 nothing is visible the dump is an empty string.
+
+IDUPI's own accessibility overlay windows (the bubble panel) are never dumped or
+matched: `screen`, text taps and id taps read the app behind the panel, so the
+agent cannot see or tap "MINIMIZAR", "ENVIAR", "Aprobar" or any other bubble
+control (phone-dashboard T7). The bubble also collapses to its circle while a
+turn runs, so the panel does not cover the screen the agent is reading.
 
 Example:
 
@@ -510,6 +627,9 @@ idupi-phone recents
 idupi-phone notifications
 idupi-phone quick-settings
 idupi-phone open whatsapp
+idupi-phone settings device-care     # Cuidado del dispositivo (Samsung) o storage
+idupi-phone settings storage         # Ajustes de almacenamiento
+idupi-phone settings app com.whatsapp
 idupi-phone wait 1500
 idupi-phone calendar                     # agenda for the next 7 days
 idupi-phone calendar --days 14 --json    # raw agenda payload

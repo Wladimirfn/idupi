@@ -2,12 +2,15 @@ package com.idupi.app.data.phone.control
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Path
 import android.graphics.Rect
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import android.view.accessibility.AccessibilityNodeInfo
 import com.idupi.app.data.phone.PhoneStatusReporting
@@ -47,6 +50,7 @@ class PhoneCommandExecutor(
             is PhoneCommand.Scroll -> scroll(command.direction)
             is PhoneCommand.Global -> global(command.action)
             is PhoneCommand.OpenApp -> open(command.app)
+            is PhoneCommand.Settings -> settings(command.screen, command.packageName)
             is PhoneCommand.Wait -> {
                 delay(command.millis.toLong())
                 CommandOutcome.success()
@@ -72,18 +76,43 @@ class PhoneCommandExecutor(
     }
 
     private fun liveRoots(): List<AccessibilityNodeInfo> {
-        val active = service.rootInActiveWindow
-        if (active != null) return listOf(active)
-        // Some apps expose only a non-active interactive window while a dialog
-        // or IME owns the active one; fall back to the windows we can see.
-        return try {
+        val ownPackage = service.packageName
+        val windows = try {
             service.windows
-                .filter { it.isActive }
-                .mapNotNull { it.root }
         } catch (error: Exception) {
             Log.w(TAG, "could not read accessibility windows: ${error.javaClass.simpleName}")
-            emptyList()
+            null
         }
+        if (windows != null && windows.isNotEmpty()) {
+            // phone-dashboard T7: IDUPI's own bubble panel is a focusable
+            // accessibility overlay, so it can be the active window. Filtering
+            // it out here is what keeps `screen` and every tap on the app the
+            // owner actually wants to operate.
+            val roots = windows.map { it.root }
+            val refs = windows.mapIndexed { index, window ->
+                PhoneWindowRef(
+                    type = window.type,
+                    packageName = roots[index]?.packageName?.toString(),
+                    active = window.isActive,
+                )
+            }
+            return PhoneWindowFilter.readIndices(refs, ownPackage)
+                .mapNotNull { roots[it] }
+        }
+        // Rare: the service enumerated no windows. Keep the old single-root
+        // path, but still refuse to read IDUPI's own panel.
+        val active = service.rootInActiveWindow ?: return emptyList()
+        val activeWindow = try {
+            active.window
+        } catch (error: Exception) {
+            null
+        }
+        val ownPanel = activeWindow != null && PhoneWindowFilter.isOwnOverlay(
+            activeWindow.type,
+            active.packageName?.toString(),
+            ownPackage,
+        )
+        return if (ownPanel) emptyList() else listOf(active)
     }
 
     private fun snapshot(node: AccessibilityNodeInfo): NodeSnapshot {
@@ -398,6 +427,108 @@ class PhoneCommandExecutor(
         }
     }
 
+    // --- settings (phone-dashboard, T7) -------------------------------------
+
+    /**
+     * Opens one of the fixed Settings screens. The allowlist lives in the
+     * command type, so the PC can never send a free-form intent; every intent
+     * starts from the accessibility service with FLAG_ACTIVITY_NEW_TASK, the
+     * same way [open] starts an app.
+     */
+    private fun settings(screen: SettingsScreen, packageName: String?): CommandOutcome {
+        when (screen) {
+            SettingsScreen.APP -> {
+                val pkg = packageName.orEmpty()
+                if (!isValidPackageName(pkg)) {
+                    return CommandOutcome.failure(PACKAGE_INVALID)
+                }
+                if (!isInstalled(pkg)) {
+                    return CommandOutcome.failure("app no instalada: $pkg")
+                }
+                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.fromParts("package", pkg, null)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                return openOrFail(intent, "Ajustes de la app abiertos")
+            }
+            SettingsScreen.DEVICE_CARE -> {
+                // Verified on the owner's Samsung: com.samsung.android.lool
+                // resolves this to its Device Care dashboard.
+                val deviceCare = Intent(SAMSUNG_DEVICE_CARE_ACTION).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                if (startSettings(deviceCare)) {
+                    return settingsSuccess("Cuidado del dispositivo abierto")
+                }
+                // No Device Care on this phone: storage is the closest screen
+                // the optimization playbook already uses, and the answer says
+                // it fell back.
+                if (startSettings(storageIntent())) {
+                    return settingsSuccess(
+                        "Ajustes de almacenamiento abiertos (sin Cuidado del dispositivo)",
+                        fallback = true,
+                    )
+                }
+                return CommandOutcome.failure(SETTINGS_UNAVAILABLE)
+            }
+            SettingsScreen.STORAGE ->
+                return openOrFail(storageIntent(), "Ajustes de almacenamiento abiertos")
+            SettingsScreen.BATTERY -> {
+                val intent = Intent(Intent.ACTION_POWER_USAGE_SUMMARY).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                return openOrFail(intent, "Uso de batería abierto")
+            }
+            SettingsScreen.APPS -> {
+                val intent = Intent(Settings.ACTION_APPLICATION_SETTINGS).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                return openOrFail(intent, "Ajustes de aplicaciones abiertos")
+            }
+        }
+    }
+
+    private fun storageIntent(): Intent =
+        Intent(Settings.ACTION_INTERNAL_STORAGE_SETTINGS).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+
+    /** True when the phone has an activity for [intent] and it started. */
+    private fun startSettings(intent: Intent): Boolean = try {
+        service.startActivity(intent)
+        true
+    } catch (error: ActivityNotFoundException) {
+        false
+    } catch (error: Exception) {
+        Log.w(TAG, "could not open a settings screen: ${error.javaClass.simpleName}")
+        false
+    }
+
+    private fun openOrFail(intent: Intent, message: String): CommandOutcome =
+        if (startSettings(intent)) {
+            settingsSuccess(message)
+        } else {
+            CommandOutcome.failure(SETTINGS_UNAVAILABLE)
+        }
+
+    private fun settingsSuccess(message: String, fallback: Boolean = false): CommandOutcome =
+        CommandOutcome.success(buildJsonObject {
+            put("message", message)
+            if (fallback) put("fallback", true)
+        })
+
+    /**
+     * The package must be installed. A package the phone cannot see is refused
+     * with its id, never silently opened at the Settings root.
+     */
+    @Suppress("DEPRECATION")
+    private fun isInstalled(packageName: String): Boolean = try {
+        service.packageManager.getPackageInfo(packageName, 0)
+        true
+    } catch (error: PackageManager.NameNotFoundException) {
+        false
+    }
+
     /** The target exactly as the server normalized it (`text`, id, or `x,y`). */
     private fun commandTarget(target: NodeTarget): String = when (target) {
         is NodeTarget.Text -> target.text
@@ -426,6 +557,11 @@ class PhoneCommandExecutor(
 
         const val PASSWORD_FIELD = "campo de contraseña"
         private const val INTERNAL_ERROR = "error interno"
+        private const val PACKAGE_INVALID = "paquete inválido"
+        private const val SETTINGS_UNAVAILABLE = "no se pudo abrir el ajuste"
+
+        /** Samsung Device Care dashboard (phone-dashboard T7, verified on the owner's phone). */
+        private const val SAMSUNG_DEVICE_CARE_ACTION = "com.samsung.android.sm.ACTION_DASHBOARD"
 
         private const val TAP_MILLIS = 50L
         private const val LONG_PRESS_MILLIS = 600L

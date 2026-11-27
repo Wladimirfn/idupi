@@ -1,5 +1,6 @@
 package com.idupi.app.data.phone.bubble
 
+import com.idupi.app.data.phone.approval.ApprovalVoiceKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -35,7 +36,8 @@ class BubbleVoiceApprovalTest {
     private fun reduce(
         state: BubbleConfirmState,
         event: BubbleConfirmEvent,
-    ): BubbleConfirmDecision = BubbleVoiceApprovalReducer.reduce(state, event)
+        kind: ApprovalVoiceKind = ApprovalVoiceKind.MESSAGE,
+    ): BubbleConfirmDecision = BubbleVoiceApprovalReducer.reduce(state, event, kind)
 
     private fun awaitingAnswer(): BubbleConfirmState =
         BubbleConfirmState.AwaitingAnswer
@@ -445,5 +447,314 @@ class BubbleVoiceApprovalTest {
             "Para Juan: " + "a".repeat(ApprovalVoiceCopy.MAX_READ_CHARS) + "…. ¿Está bien?",
             ApprovalVoiceCopy.readPrompt("Juan", long),
         )
+    }
+
+    // --- cache and uninstall prompts (phone-dashboard T4) -----------------
+
+    private val cachePrompt = ApprovalVoiceCopy.cachePrompt("WhatsApp")
+    private val uninstallPrompt = ApprovalVoiceCopy.uninstallPrompt("WhatsApp")
+
+    @Test
+    fun `cache and uninstall copy names the app and falls back to esta app`() {
+        assertEquals(
+            "Voy a borrar la caché de WhatsApp. ¿Está bien?",
+            ApprovalVoiceCopy.cachePrompt("WhatsApp"),
+        )
+        assertEquals(
+            "Voy a borrar la caché de esta app. ¿Está bien?",
+            ApprovalVoiceCopy.cachePrompt(null),
+        )
+        assertEquals(
+            "Voy a borrar la caché de esta app. ¿Está bien?",
+            ApprovalVoiceCopy.cachePrompt("   "),
+        )
+        assertEquals(
+            "Voy a desinstalar WhatsApp. ¿Está bien?",
+            ApprovalVoiceCopy.uninstallPrompt("WhatsApp"),
+        )
+        assertEquals(
+            "Voy a desinstalar esta app. ¿Está bien?",
+            ApprovalVoiceCopy.uninstallPrompt(" "),
+        )
+        assertEquals("Responde sí o no.", ApprovalVoiceCopy.PROMPT_YES_NO)
+        assertEquals("No borré la caché.", ApprovalVoiceCopy.REJECTED_CACHE)
+        assertEquals("No desinstalé la app.", ApprovalVoiceCopy.REJECTED_UNINSTALL)
+    }
+
+    // --- data wipe and any other destructive step (phone-dashboard T6) ----
+
+    private val dataWipePrompt = ApprovalVoiceCopy.dataWipePrompt("WhatsApp")
+
+    @Test
+    fun `the data wipe copy names the app and what is lost`() {
+        assertEquals(
+            "Voy a borrar los datos de WhatsApp. Se cierra la sesión y se pierden sus archivos en el teléfono. ¿Estás seguro?",
+            ApprovalVoiceCopy.dataWipePrompt("WhatsApp"),
+        )
+        assertEquals(
+            "Voy a borrar los datos de esta app. Se cierra la sesión y se pierden sus archivos en el teléfono. ¿Estás seguro?",
+            ApprovalVoiceCopy.dataWipePrompt(null),
+        )
+        assertEquals(
+            "Voy a borrar los datos de esta app. Se cierra la sesión y se pierden sus archivos en el teléfono. ¿Estás seguro?",
+            ApprovalVoiceCopy.dataWipePrompt("   "),
+        )
+        assertEquals("No borré los datos.", ApprovalVoiceCopy.REJECTED_DATA_WIPE)
+    }
+
+    @Test
+    fun `the generic destructive copy names the action and the screen title`() {
+        assertEquals(
+            "Voy a eliminar la foto. No se puede deshacer. ¿Estás seguro?",
+            ApprovalVoiceCopy.destructivePrompt("Eliminar", "la foto"),
+        )
+        assertEquals(
+            "Voy a borrar descargas. No se puede deshacer. ¿Estás seguro?",
+            ApprovalVoiceCopy.destructivePrompt("Borrar", "Borrar descargas"),
+        )
+        assertEquals(
+            "Voy a eliminar esto. No se puede deshacer. ¿Estás seguro?",
+            ApprovalVoiceCopy.destructivePrompt("Delete", null),
+        )
+        assertEquals(
+            "Voy a eliminar esto. No se puede deshacer. ¿Estás seguro?",
+            ApprovalVoiceCopy.destructivePrompt("   ", "   "),
+        )
+        assertEquals("No borré nada.", ApprovalVoiceCopy.REJECTED_DESTRUCTIVE)
+    }
+
+    @Test
+    fun `the prompt for every destructive family is chosen by kind`() {
+        assertEquals(cachePrompt, ApprovalVoiceCopy.promptFor(ApprovalVoiceKind.CACHE, "WhatsApp"))
+        assertEquals(uninstallPrompt, ApprovalVoiceCopy.promptFor(ApprovalVoiceKind.UNINSTALL, "WhatsApp"))
+        assertEquals(dataWipePrompt, ApprovalVoiceCopy.promptFor(ApprovalVoiceKind.DATA_WIPE, "WhatsApp"))
+        assertEquals(
+            "Voy a eliminar la foto. No se puede deshacer. ¿Estás seguro?",
+            ApprovalVoiceCopy.promptFor(
+                ApprovalVoiceKind.DESTRUCTIVE,
+                null,
+                subject = "la foto",
+                action = "Eliminar",
+            ),
+        )
+    }
+
+    @Test
+    fun `a data wipe approves on yes and rejects with its own copy`() {
+        val start = reduce(
+            BubbleConfirmState.Idle,
+            BubbleConfirmEvent.StartApproval(dataWipePrompt),
+            ApprovalVoiceKind.DATA_WIPE,
+        )
+        assertEquals(
+            BubbleConfirmState.Speaking(dataWipePrompt, ConfirmListenTarget.ANSWER),
+            start.state,
+        )
+
+        assertEquals(
+            listOf(BubbleConfirmAction.HidePrompt, BubbleConfirmAction.Approve),
+            reduce(
+                BubbleConfirmState.AwaitingAnswer,
+                BubbleConfirmEvent.Answer("sí"),
+                ApprovalVoiceKind.DATA_WIPE,
+            ).actions,
+        )
+        assertEquals(
+            listOf(
+                BubbleConfirmAction.HidePrompt,
+                BubbleConfirmAction.Speak(ApprovalVoiceCopy.REJECTED_DATA_WIPE),
+                BubbleConfirmAction.Reject,
+            ),
+            reduce(
+                BubbleConfirmState.AwaitingAnswer,
+                BubbleConfirmEvent.Answer("no"),
+                ApprovalVoiceKind.DATA_WIPE,
+            ).actions,
+        )
+    }
+
+    @Test
+    fun `the destructive read-back speaks the size line or the title`() {
+        val reading = reduce(
+            BubbleConfirmState.AwaitingAnswer,
+            BubbleConfirmEvent.Answer("léemelo"),
+            ApprovalVoiceKind.CACHE,
+        )
+        assertEquals(BubbleConfirmState.Reading, reading.state)
+        assertEquals(listOf(BubbleConfirmAction.ReadScreen), reading.actions)
+
+        val withSize = reduce(
+            BubbleConfirmState.Reading,
+            BubbleConfirmEvent.ReadDone("WhatsApp", null, "Caché 1,2 GB"),
+            ApprovalVoiceKind.CACHE,
+        )
+        assertEquals(
+            "Caché 1,2 GB. ¿Está bien?",
+            (withSize.state as BubbleConfirmState.Speaking).prompt,
+        )
+
+        val withTitle = reduce(
+            BubbleConfirmState.Reading,
+            BubbleConfirmEvent.ReadDone("WhatsApp", null, null),
+            ApprovalVoiceKind.UNINSTALL,
+        )
+        assertEquals(
+            "WhatsApp. ¿Está bien?",
+            (withTitle.state as BubbleConfirmState.Speaking).prompt,
+        )
+    }
+
+    @Test
+    fun `a cache approval approves on yes and rejects with its own copy`() {
+        val start = reduce(
+            BubbleConfirmState.Idle,
+            BubbleConfirmEvent.StartApproval(cachePrompt),
+            ApprovalVoiceKind.CACHE,
+        )
+        assertEquals(
+            BubbleConfirmState.Speaking(cachePrompt, ConfirmListenTarget.ANSWER),
+            start.state,
+        )
+
+        val listening = reduce(start.state, BubbleConfirmEvent.TtsDone, ApprovalVoiceKind.CACHE)
+        assertEquals(BubbleConfirmState.AwaitingAnswer, listening.state)
+
+        assertEquals(
+            listOf(BubbleConfirmAction.HidePrompt, BubbleConfirmAction.Approve),
+            reduce(
+                BubbleConfirmState.AwaitingAnswer,
+                BubbleConfirmEvent.Answer("sí"),
+                ApprovalVoiceKind.CACHE,
+            ).actions,
+        )
+        assertEquals(
+            listOf(
+                BubbleConfirmAction.HidePrompt,
+                BubbleConfirmAction.Speak(ApprovalVoiceCopy.REJECTED_CACHE),
+                BubbleConfirmAction.Reject,
+            ),
+            reduce(
+                BubbleConfirmState.AwaitingAnswer,
+                BubbleConfirmEvent.Answer("no"),
+                ApprovalVoiceKind.CACHE,
+            ).actions,
+        )
+    }
+
+    @Test
+    fun `an addition on a destructive prompt keeps the yes or no rule`() {
+        val destructivePrompt = ApprovalVoiceCopy.destructivePrompt("Eliminar", "la foto")
+        listOf(
+            ApprovalVoiceKind.CACHE to cachePrompt,
+            ApprovalVoiceKind.UNINSTALL to uninstallPrompt,
+            ApprovalVoiceKind.DATA_WIPE to dataWipePrompt,
+            ApprovalVoiceKind.DESTRUCTIVE to destructivePrompt,
+        ).forEach { (kind, prompt) ->
+            listOf("agrégale algo", "agregar", "una nota más").forEach { answer ->
+                val decision = reduce(
+                    BubbleConfirmState.AwaitingAnswer,
+                    BubbleConfirmEvent.Answer(answer),
+                    kind,
+                )
+
+                assertEquals(
+                    "'$answer' on $prompt asks yes or no",
+                    BubbleConfirmState.Speaking(
+                        ApprovalVoiceCopy.PROMPT_YES_NO,
+                        ConfirmListenTarget.ANSWER,
+                    ),
+                    decision.state,
+                )
+                assertEquals(
+                    listOf(
+                        BubbleConfirmAction.ShowPrompt(ApprovalVoiceCopy.PROMPT_YES_NO),
+                        BubbleConfirmAction.Speak(ApprovalVoiceCopy.PROMPT_YES_NO),
+                    ),
+                    decision.actions,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `the messaging flow still treats an addition as content`() {
+        val decision = reduce(
+            BubbleConfirmState.AwaitingAnswer,
+            BubbleConfirmEvent.Answer("agrégale que llego a las 8"),
+            ApprovalVoiceKind.MESSAGE,
+        )
+
+        assertEquals(BubbleConfirmState.Writing, decision.state)
+        assertEquals(
+            listOf(BubbleConfirmAction.AppendToCompose("que llego a las 8")),
+            decision.actions,
+        )
+    }
+
+    // --- Aprobar / Rechazar buttons (phone-dashboard T4) ------------------
+
+    @Test
+    fun `the buttons decide from any active loop state`() {
+        listOf(
+            speakingAnswer(),
+            BubbleConfirmState.AwaitingAnswer,
+            BubbleConfirmState.Reading,
+            BubbleConfirmState.Writing,
+        ).forEach { state ->
+            assertEquals(
+                "$state approves",
+                BubbleConfirmDecision(
+                    state = BubbleConfirmState.Idle,
+                    actions = listOf(BubbleConfirmAction.HidePrompt, BubbleConfirmAction.Approve),
+                ),
+                reduce(state, BubbleConfirmEvent.ButtonApprove),
+            )
+            assertEquals(
+                "$state rejects",
+                BubbleConfirmDecision(
+                    state = BubbleConfirmState.Idle,
+                    actions = listOf(
+                        BubbleConfirmAction.HidePrompt,
+                        BubbleConfirmAction.Speak(ApprovalVoiceCopy.MESSAGE_REJECTED),
+                        BubbleConfirmAction.Reject,
+                    ),
+                ),
+                reduce(state, BubbleConfirmEvent.ButtonReject),
+            )
+        }
+    }
+
+    @Test
+    fun `the buttons on a destructive prompt use its rejection copy`() {
+        listOf(
+            ApprovalVoiceKind.CACHE to ApprovalVoiceCopy.REJECTED_CACHE,
+            ApprovalVoiceKind.UNINSTALL to ApprovalVoiceCopy.REJECTED_UNINSTALL,
+            ApprovalVoiceKind.DATA_WIPE to ApprovalVoiceCopy.REJECTED_DATA_WIPE,
+            ApprovalVoiceKind.DESTRUCTIVE to ApprovalVoiceCopy.REJECTED_DESTRUCTIVE,
+        ).forEach { (kind, rejection) ->
+            assertEquals(
+                "$kind rejects with its own copy",
+                listOf(
+                    BubbleConfirmAction.HidePrompt,
+                    BubbleConfirmAction.Speak(rejection),
+                    BubbleConfirmAction.Reject,
+                ),
+                reduce(
+                    BubbleConfirmState.AwaitingAnswer,
+                    BubbleConfirmEvent.ButtonReject,
+                    kind,
+                ).actions,
+            )
+        }
+    }
+
+    @Test
+    fun `a button tap outside the loop decides nothing`() {
+        listOf(BubbleConfirmEvent.ButtonApprove, BubbleConfirmEvent.ButtonReject).forEach { event ->
+            val decision = reduce(BubbleConfirmState.Idle, event)
+
+            assertEquals(BubbleConfirmState.Idle, decision.state)
+            assertTrue(decision.actions.isEmpty())
+        }
     }
 }

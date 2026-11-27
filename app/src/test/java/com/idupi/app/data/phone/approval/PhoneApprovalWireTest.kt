@@ -3,6 +3,7 @@ package com.idupi.app.data.phone.approval
 import com.idupi.app.domain.model.PhoneApproval
 import com.idupi.app.domain.model.PhoneApprovalDecisionResult
 import com.idupi.app.domain.model.PhoneApprovalReason
+import com.idupi.app.domain.model.PhoneApprovalRiskKind
 import com.idupi.app.domain.model.PhoneApprovalState
 import com.idupi.app.domain.model.PhoneApprovalsResponse
 import kotlinx.serialization.json.Json
@@ -27,14 +28,16 @@ class PhoneApprovalWireTest {
             {
               "id": "apr-1a2b3c4d5e6f",
               "state": "pending",
-              "command": { "type": "tap", "args": { "text": "Enviar" } },
+              "command": { "type": "tap", "args": { "text": "Borrar datos" } },
               "reason": "risky_text",
-              "target": "Enviar",
+              "riskKind": "data_wipe",
+              "target": "Borrar datos",
               "foregroundApp": { "packageName": "com.whatsapp", "label": "WhatsApp" },
               "requestedBy": "cli",
               "createdAt": "2026-11-24T12:00:00.000Z",
               "expiresAt": "2026-11-24T12:10:00.000Z",
               "decidedAt": null,
+              "ownerTurnId": "pat-1a2b3c4d5e6f",
               "commandId": "phc-1a2b3c4d5e6f",
               "resultCommandId": null
             }
@@ -45,11 +48,13 @@ class PhoneApprovalWireTest {
         assertEquals("apr-1a2b3c4d5e6f", approval.id)
         assertEquals(PhoneApprovalState.PENDING, approval.state)
         assertEquals("tap", approval.command.type)
-        assertEquals("Enviar", approval.command.args["text"]?.jsonPrimitive?.content)
+        assertEquals("Borrar datos", approval.command.args["text"]?.jsonPrimitive?.content)
         assertEquals(PhoneApprovalReason.RISKY_TEXT, approval.reason)
-        assertEquals("Enviar", approval.target)
+        assertEquals(PhoneApprovalRiskKind.DATA_WIPE, approval.riskKind)
+        assertEquals("Borrar datos", approval.target)
         assertEquals("WhatsApp", approval.foregroundApp?.label)
         assertEquals("com.whatsapp", approval.foregroundApp?.packageName)
+        assertEquals("pat-1a2b3c4d5e6f", approval.ownerTurnId)
         assertEquals("phc-1a2b3c4d5e6f", approval.commandId)
         assertNull(approval.decidedAt)
         assertNull(approval.resultCommandId)
@@ -68,6 +73,8 @@ class PhoneApprovalWireTest {
         assertTrue(approval.command.args.isEmpty())
         assertNull(approval.target)
         assertNull(approval.foregroundApp)
+        assertNull(approval.ownerTurnId)
+        assertNull(approval.riskKind)
         assertEquals("", approval.expiresAt)
     }
 
