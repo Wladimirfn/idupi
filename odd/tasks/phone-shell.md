@@ -144,6 +144,13 @@ T1 evidence (S24 Ultra, One UI / Android 16):
    (07:11:50) did not stop it; adbd restarted at 07:14:10 after the owner's
    Wi-Fi off/on and the probe kept succeeding: 36 probes 07:11:35-07:14:30,
    no gap over 7 s, all ok, same process since 07:11:34.
+6. Long field test (owner, 2026-11-27): Wi-Fi off from ~07:20 (last Wi-Fi
+   scan entry 07:20:04) to 08:46:37 (`setWifiEnabled enable=true`), screen
+   off, light Doze from 07:22 and deep Doze 08:22:31-08:46:36. Same bridge
+   process (pid 30631, started 07:11:33) still alive at 08:47:48; 631 logged
+   probes 07:18:50-08:47:46, all ok, no failure. Intervals stretched to
+   8-33 s while dozing (CPU sleep pauses `Thread.sleep`), never a stop. adbd
+   restarted again at 08:47:18 and the probe kept succeeding.
 
 ## Next step
 
