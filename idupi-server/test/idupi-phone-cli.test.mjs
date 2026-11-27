@@ -8,6 +8,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+    actionFor,
     failureMessage,
     formatApprovals,
     formatApprovalWait,
@@ -122,6 +123,34 @@ test("parseArgs handles type, scroll, global shortcuts, open and wait", () => {
     assert.equal(parseArgs(["wait", "10001"]).command, "help");
     assert.equal(parseArgs(["wait", "-1"]).command, "help");
     assert.equal(parseArgs(["wait"]).command, "help");
+});
+
+test("parseArgs handles the settings screens (T7)", () => {
+    for (const screen of ["device-care", "storage", "battery", "apps"]) {
+        assert.deepEqual(parseArgs(["settings", screen]), { command: "settings", screen });
+    }
+    assert.deepEqual(parseArgs(["settings", "app", "com.whatsapp"]), {
+        command: "settings",
+        screen: "app",
+        package: "com.whatsapp",
+    });
+    assert.deepEqual(actionFor(parseArgs(["settings", "device-care"])), {
+        type: "settings",
+        args: { screen: "device-care" },
+    });
+    assert.deepEqual(actionFor(parseArgs(["settings", "app", "com.whatsapp.w4b"])), {
+        type: "settings",
+        args: { screen: "app", package: "com.whatsapp.w4b" },
+    });
+
+    // The allowlist is closed: no screen outside it, no free-form extra words.
+    assert.equal(parseArgs(["settings"]).command, "help");
+    assert.equal(parseArgs(["settings", "wifi"]).command, "help");
+    assert.equal(parseArgs(["settings", "device-care", "extra"]).command, "help");
+    assert.equal(parseArgs(["settings", "app"]).command, "help");
+    assert.equal(parseArgs(["settings", "app", "com.whatsapp", "extra"]).command, "help");
+    assert.equal(parseArgs(["settings", "app", "whatsapp"]).command, "help");
+    assert.equal(parseArgs(["settings", "app", "com..whatsapp"]).command, "help");
 });
 
 test("parseArgs covers log, help and unknown input", () => {
@@ -249,6 +278,28 @@ test("formatCommandResult reports each terminal state", () => {
         /El teléfono no respondió: ¿está activo el control desde la PC\?/,
     );
     assert.match(formatCommandResult(null), /El teléfono no respondió/);
+});
+
+test("formatCommandResult surfaces a settings fallback", () => {
+    // phone-dashboard T7: the optimization playbook keys on this token to use
+    // `settings storage` when the phone has no Device Care.
+    assert.equal(
+        formatCommandResult({
+            state: "done",
+            result: {
+                message: "Ajustes de almacenamiento abiertos (sin Cuidado del dispositivo)",
+                fallback: true,
+            },
+        }),
+        "Listo: Ajustes de almacenamiento abiertos (sin Cuidado del dispositivo) (fallback: true)",
+    );
+    assert.equal(
+        formatCommandResult({
+            state: "done",
+            result: { message: "Cuidado del dispositivo abierto" },
+        }),
+        "Listo: Cuidado del dispositivo abierto",
+    );
 });
 
 test("formatCommandList prints recent commands and failures", () => {

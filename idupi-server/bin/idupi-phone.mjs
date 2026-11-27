@@ -14,6 +14,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { HOST, resolvePort, resolveToken } from "../lib/term-cli.mjs";
 import { validateHostPort } from "../lib/adb-connection.mjs";
+import { SETTINGS_SCREENS, isValidPackageName } from "../lib/phone-store.mjs";
 import { TURN_GRANT_ENV, TURN_GRANT_HEADER } from "../lib/phone-turn-grants.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -35,6 +36,9 @@ Uso:
   idupi-phone back | home | recents | notifications
   idupi-phone quick-settings            Abre los ajustes rápidos
   idupi-phone open <app>                Abre una app (paquete o nombre visible)
+  idupi-phone settings <device-care|storage|battery|apps>
+                                        Abre esa pantalla de Ajustes por intent
+  idupi-phone settings app <paquete>    Abre los Ajustes de esa app (almacenamiento)
   idupi-phone wait <ms>                 Espera en el teléfono (0..10000)
   idupi-phone calendar [agenda] [--days N] [--json]
                                         Agenda de los calendarios del teléfono (7 días por defecto)
@@ -199,6 +203,18 @@ export function parseArgs(argv = []) {
         return { command: "open", app };
     }
 
+    if (head === "settings") {
+        // phone-dashboard T7: fixed allowlist; `app` is the only screen that
+        // takes a package, and the package must be a package id.
+        if (rest.length === 1 && SETTINGS_SCREENS.includes(rest[0])) {
+            return { command: "settings", screen: rest[0] };
+        }
+        if (rest.length === 2 && rest[0] === "app" && isValidPackageName(rest[1])) {
+            return { command: "settings", screen: "app", package: rest[1] };
+        }
+        return { command: "help", error: SETTINGS_USAGE };
+    }
+
     if (head === "wait") {
         if (rest.length !== 1 || !/^\d+$/.test(rest[0])) {
             return { command: "help", error: "Uso: idupi-phone wait <ms> (0..10000)" };
@@ -238,6 +254,10 @@ export function parseArgs(argv = []) {
     }
     return { command: "help", error: `Comando desconocido: ${head}` };
 }
+
+const SETTINGS_USAGE =
+    "Uso: idupi-phone settings <device-care|storage|battery|apps> | " +
+    "idupi-phone settings app <paquete>";
 
 const CALENDAR_USAGE =
     "Uso: idupi-phone calendar [agenda] [--days N] [--json] | " +
@@ -702,7 +722,11 @@ export function formatCommandResult(command) {
                 ? command.result
                 : null;
             if (result && typeof result.message === "string" && result.message) {
-                return `Listo: ${result.message}`;
+                // phone-dashboard T7: the agent's playbook keys on this flag to
+                // switch from Device Care to the storage screen on a phone
+                // without Samsung's cleaner.
+                const fallback = result.fallback === true ? " (fallback: true)" : "";
+                return `Listo: ${result.message}${fallback}`;
             }
             if (result && typeof result.text === "string" && result.text) {
                 return result.text;
@@ -1689,7 +1713,12 @@ async function runHealth(parsed) {
     fail("Comando de salud no reconocido.");
 }
 
-function actionFor(parsed) {    switch (parsed.command) {
+/**
+ * Maps a parsed CLI command to the queue type and args. Pure so the CLI tests
+ * cover the wire shape the agent's `settings` calls produce (T7).
+ */
+export function actionFor(parsed) {
+    switch (parsed.command) {
         case "tap":
         case "long_press":
             return { type: parsed.command, args: parsed.target };
@@ -1704,6 +1733,11 @@ function actionFor(parsed) {    switch (parsed.command) {
             return { type: "global", args: { action: parsed.action } };
         case "open":
             return { type: "open", args: { app: parsed.app } };
+        case "settings": {
+            const args = { screen: parsed.screen };
+            if (parsed.package) args.package = parsed.package;
+            return { type: "settings", args };
+        }
         case "wait":
             return { type: "wait", args: { ms: parsed.ms } };
         case "screen":

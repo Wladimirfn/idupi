@@ -58,6 +58,7 @@ command queue is memory-only; a server restart never replays a stale command.
 | `scroll` | `{direction}` where direction is `up`, `down`, `left`, `right` | Scroll |
 | `global` | `{action}` where action is `back`, `home`, `recents`, `notifications`, `quick_settings` | Global system action |
 | `open` | `{app}` | Launch an app by package name or visible label |
+| `settings` | `{screen}` where screen is `device-care`, `storage`, `battery` or `apps`; `{screen: "app", package}` for one app | Open a fixed Settings screen by intent |
 | `wait` | `{ms}` (0..10000) | Pause inside the phone executor |
 | `status` | `{}` | Ask the phone to report `POST /phone/status` now |
 
@@ -89,10 +90,39 @@ result carries a short `error`; a successful one may carry `result`.
 | Command | Successful `result` | CLI output |
 |---------|--------------------|------------|
 | `screen` | `{ "text": "<dump>" }` | the dump text (or the raw JSON with `--json`) |
+| `settings` | `{ "message": "..." }`, plus `"fallback": true` when `device-care` fell back to storage | `Listo: <message>` (a fallback appends `(fallback: true)`) |
 | every other type | `{}` or `{ "message": "..." }` | `Listo.` or `Listo: <message>` |
 
 A failed phone-side execution reports `{ ok: false, error: "<reason>" }`; the
 CLI prints `El teléfono falló: <reason>` and exits non-zero.
+
+### Settings screens (`settings`, phone-dashboard T7)
+
+`settings` is a fixed allowlist, never a free-form intent, so the PC can never
+send an arbitrary action to the phone:
+
+| `screen` | Intent |
+|----------|--------|
+| `device-care` | `Intent("com.samsung.android.sm.ACTION_DASHBOARD")` (Samsung Device Care; verified on the owner's phone: resolves to `com.samsung.android.lool/com.samsung.android.sm.score.ui.ScoreBoardActivity`) |
+| `storage` | `Settings.ACTION_INTERNAL_STORAGE_SETTINGS` |
+| `battery` | `Intent.ACTION_POWER_USAGE_SUMMARY` |
+| `apps` | `Settings.ACTION_APPLICATION_SETTINGS` |
+| `app` | `Settings.ACTION_APPLICATION_DETAILS_SETTINGS` with `Uri.fromParts("package", package, null)` |
+
+Every intent starts from the accessibility service with
+`FLAG_ACTIVITY_NEW_TASK`, the same way `open` starts an app.
+
+- `app` requires `package`, and the package must match
+  `^[a-zA-Z][\w]*(\.[a-zA-Z_][\w]*)+$` (same rule on the server and the phone).
+  The phone also refuses a package that is not installed
+  (`app no instalada: <package>`).
+- Any other screen rejects a `package` argument. An unknown screen, an extra
+  key or a free-form intent is `400 INVALID_COMMAND`: there are no extras.
+- If `device-care` cannot be started (a non-Samsung phone) the phone opens
+  `android.settings.INTERNAL_STORAGE_SETTINGS` instead and answers
+  `{ "message": "...", "fallback": true }`, so the agent knows it got the
+  storage screen.
+- `settings` is navigation: `phone-risk.mjs` classifies it free, like `open`.
 
 ## Approvals
 
@@ -105,7 +135,7 @@ they are never returned by `/commands/next`, the 60 s command TTL does not
 apply to them, and they wait for the owner's decision on the phone.
 
 Free commands: `screen`, `status`, `scroll`, `global` (`back`, `home`,
-`recents`, `notifications`, `quick_settings`), `open`, `wait`, and
+`recents`, `notifications`, `quick_settings`), `open`, `settings`, `wait`, and
 `tap`/`long_press` by text that is not risky.
 
 Gated commands:
@@ -357,16 +387,27 @@ the screen and, when the text is still in the field, tap the send button by id
 
 The prompt also carries the optimization playbook ("optimiza mi teléfono",
 "libera espacio", "limpia la RAM"): read `status` first (storage and
-`largestApps`); Samsung -> "Cuidado del dispositivo" -> "Optimizar ahora" and
-read the result, other OEMs -> Settings > Almacenamiento or their cleaner;
-clear the cache of the 3-5 largest caches via Settings > Aplicaciones > <app> >
-Almacenamiento > "Borrar caché" (each waits for the owner's approval in the
-bubble); destructive steps (delete files, photos, folders or chats, clear data
-or storage, uninstall) only when the owner explicitly asked for that deletion
-in the request, saying what will be lost before the tap, and never a data wipe
-on the agent's own initiative during an optimization (cache only); suggest
-uninstalling only apps not used recently and uninstall only on explicit
-agreement; finish with `status` again and say how much space was freed.
+`largestApps`); `settings device-care` -> "Optimizar ahora" -> read the result
+(if the answer carries `fallback: true` the phone has no Device Care, and
+`settings storage` is used instead); clear the cache of the 3-5 largest caches
+with `settings app <package>` -> "Almacenamiento" -> "Borrar caché" -> `back`
+(each waits for the owner's approval in the bubble); destructive steps (delete
+files, photos, folders or chats, clear data or storage, uninstall) only when the
+owner explicitly asked for that deletion in the request, saying what will be
+lost before the tap, and never a data wipe on the agent's own initiative during
+an optimization (cache only); suggest uninstalling only apps not used recently
+and uninstall only on explicit agreement; finish with `status` again and say how
+much space was freed. The prompt tells the agent to use `settings` instead of
+searching Settings by hand (no `open` "Ajustes", no typing in the search field,
+no scrolling through menus) and to never tap IDUPI's own controls (bubble,
+"Minimizar", "Enviar", "Aprobar", "Rechazar").
+
+While a bubble turn runs, the panel collapses to its circle so it does not cover
+the screen the agent is reading, and opens again when the turn ends with an
+answer or an error, when a bubble approval arrives, or when a dictated answer is
+a question (T17). Tapping the circle during the turn still opens it. The circle
+keeps its breathing animation as the "working" cue, with an accent mark and the
+accessibility description "IDUPI está trabajando en tu pedido".
 
 The step budget is enforced server-side: the CLI runs with
 `--output-format stream-json`, every Bash tool call becomes a `cli` step, and
@@ -446,6 +487,12 @@ node, depth-first, in this exact shape:
 
 Password fields show their text as `••••`. Invisible nodes are skipped. When
 nothing is visible the dump is an empty string.
+
+IDUPI's own accessibility overlay windows (the bubble panel) are never dumped or
+matched: `screen`, text taps and id taps read the app behind the panel, so the
+agent cannot see or tap "MINIMIZAR", "ENVIAR", "Aprobar" or any other bubble
+control (phone-dashboard T7). The bubble also collapses to its circle while a
+turn runs, so the panel does not cover the screen the agent is reading.
 
 Example:
 
@@ -580,6 +627,9 @@ idupi-phone recents
 idupi-phone notifications
 idupi-phone quick-settings
 idupi-phone open whatsapp
+idupi-phone settings device-care     # Cuidado del dispositivo (Samsung) o storage
+idupi-phone settings storage         # Ajustes de almacenamiento
+idupi-phone settings app com.whatsapp
 idupi-phone wait 1500
 idupi-phone calendar                     # agenda for the next 7 days
 idupi-phone calendar --days 14 --json    # raw agenda payload

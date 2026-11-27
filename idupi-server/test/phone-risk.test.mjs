@@ -29,6 +29,13 @@ test("reading, waiting and navigation commands are never gated", () => {
         { type: "global", args: { action: "quick_settings" } },
         { type: "open", args: { app: "com.whatsapp" } },
         { type: "wait", args: { ms: 250 } },
+        // phone-dashboard T7: opening one of the fixed settings screens is
+        // navigation, like `open`; nothing is written by the intent itself.
+        { type: "settings", args: { screen: "device-care" } },
+        { type: "settings", args: { screen: "storage" } },
+        { type: "settings", args: { screen: "battery" } },
+        { type: "settings", args: { screen: "apps" } },
+        { type: "settings", args: { screen: "app", package: "com.whatsapp" } },
     ];
     for (const command of free) {
         const verdict = classifyCommand(command);

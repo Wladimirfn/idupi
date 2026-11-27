@@ -221,9 +221,23 @@ test("the prompt separates the trusted request from untrusted tool output", () =
     assert.ok(prompt.includes(`node ${CLI}`));
     // The usage list comes from bin/idupi-phone.mjs.
     for (const subcommand of ["status", "screen", "tap", "long-press", "type", "scroll",
-        "open", "wait", "calendar", "health", "approvals", "log"]) {
+        "open", "settings", "wait", "calendar", "health", "approvals", "log"]) {
         assert.ok(prompt.includes(subcommand), `prompt lists ${subcommand}`);
     }
+});
+
+test("the prompt sends the agent to settings instead of wandering Settings (T7)", () => {
+    const prompt = buildPhonePrompt({ text: "optimiza mi teléfono", cliPath: CLI });
+
+    // The allowlisted settings command replaces hunting through Settings.
+    assert.match(prompt, /settings device-care/);
+    assert.match(prompt, /settings app <package>/);
+    assert.match(prompt, /never search Settings by hand/i);
+    // The bubble panel is the agent's own window; it must never touch it.
+    assert.match(prompt, /Never tap IDUPI/i);
+    // `open "Cuidado del dispositivo"` failed on the owner's Samsung and sent
+    // the agent wandering; the playbook no longer teaches it.
+    assert.doesNotMatch(prompt, /`open` "Cuidado del dispositivo"/);
 });
 
 test("the prompt carries the optimization playbook", () => {

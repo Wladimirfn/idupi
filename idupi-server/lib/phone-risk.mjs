@@ -210,6 +210,13 @@ export function classifyCommand(command, { foregroundPackage = null } = {}) {
         return { gated: false, reason: "free" };
     }
 
+    if (type === "settings") {
+        // phone-dashboard T7: a fixed settings screen is navigation, like
+        // `open`. The allowlist is enforced by the store, so nothing here can
+        // become a free-form intent.
+        return { gated: false, reason: "free" };
+    }
+
     if (type === "tap" || type === "long_press") {
         if (typeof args.text === "string") {
             // A data wipe is destructive like any other delete, but the owner

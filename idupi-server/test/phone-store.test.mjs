@@ -205,6 +205,20 @@ test("normalizeCommandArgs validates every command type", () => {
     });
     assert.deepEqual(normalizeCommandArgs("wait", { ms: 0 }), { ms: 0 });
 
+    // phone-dashboard T7: a fixed allowlist of settings screens, never a
+    // free-form intent, and an app screen keyed by package name.
+    for (const screen of ["device-care", "storage", "battery", "apps"]) {
+        assert.deepEqual(normalizeCommandArgs("settings", { screen }), { screen });
+    }
+    assert.deepEqual(
+        normalizeCommandArgs("settings", { screen: "app", package: "com.whatsapp" }),
+        { screen: "app", package: "com.whatsapp" },
+    );
+    assert.deepEqual(
+        normalizeCommandArgs("settings", { screen: "app", package: "com.whatsapp.w4b" }),
+        { screen: "app", package: "com.whatsapp.w4b" },
+    );
+
     const invalid = [
         ["nope", {}],
         ["screen", { extra: 1 }],
@@ -222,6 +236,18 @@ test("normalizeCommandArgs validates every command type", () => {
         ["open", { app: "x", extra: true }],
         ["wait", { ms: 10_001 }],
         ["wait", { ms: 1.5 }],
+        // settings: the allowlist is closed and its args are exact.
+        ["settings", {}],
+        ["settings", { screen: "wifi" }],
+        ["settings", { screen: "APP" }],
+        ["settings", { screen: "device-care", package: "com.whatsapp" }],
+        ["settings", { screen: "device-care", intent: "android.settings.SETTINGS" }],
+        ["settings", { screen: "app" }],
+        ["settings", { screen: "app", package: "" }],
+        ["settings", { screen: "app", package: "whatsapp" }],
+        ["settings", { screen: "app", package: "com..x" }],
+        ["settings", { screen: "app", package: "com.whatsapp", extra: true }],
+        ["settings", { screen: "app", package: `com.${"a".repeat(300)}` }],
     ];
     for (const [type, args] of invalid) {
         assert.throws(
@@ -446,6 +472,25 @@ test("a risky command parks in awaiting_approval and is never delivered", async 
     clock.advance(5 * 60_000);
     assert.equal(store.takeNext(), null);
     assert.equal(store.getCommand(command.id).state, "awaiting_approval");
+});
+
+test("a settings command stays free and is delivered without approval (T7)", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+    // A sensitive app in front does not matter: a settings intent opens a
+    // screen, it never taps or types inside that app.
+    store.recordStatus({ foregroundApp: { packageName: "com.whatsapp", label: "WhatsApp" } });
+
+    const command = store.createCommand({
+        type: "settings",
+        args: { screen: "app", package: "com.whatsapp" },
+    });
+
+    assert.equal(command.state, "pending");
+    assert.equal(command.approvalId, undefined);
+    assert.equal(approvals.listApprovals().length, 0);
+    assert.equal(store.takeNext()?.id, command.id);
 });
 
 test("approve requeues the command with a fresh TTL, approvalId and approvedTarget", async (t) => {

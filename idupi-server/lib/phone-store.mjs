@@ -56,6 +56,7 @@ export const COMMAND_TYPES = [
     "scroll",
     "global",
     "open",
+    "settings",
     "wait",
     "status",
 ];
@@ -69,6 +70,19 @@ export const COMMAND_STATES = [
 ];
 export const SCROLL_DIRECTIONS = ["up", "down", "left", "right"];
 export const GLOBAL_ACTIONS = ["back", "home", "recents", "notifications", "quick_settings"];
+
+// Phone-dashboard T7: the settings command is a fixed allowlist, never a
+// free-form intent from the PC. `app` is the one screen that takes a package.
+export const SETTINGS_SCREENS = ["device-care", "storage", "battery", "apps"];
+export const SETTINGS_APP_SCREEN = "app";
+
+// A package id: at least two dot-separated segments, each starting with a
+// letter (the first) or a letter/underscore (the rest). Same rule on the phone.
+export const PACKAGE_NAME_PATTERN = /^[a-zA-Z][\w]*(\.[a-zA-Z_][\w]*)+$/;
+
+export function isValidPackageName(value) {
+    return typeof value === "string" && PACKAGE_NAME_PATTERN.test(value);
+}
 
 // Error codes the approval gate writes on a command. APPROVAL_REQUIRED travels
 // the other way: the phone sends it as the error of a refused execution.
@@ -234,6 +248,33 @@ export function normalizeCommandArgs(type, rawArgs) {
         case "open":
             rejectUnknownArgs(args, ["app"]);
             return { app: requireString(args.app, "app", MAX_APP_CHARS) };
+        case "settings": {
+            // A fixed allowlist: the PC names a screen key, never an action,
+            // extras or a free-form intent (phone-dashboard T7).
+            rejectUnknownArgs(args, ["screen", "package"]);
+            if (args.screen === SETTINGS_APP_SCREEN) {
+                if (!isValidPackageName(args.package)) {
+                    throw typedError("INVALID_COMMAND", "package must be a valid package name");
+                }
+                if (args.package.length > MAX_APP_CHARS) {
+                    throw typedError(
+                        "INVALID_COMMAND",
+                        `package exceeds ${MAX_APP_CHARS} characters`,
+                    );
+                }
+                return { screen: SETTINGS_APP_SCREEN, package: args.package };
+            }
+            if (!SETTINGS_SCREENS.includes(args.screen)) {
+                throw typedError(
+                    "INVALID_COMMAND",
+                    "screen must be one of: " + SETTINGS_SCREENS.join(", ") + ", " + SETTINGS_APP_SCREEN,
+                );
+            }
+            if (args.package !== undefined) {
+                throw typedError("INVALID_COMMAND", "package is only allowed with screen app");
+            }
+            return { screen: args.screen };
+        }
         case "wait":
             rejectUnknownArgs(args, ["ms"]);
             if (!Number.isInteger(args.ms) || args.ms < 0 || args.ms > MAX_WAIT_MS) {
