@@ -94,11 +94,11 @@ of navigating Settings by taps.
       discovery, pairing client, connect, `shell:` exec with timeout and exit
       status; pure parts unit-tested (command builder, package validation,
       output parsing).
-- [~] T3 App pairing UX: Ajustes > "Acceso avanzado del teléfono" row with
+- [x] T3 App pairing UX: Ajustes > "Acceso avanzado del teléfono" row with
       status (no vinculado / vinculado / conectado / no disponible), "Vincular"
       opens Wireless debugging and posts a notification with a `RemoteInput`
       for the 6-digit code; after pairing, grants WRITE_SECURE_SETTINGS.
-- [~] T3b Bootstrap: embed the helper APK in IDUPI's assets at build time;
+- [x] T3b Bootstrap: embed the helper APK in IDUPI's assets at build time;
       over the adb session install/update it (`pm install -r`) and start the
       bridge (`am instrument`); "Iniciar puente" action and status in the
       same Ajustes row.
@@ -150,6 +150,7 @@ of navigating Settings by taps.
 
 | Task | Commit | Checks |
 |------|--------|--------|
+| T3/T3b live | (docs commit) | Owner tapped "Iniciar puente" at 10:17:31 with no PC involved: `pm path` (helper missing) -> streamed `exec:cmd package install -r -t -S 2104902` done in 1.6 s -> detached `setsid ... am instrument` -> helper pid 24526 `adopted flags=1 uid=10501`, probes ok every 5 s; IDUPI's accessibility service stayed bound. Pairing (10:09) + bootstrap now proven end to end on the S24. |
 | T3 fix 2-3 | 815ae7c, d4813f8 | Owner retry 10:09: mDNS found the pairing service (192.168.1.8:46079) and pairing succeeded over loopback (`paired via 127.0.0.1:46079`, adbd persisted the key). Connect ok, `pm grant` ok (`WRITE_SECURE_SETTINGS: granted=true`), then `pm path com.idupi.shell` hung 10 s: libadb 3.1.1 bug, a peer CLSE that arrives while data is still queued only sets `mPendingClose`, so the next `read` waits forever. Reader now stops at the exit-marker line (`ShellOutputParser.isComplete`, tested). Failures are now logged under tag `IdupiPhoneShell` (code masked). 1.68 (versionCode 69) installed. |
 | T3 fix | (this commit) | Owner's first try crashed at 09:57:47 ("IDUPI se cerró"): `PhoneShellService` resolved `NotificationManagerCompat.from(this)` in a property initializer, before the Service has a base context (NPE in `ContextWrapper.getSystemService`). Now lazy. 1.66-acceso-avanzado (versionCode 67) installed; accessibility rebound with the uiautomator kick (T7b). |
 | T3+T3b | a6b6e83 | worker work-1. Ajustes > "Acceso avanzado del teléfono" (`SettingsRoute.PhoneShell`), `PhoneShellService` (FGS dataSync: mDNS pairing port, RemoteInput code, pair, bootstrap, 5 min cap), `ShellBridgeBootstrap` (connect, pm grant WRITE_SECURE_SETTINGS, streamed `cmd package install -S` with file fallback, detached `setsid am instrument`, pidof + probe check), helper APK embedded as `assets/idupi-shell-helper.apk`. `:app:testDebugUnitTest` 1413 ok (57 in phone.shell); `:app:assembleRelease` ok; 1.65-acceso-avanzado (versionCode 66) installed by adb, helper uninstalled first so the app installs it itself. Live pairing pending (owner). |
@@ -206,5 +207,6 @@ it runs).
 
 ## Next step
 
-T2: in-app adb client so IDUPI can pair, install the helper and start the
-bridge by itself (no PC), then the typed executor in the helper (T4).
+T4: the typed command surface in the helper (signature-protected bound
+service + allowlist) and the `shell` phone command end to end; T7b
+accessibility rebind kick so updates stop leaving the bubble disconnected.
