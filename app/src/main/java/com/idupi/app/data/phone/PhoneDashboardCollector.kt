@@ -3,6 +3,7 @@ package com.idupi.app.data.phone
 import android.app.usage.StorageStatsManager
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Process
 import android.os.storage.StorageManager
@@ -171,6 +172,8 @@ class AndroidAppStorageSource(private val context: Context) : AppStorageSource {
                 appBytes = stats.appBytes,
                 dataBytes = stats.dataBytes,
                 cacheBytes = stats.cacheBytes,
+                systemApp = ((info.activityInfo?.applicationInfo?.flags ?: 0) and
+                    ApplicationInfo.FLAG_SYSTEM) != 0,
             )
         }
         apps

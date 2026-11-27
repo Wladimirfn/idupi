@@ -44,6 +44,12 @@ object ApprovalVoiceCopy {
     /** Spoken when the owner said no to an uninstall (T4). */
     const val REJECTED_UNINSTALL = "No desinstalé la app."
 
+    /** Spoken when the owner said no to a whole plan (T4b). */
+    const val REJECTED_PLAN = "No hice nada del plan."
+
+    /** `action` value the plan prompt uses to add the irreversible warning. */
+    const val PLAN_DESTRUCTIVE_FLAG = "destructive"
+
     /** Re-asked when an addition does not apply to a cache/uninstall prompt. */
     const val PROMPT_YES_NO = "Responde sí o no."
 
@@ -73,6 +79,18 @@ object ApprovalVoiceCopy {
     fun uninstallPrompt(appLabel: String?): String {
         val label = appLabel?.trim()?.takeIf { it.isNotEmpty() } ?: UNKNOWN_APP
         return "Voy a desinstalar $label. ¿Está bien?"
+    }
+
+    /**
+     * "Voy a ejecutar este plan: Borrar la caché de todas las apps; detener 2
+     * apps: A, B. ¿Lo hago?" (T4b). The irreversible warning is added only when
+     * the plan contains an uninstall or disable.
+     */
+    fun planPrompt(plan: String?, destructive: Boolean): String {
+        val summary = plan?.let(::singleLine)?.takeIf { it.isNotEmpty() }
+            ?: "varios pasos en el teléfono"
+        val warning = if (destructive) " Incluye acciones que no se pueden deshacer." else ""
+        return "Voy a ejecutar este plan: $summary.$warning ¿Lo hago?"
     }
 
     /**
@@ -113,6 +131,7 @@ object ApprovalVoiceCopy {
         ApprovalVoiceKind.UNINSTALL -> uninstallPrompt(appLabel)
         ApprovalVoiceKind.DATA_WIPE -> dataWipePrompt(appLabel)
         ApprovalVoiceKind.DESTRUCTIVE -> destructivePrompt(action, subject)
+        ApprovalVoiceKind.PLAN -> planPrompt(subject, destructive = action == PLAN_DESTRUCTIVE_FLAG)
     }
 
     /** What the owner hears after rejecting a step of [kind]. */
@@ -122,6 +141,7 @@ object ApprovalVoiceCopy {
         ApprovalVoiceKind.UNINSTALL -> REJECTED_UNINSTALL
         ApprovalVoiceKind.DATA_WIPE -> REJECTED_DATA_WIPE
         ApprovalVoiceKind.DESTRUCTIVE -> REJECTED_DESTRUCTIVE
+        ApprovalVoiceKind.PLAN -> REJECTED_PLAN
     }
 
     /** Spanish verb for the generic destructive sentence; "Delete" -> eliminar. */

@@ -57,6 +57,7 @@ export const COMMAND_TYPES = [
     "global",
     "open",
     "settings",
+    "shell",
     "wait",
     "status",
 ];
@@ -75,6 +76,62 @@ export const GLOBAL_ACTIONS = ["back", "home", "recents", "notifications", "quic
 // free-form intent from the PC. `app` is the one screen that takes a package.
 export const SETTINGS_SCREENS = ["device-care", "storage", "battery", "apps"];
 export const SETTINGS_APP_SCREEN = "app";
+
+// Phone-shell T4: the typed `shell` command replaces a free-form shell with a
+// closed action list. Both sides validate the same contract: the server here
+// (queue boundary) and the helper on the phone (execution boundary), so a
+// command that slips past one is still refused by the other.
+export const SHELL_ACTIONS = [
+    "info",
+    "scan",
+    "trim-caches",
+    "force-stop",
+    "background",
+    "disable",
+    "enable",
+    "uninstall",
+    "batch",
+];
+// T4b: a batch is one plan with 1..30 steps. `info`, `scan` and `batch` are
+// refused inside a batch: they are reads or another plan, never one step.
+export const SHELL_BATCH_STEP_ACTIONS = [
+    "trim-caches",
+    "force-stop",
+    "background",
+    "disable",
+    "enable",
+    "uninstall",
+];
+export const SHELL_BATCH_MAX_STEPS = 30;
+// `info` takes exactly a topic; every other action takes exactly its own keys.
+export const SHELL_INFO_TOPICS = ["storage", "memory", "battery", "packages"];
+// `background <pkg> allow|ignore` maps to appops RUN_IN_BACKGROUND (ignore) and
+// RUN_ANY_IN_BACKGROUND (allow).
+export const SHELL_BACKGROUND_MODES = ["allow", "ignore"];
+// Refused on both sides even though they are valid package ids: stopping,
+// background-limiting or disabling them breaks the phone, IDUPI itself or the
+// channel the command travels through.
+export const SHELL_PROTECTED_PACKAGES = [
+    "com.idupi.app",
+    "com.idupi.shell",
+    "android",
+    "com.android.systemui",
+    "com.android.settings",
+    "com.android.phone",
+    "com.android.providers.settings",
+    "com.google.android.gms",
+    "com.sec.android.app.launcher",
+    "com.samsung.android.honeyboard",
+];
+
+/** Actions that name a package, and therefore honour the protected list. */
+export const SHELL_PACKAGE_ACTIONS = ["force-stop", "background", "disable", "uninstall"];
+
+/** True when a shell action would refuse this package as protected. */
+export function isProtectedShellPackage(action, packageName) {
+    if (!SHELL_PACKAGE_ACTIONS.includes(action)) return false;
+    return SHELL_PROTECTED_PACKAGES.includes(packageName);
+}
 
 // A package id: at least two dot-separated segments, each starting with a
 // letter (the first) or a letter/underscore (the rest). Same rule on the phone.
@@ -199,6 +256,142 @@ function normalizeTarget(args) {
     };
 }
 
+/** Validates one shell package argument: a valid id, capped and not protected. */
+function normalizeShellPackage(action, value, { allowProtected = false } = {}) {
+    // The protected check runs first: `android` is a real package id that the
+    // stricter name regex below would reject anyway, and naming the real reason
+    // tells the phone (and the agent) that the refusal is deliberate.
+    if (!allowProtected && isProtectedShellPackage(action, value)) {
+        throw typedError("INVALID_COMMAND", `package is protected: ${value}`);
+    }
+    if (!isValidPackageName(value)) {
+        throw typedError("INVALID_COMMAND", "package must be a valid package name");
+    }
+    if (value.length > MAX_APP_CHARS) {
+        throw typedError("INVALID_COMMAND", `package exceeds ${MAX_APP_CHARS} characters`);
+    }
+    return value;
+}
+
+/**
+ * Validates one batch step exactly like the single action of the same name
+ * (T4b). `info`, `scan` and `batch` are not reachable inside a batch.
+ */
+function normalizeShellStep(rawStep) {
+    if (!isPlainObject(rawStep)) {
+        throw typedError("INVALID_COMMAND", "batch steps must be objects");
+    }
+    if (!SHELL_BATCH_STEP_ACTIONS.includes(rawStep.action)) {
+        throw typedError(
+            "INVALID_COMMAND",
+            "batch step action must be one of: " + SHELL_BATCH_STEP_ACTIONS.join(", "),
+        );
+    }
+    return normalizeShellAction(rawStep);
+}
+
+/**
+ * Validates the typed `shell` command (phone-shell T4 + T4b). Each action
+ * accepts exactly the keys of the contract: no action is free-form, and an
+ * extra key is refused even when it looks harmless.
+ */
+function normalizeShellAction(args) {
+    switch (args.action) {
+        case "info":
+            rejectUnknownArgs(args, ["action", "topic"]);
+            if (!SHELL_INFO_TOPICS.includes(args.topic)) {
+                throw typedError(
+                    "INVALID_COMMAND",
+                    "topic must be one of: " + SHELL_INFO_TOPICS.join(", "),
+                );
+            }
+            return { action: "info", topic: args.topic };
+        case "scan":
+            // Runs in the app, no helper: this is the read half of T4b.
+            rejectUnknownArgs(args, ["action"]);
+            return { action: "scan" };
+        case "trim-caches":
+            rejectUnknownArgs(args, ["action"]);
+            return { action: "trim-caches" };
+        case "force-stop":
+            rejectUnknownArgs(args, ["action", "package"]);
+            return {
+                action: "force-stop",
+                package: normalizeShellPackage("force-stop", args.package),
+            };
+        case "background":
+            rejectUnknownArgs(args, ["action", "package", "mode"]);
+            if (!SHELL_BACKGROUND_MODES.includes(args.mode)) {
+                throw typedError(
+                    "INVALID_COMMAND",
+                    "mode must be one of: " + SHELL_BACKGROUND_MODES.join(", "),
+                );
+            }
+            return {
+                action: "background",
+                package: normalizeShellPackage("background", args.package),
+                mode: args.mode,
+            };
+        case "disable":
+            rejectUnknownArgs(args, ["action", "package"]);
+            return {
+                action: "disable",
+                package: normalizeShellPackage("disable", args.package),
+            };
+        case "enable":
+            // Undo: enabling is always safe, so the protected list does not
+            // apply (it is also how the owner recovers a package by hand).
+            rejectUnknownArgs(args, ["action", "package"]);
+            return {
+                action: "enable",
+                package: normalizeShellPackage("enable", args.package, { allowProtected: true }),
+            };
+        case "uninstall":
+            // T4b: `pm uninstall --user 0 <pkg>`. The protected list applies
+            // for the same reason it does to disable: uninstalling IDUPI, the
+            // shell helper or a system package must never be reachable.
+            rejectUnknownArgs(args, ["action", "package"]);
+            return {
+                action: "uninstall",
+                package: normalizeShellPackage("uninstall", args.package),
+            };
+        case "batch": {
+            // One plan, 1..30 steps, no duplicates. The server is the queue
+            // boundary; the phone re-validates every step before running it.
+            rejectUnknownArgs(args, ["action", "steps"]);
+            if (!Array.isArray(args.steps)) {
+                throw typedError("INVALID_COMMAND", "steps must be an array");
+            }
+            if (args.steps.length < 1 || args.steps.length > SHELL_BATCH_MAX_STEPS) {
+                throw typedError(
+                    "INVALID_COMMAND",
+                    `steps must contain 1 to ${SHELL_BATCH_MAX_STEPS} items`,
+                );
+            }
+            const steps = args.steps.map(normalizeShellStep);
+            const seen = new Set();
+            for (const step of steps) {
+                const key = JSON.stringify(step);
+                if (seen.has(key)) {
+                    throw typedError("INVALID_COMMAND", "duplicate batch step");
+                }
+                seen.add(key);
+            }
+            return { action: "batch", steps };
+        }
+        default:
+            throw typedError("INVALID_COMMAND", "unknown shell action");
+    }
+}
+
+function normalizeShellArgs(args) {
+    rejectUnknownArgs(args, ["action", "topic", "package", "mode", "steps"]);
+    if (!SHELL_ACTIONS.includes(args.action)) {
+        throw typedError("INVALID_COMMAND", "action must be one of: " + SHELL_ACTIONS.join(", "));
+    }
+    return normalizeShellAction(args);
+}
+
 /** Validates one command type and returns the normalized args. */
 export function normalizeCommandArgs(type, rawArgs) {
     if (!COMMAND_TYPES.includes(type)) {
@@ -275,6 +468,9 @@ export function normalizeCommandArgs(type, rawArgs) {
             }
             return { screen: args.screen };
         }
+        case "shell":
+            // A typed command surface, not a free-form shell (phone-shell T4).
+            return normalizeShellArgs(args);
         case "wait":
             rejectUnknownArgs(args, ["ms"]);
             if (!Number.isInteger(args.ms) || args.ms < 0 || args.ms > MAX_WAIT_MS) {
@@ -284,6 +480,32 @@ export function normalizeCommandArgs(type, rawArgs) {
         default:
             throw typedError("INVALID_COMMAND", "unknown command type");
     }
+}
+
+/**
+ * T4c: whether a running owner turn already consents to this gated command.
+ *
+ * `message` and `optimization` are the original auto-approved categories.
+ * Shell `plan` (a batch) and single destructive shell steps (`disable`,
+ * `uninstall`) join them because the owner's own shell request authorized the
+ * whole plan. Everything else keeps its gate: a tap-based destructive step,
+ * a data wipe, money, confirmation and sensitive-app taps are not covered.
+ *
+ * @param {{ gated: boolean, category?: string }} verdict
+ * @param {string} type
+ * @param {object} args normalized command args
+ * @returns {boolean}
+ */
+function ownerTurnApproves(verdict, type, args) {
+    if (!verdict || verdict.gated !== true) return false;
+    if (verdict.category === "message" || verdict.category === "optimization") {
+        return true;
+    }
+    if (type !== "shell") return false;
+    if (verdict.category === "plan") return true;
+    const action = args && typeof args === "object" ? args.action : undefined;
+    return verdict.category === "destructive" &&
+        (action === "disable" || action === "uninstall");
 }
 
 /**
@@ -706,12 +928,26 @@ export function createPhoneStore({
                 ownerTurnId: turnId,
             });
             // An owner bubble turn is the approval for its messaging steps
-            // (owner rule 2026-11-26). Money, destructive, confirmation and
-            // sensitive-app steps keep the normal gate. The approval is marked
-            // approved before anyone can poll it, so no card or notification is
-            // shown and the command is delivered on the next poll carrying the
-            // same approvalId/approvedTarget a manual approval produces.
-            if (turnId !== null && verdict.category === "message") {
+            // (owner rule 2026-11-26). Money, confirmation and non-shell
+            // destructive/sensitive-app steps keep the normal gate. An
+            // optimization step (phone-shell T4: clearing caches, stopping or
+            // background-limiting an app) is the one the owner asked for by
+            // name when they say "optimiza mi teléfono", so it is auto-approved
+            // the same way and leaves `message` untouched.
+            //
+            // T4c: the owner's own request is also the consent for a shell
+            // `batch` plan and for single destructive shell actions (`disable`,
+            // `uninstall`). This is deliberately narrower than the category
+            // name: a tap-based delete/data wipe (category `destructive`) and
+            // money are NOT auto-approved, and a client field never grants it
+            // (only the server-resolved running turn id does). Outside an owner
+            // turn the same batch keeps its ONE `plan` approval.
+            //
+            // The approval is marked approved before anyone can poll it, so no
+            // card or notification is shown and the command is delivered on the
+            // next poll carrying the same approvalId/approvedTarget a manual
+            // approval produces.
+            if (turnId !== null && ownerTurnApproves(verdict, type, normalizedArgs)) {
                 const decided = approvalStore.decideApproval(approval.id, "approve", {
                     decidedBy: `owner-request:${turnId}`,
                 });

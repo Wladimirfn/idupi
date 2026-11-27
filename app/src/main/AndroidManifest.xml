@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Phone shell (phone-shell T6): the boot receiver re-enables Wireless
+         debugging and restarts the helper after a reboot. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- Phone control (phone-agent T3): the signal collector fills
          signal.networkType (4G/5G) only when this runtime permission is granted;
          Ajustes requests it. -->
@@ -79,6 +82,12 @@
         <package android:name="com.strava" />
         <package android:name="com.huawei.health" />
         <package android:name="com.hihonor.health" />
+        <!-- Phone shell (phone-shell T3b): the app checks the helper's install
+             state and version through PackageManager. -->
+        <package android:name="com.idupi.shell" />
+        <!-- Server link (phone-shell T9): TailscaleLink checks that the VPN app
+             is installed before sending its explicit CONNECT_VPN broadcast. -->
+        <package android:name="com.tailscale.ipn" />
     </queries>
 
     <!-- Phone status reporting (phone-agent T2): usage minutes per app and the
@@ -90,6 +99,18 @@
     <uses-permission
         android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions" />
+
+    <!-- Phone shell (phone-shell T3): shell (uid 2000) grants this to the app
+         over the app's own adb session right after pairing, so T6 can turn
+         wireless debugging back on after a reboot. Declaring it is what makes
+         `pm grant` succeed; the app never receives it from the system. -->
+    <uses-permission
+        android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
+
+    <!-- Phone shell (phone-shell T4): the helper provider is protected by a
+         signature permission; only an app with the same key can call it. -->
+    <uses-permission android:name="com.idupi.shell.permission.BRIDGE" />
 
     <application
         android:name=".IduPiApp"
@@ -185,6 +206,44 @@
             android:name="com.idupi.app.data.install.InstallResultReceiver"
             android:exported="false" />
 
+        <!-- Phone shell (phone-shell T3/T3b). Short-lived foreground service:
+             pair over Wireless debugging, then install/start the helper. It is
+             started from Ajustes and stopped when done or after five minutes. -->
+        <service
+            android:name="com.idupi.app.data.phone.shell.PhoneShellService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- RemoteInput reply for the pairing code. Explicit and unexported;
+             only IDUPI's own notification PendingIntent can reach it. -->
+        <receiver
+            android:name="com.idupi.app.data.phone.shell.PhoneShellPairingReceiver"
+            android:exported="false" />
+
+        <!-- Phone shell T6: after a reboot Android turns Wireless debugging off
+             and the helper is gone. Only the system sends BOOT_COMPLETED; the
+             receiver hands off to the phone-shell foreground service, which
+             waits for Wi-Fi and runs the shared recovery. Unexported because no
+             other app may trigger it. -->
+        <receiver
+            android:name="com.idupi.app.data.phone.shell.BootRecoveryReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- Phone shell T7b: after an update the accessibility grant may stay
+             recorded while the service never rebinds. The system sends this
+             explicit broadcast; the receiver runs the kick after a grace. -->
+        <receiver
+            android:name="com.idupi.app.data.phone.control.PackageReplacedReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
         <!-- Phone approval notification actions (phone-approvals T2). The
              Aprobar / Rechazar PendingIntents are immutable and target this
              component explicitly, so it stays unexported. -->
@@ -236,7 +295,7 @@
             android:name="com.idupi.app.data.phone.bubble.AssistEntryActivity"
             android:exported="true"
             android:taskAffinity=""
-            android:excludeFromRecents="true"
+            android:excludeFromRecents="true"
             android:launchMode="singleTask"
             android:theme="@android:style/Theme.Translucent.NoTitleBar">
             <intent-filter>

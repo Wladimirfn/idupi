@@ -24,11 +24,12 @@ class ApprovalNotifier(private val context: Context) {
 
     private val notifications = NotificationManagerCompat.from(context)
     private val json = Json { encodeDefaults = true }
+    private val appLabels by lazy { AppLabels.resolver(context) }
 
     fun show(approval: PhoneApproval) {
         if (approval.id.isBlank()) return
         createChannel()
-        val description = ApprovalNotificationText.describe(approval)
+        val description = ApprovalNotificationText.describe(approval, appLabels)
         val payload = json.encodeToString(PhoneApproval.serializer(), approval)
         val builder = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_dialog_alert)

@@ -34,7 +34,7 @@ enum class ApprovalVoiceCategory {
  * what is lost before asking; [DESTRUCTIVE] names the action and the screen
  * title and warns that it cannot be undone.
  */
-enum class ApprovalVoiceKind { MESSAGE, CACHE, UNINSTALL, DATA_WIPE, DESTRUCTIVE }
+enum class ApprovalVoiceKind { MESSAGE, CACHE, UNINSTALL, DATA_WIPE, DESTRUCTIVE, PLAN }
 
 /**
  * Classifies the texts an approval carries (target, command args, app label)
@@ -185,6 +185,10 @@ object ApprovalVoiceRouting {
         // path already knows how to show it.
         val expiry = expiryMillis(approval) ?: return ApprovalVoiceRoute.Notification
         if (expiry <= nowMillis) return ApprovalVoiceRoute.Notification
+        // phone-shell T4/T4b: a typed plan is always asked in the bubble during
+        // the owner's turn; a single disable/uninstall is destructive too.
+        if (isShellBatch(approval)) return ApprovalVoiceRoute.Voice
+        if (isShellDestructive(approval)) return ApprovalVoiceRoute.Voice
         val category = ApprovalVoiceClassifier.classify(texts(approval))
         return when {
             // T23: only the phone-detected refusal of a messaging step.
@@ -214,6 +218,9 @@ object ApprovalVoiceRouting {
         PhoneApprovalReason.RISKY_TEXT,
     )
 
+    /** Typed shell steps that are destructive on their own. */
+    private val SHELL_DESTRUCTIVE_ACTIONS = setOf("disable", "uninstall")
+
     /**
      * Which sentence the bubble must speak for this approval, or null when the
      * approval is not one the voice flow owns. `riskKind` wins over the text:
@@ -224,6 +231,8 @@ object ApprovalVoiceRouting {
         if (approval.riskKind == PhoneApprovalRiskKind.DATA_WIPE) {
             return ApprovalVoiceKind.DATA_WIPE
         }
+        if (isShellBatch(approval)) return ApprovalVoiceKind.PLAN
+        if (isShellDestructive(approval)) return ApprovalVoiceKind.DESTRUCTIVE
         return when (ApprovalVoiceClassifier.classify(texts(approval))) {
             ApprovalVoiceCategory.MESSAGING -> ApprovalVoiceKind.MESSAGE
             ApprovalVoiceCategory.CACHE_CLEAR -> ApprovalVoiceKind.CACHE
@@ -236,12 +245,36 @@ object ApprovalVoiceRouting {
 
     /** The destructive verb the bubble should say ("eliminar", "borrar"), or null. */
     fun destructiveAction(approval: PhoneApproval): String? {
+        if (isShellDestructive(approval)) {
+            return when (shellAction(approval)) {
+                "uninstall" -> "desinstalar"
+                "disable" -> "desactivar"
+                else -> "cambiar"
+            }
+        }
         val candidates = buildList {
             approval.target?.let(::add)
             addAll(commandTexts(approval))
         }
         return candidates.firstNotNullOfOrNull(ApprovalVoiceClassifier::destructiveVerb)
     }
+
+    /** True when a shell plan contains an uninstall or disable step. */
+    fun planContainsDestructive(approval: PhoneApproval): Boolean =
+        isShellBatch(approval) && ShellPlanText.containsDestructive(approval.command.args)
+
+    /** A typed `shell` disable/uninstall is the destructive shell step. */
+    private fun isShellDestructive(approval: PhoneApproval): Boolean {
+        if (approval.command.type != "shell") return false
+        return shellAction(approval) in SHELL_DESTRUCTIVE_ACTIONS
+    }
+
+    private fun isShellBatch(approval: PhoneApproval): Boolean =
+        approval.command.type == "shell" &&
+            ShellPlanText.isBatch(approval.command.args)
+
+    private fun shellAction(approval: PhoneApproval): String? =
+        (approval.command.args["action"] as? JsonPrimitive)?.contentOrNull
 
     /** True when the approval carries a readable deadline that already passed. */
     fun isExpired(approval: PhoneApproval, nowMillis: Long): Boolean =

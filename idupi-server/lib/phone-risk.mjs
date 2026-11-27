@@ -74,6 +74,11 @@ export const RISK_REASONS = {
     riskyText: "risky_text",
     sensitiveApp: "sensitive_app",
     phoneDetected: "phone_detected_risky_target",
+    // Shell commands carry their own labels (phone-shell T4/T4b) instead of
+    // the generic "risky_text" a tap-based delete used to produce.
+    shellOptimization: "shell_optimization",
+    shellDestructive: "shell_destructive",
+    shellPlan: "shell_plan",
 };
 
 /**
@@ -85,6 +90,9 @@ export const RISK_REASONS = {
  */
 export const RISK_KINDS = {
     dataWipe: "data_wipe",
+    // T4b: the batch plan contains uninstall or disable, so the phone must ask
+    // it by voice instead of a silent card. Additive: older clients ignore it.
+    batchDestructive: "batch_destructive",
 };
 
 // A data wipe clears the app's data or the device storage; clearing the cache
@@ -250,6 +258,55 @@ export function classifyCommand(command, { foregroundPackage = null } = {}) {
                 category: isMoneyPackage(foregroundPackage) ? "money" : "message",
             };
         }
+        return { gated: false, reason: "free" };
+    }
+
+    if (type === "shell") {
+        // phone-shell T4 + T4b: the typed shell surface. Reading device state
+        // (`info`, `scan`) and undoing a disable (`enable`) change nothing the
+        // owner cares about; freeing space, stopping or background-limiting an
+        // app is an optimization (auto in an owner turn, like `message`);
+        // disabling or uninstalling a package is destructive; a batch is one
+        // plan that always waits for the owner as ONE approval.
+        const action = typeof args.action === "string" ? args.action : "";
+        const target = typeof args.package === "string" ? args.package : null;
+        if (action === "info" || action === "scan" || action === "enable") {
+            return { gated: false, reason: "free" };
+        }
+        if (action === "disable" || action === "uninstall") {
+            return {
+                gated: true,
+                reason: RISK_REASONS.shellDestructive,
+                target,
+                category: "destructive",
+            };
+        }
+        if (action === "trim-caches" || action === "force-stop" || action === "background") {
+            return {
+                gated: true,
+                reason: RISK_REASONS.shellOptimization,
+                target,
+                category: "optimization",
+            };
+        }
+        if (action === "batch") {
+            const steps = Array.isArray(args.steps) ? args.steps : [];
+            const destructive = steps.some(
+                (step) => step && (step.action === "uninstall" || step.action === "disable"),
+            );
+            return {
+                gated: true,
+                reason: RISK_REASONS.shellPlan,
+                target: null,
+                // `plan` is deliberately outside the owner-turn auto-approval
+                // categories: a batch is never auto-approved, even inside an
+                // owner turn.
+                category: "plan",
+                ...(destructive ? { riskKind: RISK_KINDS.batchDestructive } : {}),
+            };
+        }
+        // An action the store would reject anyway: keep it free here so the
+        // classifier never invents a gate for a command that cannot run.
         return { gated: false, reason: "free" };
     }
 

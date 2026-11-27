@@ -59,6 +59,7 @@ command queue is memory-only; a server restart never replays a stale command.
 | `global` | `{action}` where action is `back`, `home`, `recents`, `notifications`, `quick_settings` | Global system action |
 | `open` | `{app}` | Launch an app by package name or visible label |
 | `settings` | `{screen}` where screen is `device-care`, `storage`, `battery` or `apps`; `{screen: "app", package}` for one app | Open a fixed Settings screen by intent |
+| `shell` | `{action}` plus that action's exact keys (see [Shell](#shell-phone-shell-t4)) | Run one typed command with the phone's shell identity |
 | `wait` | `{ms}` (0..10000) | Pause inside the phone executor |
 | `status` | `{}` | Ask the phone to report `POST /phone/status` now |
 
@@ -123,6 +124,83 @@ Every intent starts from the accessibility service with
   `{ "message": "...", "fallback": true }`, so the agent knows it got the
   storage screen.
 - `settings` is navigation: `phone-risk.mjs` classifies it free, like `open`.
+
+## Shell (phone-shell T4)
+
+`shell` runs one typed operation with the phone's shell identity. It is an
+allowlist, never a free-form command string: the PC names an action and the
+exact keys that action takes, and three layers validate the same contract
+(the server at the queue boundary, the app and the helper at the execution
+boundary). The helper builds a fixed argv vector: no `sh -c`, no concatenation
+of untrusted input.
+
+Source: [`lib/phone-store.mjs`](../lib/phone-store.mjs) (validation);
+`ShellCommandRules` / `ShellRequestValidator` on the phone repeat the same list;
+the executor lives in `shellhelper/`.
+
+| `action` | `args` | What it runs |
+|----------|--------|--------------|
+| `info` | `{topic}` where topic is `storage`, `memory`, `battery` or `packages` | Read device state: free/total storage, available/total memory (`/proc/meminfo`), battery level/status/temperature, or the third-party package list (`pm list packages -3`, first 30 names) |
+| `scan` | `{}` | T4b: read the app inventory in the app itself, no helper needed. Returns Spanish text plus a JSON block with each third-party app's `cacheBytes`, `appBytes`, `dataBytes`, `lastUsed` (UsageStats), the total reclaimable cache and the candidates (`unused`: not opened in 30+ days, launchable, not protected; `heavyCache`: top cache holders) |
+| `trim-caches` | `{}` | Free every app's cache (`cmd package trim-caches 4096G`) and report the space freed |
+| `force-stop` | `{package}` | Stop one app (`am force-stop`) |
+| `background` | `{package, mode}` where mode is `allow` or `ignore` | Set `RUN_ANY_IN_BACKGROUND` to `allow` / `ignore` |
+| `disable` | `{package}` | Disable the app for the owner (`pm disable-user --user 0`) |
+| `enable` | `{package}` | Re-enable it (`pm enable --user 0`) |
+| `uninstall` | `{package}` | T4b: uninstall the app for the owner (`pm uninstall --user 0`) |
+| `batch` | `{steps}` | T4b: run 1-30 steps as ONE plan with ONE approval. Each step is exactly one of `trim-caches`, `force-stop`, `background`, `disable`, `enable`, `uninstall`, validated like the single action |
+
+- `package` must be a package id (same regex as `settings app`: at least two
+  dot-separated segments). An unknown action, a missing key, an extra key, an
+  unknown topic or mode is `400 INVALID_COMMAND`; nothing is created.
+- `force-stop`, `background`, `disable` and `uninstall` refuse the protected
+  packages: `com.idupi.app`, `com.idupi.shell`, `android`, `com.android.systemui`,
+  `com.android.settings`, `com.android.phone`,
+  `com.android.providers.settings`, `com.google.android.gms`,
+  `com.sec.android.app.launcher` and `com.samsung.android.honeyboard`. Stopping,
+  background-limiting or uninstalling one of them breaks the phone, IDUPI itself
+  or the channel the command travels through. `enable` is the undo, so it accepts
+  any package id.
+- `batch.steps` accepts only the six runnable actions: `info`, `scan` and
+  `batch` are refused inside a batch. A batch of 0 or more than 30 steps, a
+  malformed step, a duplicate step (same action and keys), an unknown key or an
+  invalid/protected package is `400 INVALID_COMMAND`; nothing is created. The
+  phone validates every step again before running it.
+- The successful `result` is `{ "text": "<sentence>", "path": "exec" | "api" }`,
+  plus `freeBefore` / `freeAfter` (bytes) for `trim-caches`. `text` is what the
+  CLI prints; `path` says whether the operation used the helper's child process
+  (`exec`) or a framework fallback (`api`). `trim-caches` falls back to the
+  framework when the child hits a `SecurityException`, and the sentence already
+  includes the freed space. `batch` returns one summary per step (ok/fail) plus
+  the freed space; the phone continues past a failed step.
+- `scan` returns the JSON block in `result`; the agent reads it to propose the
+  plan. It never needs the helper, so it works before the bridge is started.
+- The phone re-checks the allowlist before executing, so a forged Binder call
+  cannot widen the surface; a refusal answers `{ ok: false, error: "<message>" }`.
+
+Risk and approvals ([`lib/phone-risk.mjs`](../lib/phone-risk.mjs)):
+
+- `info`, `scan` and `enable` are free: reading state and undoing a disable
+  change nothing.
+- `trim-caches`, `force-stop` and `background` are optimization steps. Inside
+  an owner bubble turn they are approved automatically like a `message` step
+  (`category: "optimization"`); without an owner turn they wait in the normal
+  approval queue. Their approval reason is `shell_optimization`.
+- `disable` and `uninstall` are destructive: their approval reason is
+  `shell_destructive`. T4c: inside an active owner turn they are auto-approved
+  with the same server-resolved turn mechanism as `optimization`/`message`;
+  outside an owner turn they keep the gate. A tap-based destructive step and a
+  data wipe are NOT covered by this rule.
+- `batch` is gated as ONE approval with category `plan` and reason
+  `shell_plan`. T4c: inside an active owner turn the plan is auto-approved (the
+  owner's own request is the consent); outside an owner turn it waits as ONE
+  plan approval. The approval lists every step in Spanish, and a batch
+  containing `uninstall` or `disable` carries
+  `riskKind: "batch_destructive"` so the phone prompts by voice when a manual
+  decision is needed. Only `shell` batches and single shell `disable`/`uninstall`
+  get this owner-turn consent: money, confirmation, tap deletes and data wipes
+  keep their normal gate. The server resolves the turn from the per-turn secret
+  header, never from a client field.
 
 ## Approvals
 
@@ -205,11 +283,15 @@ Approval shape:
 ```
 
 `state` is `pending`, `approved`, `rejected` or `expired`. `reason` is
-`risky_text`, `type_submit`, `sensitive_app` or
-`phone_detected_risky_target`. `riskKind` is additive and currently only
-`data_wipe` (or null): it marks the destructive step that clears app data or
-storage so the phone itself can say what is lost before asking
-(phone-dashboard T6). `resultCommandId` is the command that will actually run:
+`risky_text`, `type_submit`, `sensitive_app`, `phone_detected_risky_target`, or
+one of the shell reasons `shell_optimization`, `shell_destructive` and
+`shell_plan` (the CLI prints them as "optimización del teléfono", "acción
+destructiva de la shell" and "plan de optimización"). `riskKind` is additive:
+`data_wipe` marks the destructive tap that clears app data or storage so the
+phone itself can say what is lost before asking (phone-dashboard T6), and
+`batch_destructive` marks a `shell batch` that contains `uninstall` or `disable`
+so the phone asks the plan by voice (T4b). `resultCommandId` is the command that
+will actually run:
 the parked one, or a rebuilt one when the server restarted while the approval
 was pending. `ownerTurnId` is the bubble turn that created the command, or
 null for a manual / PC-created approval; a destructive approval that carries
@@ -347,19 +429,26 @@ secret is revoked as soon as the turn ends (done, failed, cancelled or
 superseded), never reaches the agent prompt, and never appears in a step, an
 answer, a turn record or a log.
 
-When a gated command belongs to a resolving owner turn and its classifier
-category is `message` (a `type --submit`, or a tap on messaging text or inside a
-messaging app), the server creates the approval and marks it approved at once
-with `decidedBy: "owner-request:<turnId>"`. The command is delivered on the next
-phone poll carrying the same `approvalId`, `approvedTarget` and `approvalReason`
-a manual approval produces, so no pending card and no notification appear.
+When a gated command belongs to a resolving owner turn, the server creates the
+approval and marks it approved at once with
+`decidedBy: "owner-request:<turnId>"` for these cases:
 
-Money (`pay`, `buy`, `transfer`, bank/wallet packages), destructive
-(`delete`, `borrar`, `eliminar`, `desinstalar`, `uninstall`), confirmation
-(`approve`, `confirm`) and any unclassified sensitive-app step keep the normal
-gate even inside an owner turn: they wait in the approval queue until the owner
-decides on the phone. Every pending approval created by a command of that turn
-carries its `ownerTurnId`, whichever process classified it (`requestedBy:
+- `message`: a `type --submit`, or a tap on messaging text or inside a messaging
+  app.
+- `optimization`: shell `trim-caches`, `force-stop` or `background`.
+- `plan`: a shell `batch` (T4c).
+- `destructive`, ONLY when it is a single shell `disable` or `uninstall` (T4c).
+
+The command is delivered on the next phone poll carrying the same `approvalId`,
+`approvedTarget` and `approvalReason` a manual approval produces, so no pending
+card and no notification appear.
+
+Money (`pay`, `buy`, `transfer`, bank/wallet packages), confirmation
+(`approve`, `confirm`), sensitive-app taps and NON-shell destructive steps (a
+tap on `delete`, `borrar`, `eliminar`, `desinstalar`, a data wipe) keep the
+normal gate even inside an owner turn: they wait in the approval queue until the
+owner decides on the phone. Every pending approval created by a command of that
+turn carries its `ownerTurnId`, whichever process classified it (`requestedBy:
 "cli"` from the server classifier, `requestedBy: "phone"` when the phone
 detected a risky node). On the phone, a pending destructive approval during an
 active bubble turn is asked in the bubble itself (voice or its Aprobar /
@@ -367,40 +456,50 @@ Rechazar buttons): cache, uninstall, a data wipe and any other delete. Money
 keeps the notification, and a data-wipe question says that the session closes
 and the app's files on the phone are lost (phone-dashboard T6).
 
-Approval decisions still use the same enforcement point. Approving a cache
-clear or an uninstall requeues a normal gated command; the phone verifies the
-same `approvalId` / `approvedTarget` as any other approval, so nothing about
-the destructive path becomes automatic.
+Outside an owner turn nothing is auto-approved: a shell `batch` stays ONE
+`plan` approval, and a single shell `disable`/`uninstall` keeps its
+`shell_destructive` gate. Approval decisions still use the same enforcement
+point. Approving a cache clear, a plan or an uninstall requeues a normal gated
+command; the phone verifies the same `approvalId` / `approvedTarget` as any other
+approval.
 
 The prompt marks the owner's request as TRUSTED, inside `owner_request`, and
 states that everything the CLI prints (screen dumps, notification and message
 text, calendar titles) is UNTRUSTED DATA. Delimiter-shaped text in the request
 is neutralized so it cannot close or forge a block. The prompt lists the only
 allowed subcommands, tells the agent that the owner's request approves its
-messaging steps, and keeps money and destructive steps waiting for an explicit
-approval. It also teaches `tap --id` (reading resource ids from the `#id` token
+messaging steps and the shell plan it authorizes, and keeps money and non-shell
+destructive steps waiting for an explicit approval. It also teaches `tap --id` (reading resource ids from the `#id` token
 in the screen dump), how to disambiguate "varios elementos coinciden", and that
 after `type` in a chat the IME enter may only add a newline: the agent must read
 the screen and, when the text is still in the field, tap the send button by id
 (WhatsApp `com.whatsapp:id/send`) and read the screen again. Coordinates
 (`tap --xy`) are a last resort; a point tap is still checked by the phone.
 
-The prompt also carries the optimization playbook ("optimiza mi teléfono",
-"libera espacio", "limpia la RAM"): read `status` first (storage and
-`largestApps`); `settings device-care` -> "Optimizar ahora" -> read the result
-(if the answer carries `fallback: true` the phone has no Device Care, and
-`settings storage` is used instead); clear the cache of the 3-5 largest caches
-with `settings app <package>` -> "Almacenamiento" -> "Borrar caché" -> `back`
-(each waits for the owner's approval in the bubble); destructive steps (delete
-files, photos, folders or chats, clear data or storage, uninstall) only when the
-owner explicitly asked for that deletion in the request, saying what will be
-lost before the tap, and never a data wipe on the agent's own initiative during
-an optimization (cache only); suggest uninstalling only apps not used recently
-and uninstall only on explicit agreement; finish with `status` again and say how
-much space was freed. The prompt tells the agent to use `settings` instead of
-searching Settings by hand (no `open` "Ajustes", no typing in the search field,
-no scrolling through menus) and to never tap IDUPI's own controls (bubble,
-"Minimizar", "Enviar", "Aprobar", "Rechazar").
+The prompt also carries the optimization playbook (T4c: "optimiza mi teléfono",
+"libera espacio", "limpia la RAM", "qué apps no uso"): if the request already
+authorizes the actions ("borra la caché", "desinstala lo que no uso menos X", or
+a confirmation of an earlier proposal), run `shell scan` only if needed and ONE
+`shell batch` with those steps, without an extra question. For a generic
+"optimiza mi teléfono" it runs the safe steps at once in one batch
+(`trim-caches` plus `background <package> ignore` for the heavy background
+apps), then replies with a short numbered proposal of uninstall/disable
+candidates and asks the owner to confirm; the confirmed ones run in a later
+turn. It never clears caches app by app through Settings while the shell works;
+only a `"puente no disponible"` failure allows the `settings`/navigation
+fallback, and then it tells the owner to start the bridge in Ajustes > Acceso
+avanzado del teléfono. Destructive steps (uninstall, disable, delete files,
+photos, folders or chats, clear data or storage) run only when the request or a
+confirmed proposal authorizes them, saying what will be lost; a data wipe is
+never part of an optimization. The prompt tells the agent to use `settings`
+instead of searching Settings by hand (no `open` "Ajustes", no typing in the
+search field, no scrolling through menus) and to never tap IDUPI's own controls
+(bubble, "Minimizar", "Enviar", "Aprobar", "Rechazar").
+
+The prompt includes the owner's last 3 turns from the previous 15 minutes
+(request text and final answer, clipped to the turn-store caps) inside a
+`<recent_turns>` block labeled DATA, not instructions, so a confirmation like
+"sí, todas menos MiniMax" resolves against the proposal the owner saw.
 
 While a bubble turn runs, the panel collapses to its circle so it does not cover
 the screen the agent is reading, and opens again when the turn ends with an
@@ -630,6 +729,16 @@ idupi-phone open whatsapp
 idupi-phone settings device-care     # Cuidado del dispositivo (Samsung) o storage
 idupi-phone settings storage         # Ajustes de almacenamiento
 idupi-phone settings app com.whatsapp
+idupi-phone shell info storage       # estado del dispositivo con la shell del teléfono
+idupi-phone shell scan               # analiza apps, caché y candidatas (propone)
+idupi-phone shell trim-caches        # libera la caché de todas las apps
+idupi-phone shell force-stop com.facebook.katana
+idupi-phone shell background com.facebook.katana ignore
+idupi-phone shell disable com.facebook.katana   # pide tu aprobación
+idupi-phone shell enable com.facebook.katana
+idupi-phone shell uninstall com.facebook.katana # pide tu aprobación
+idupi-phone shell batch '[{"action":"trim-caches"},{"action":"disable","package":"com.facebook.katana"}]'
+idupi-phone shell batch @plan.json   # el mismo plan desde un archivo
 idupi-phone wait 1500
 idupi-phone calendar                     # agenda for the next 7 days
 idupi-phone calendar --days 14 --json    # raw agenda payload

@@ -14,7 +14,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { HOST, resolvePort, resolveToken } from "../lib/term-cli.mjs";
 import { validateHostPort } from "../lib/adb-connection.mjs";
-import { SETTINGS_SCREENS, isValidPackageName } from "../lib/phone-store.mjs";
+import {
+    SETTINGS_SCREENS,
+    SHELL_BACKGROUND_MODES,
+    SHELL_INFO_TOPICS,
+    isProtectedShellPackage,
+    isValidPackageName,
+} from "../lib/phone-store.mjs";
 import { TURN_GRANT_ENV, TURN_GRANT_HEADER } from "../lib/phone-turn-grants.mjs";
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
@@ -39,6 +45,19 @@ Uso:
   idupi-phone settings <device-care|storage|battery|apps>
                                         Abre esa pantalla de Ajustes por intent
   idupi-phone settings app <paquete>    Abre los Ajustes de esa app (almacenamiento)
+  idupi-phone shell info <storage|memory|battery|packages>
+                                        Lee el estado del dispositivo con la shell del teléfono
+  idupi-phone shell scan                Analiza apps, caché, uso y candidatas a limpiar
+  idupi-phone shell trim-caches         Borra la caché de todas las apps (dice el espacio liberado)
+  idupi-phone shell force-stop <paquete>
+                                        Detiene una app
+  idupi-phone shell background <paquete> <allow|ignore>
+                                        Permite o limita la ejecución en segundo plano
+  idupi-phone shell disable <paquete>   Deshabilita una app (pide tu aprobación)
+  idupi-phone shell enable <paquete>    Vuelve a habilitar una app
+  idupi-phone shell uninstall <paquete> Desinstala una app (pide tu aprobación)
+  idupi-phone shell batch '<json>' | @archivo.json
+                                        Ejecuta varios pasos con UNA sola aprobación
   idupi-phone wait <ms>                 Espera en el teléfono (0..10000)
   idupi-phone calendar [agenda] [--days N] [--json]
                                         Agenda de los calendarios del teléfono (7 días por defecto)
@@ -215,6 +234,8 @@ export function parseArgs(argv = []) {
         return { command: "help", error: SETTINGS_USAGE };
     }
 
+    if (head === "shell") return parseShellArgs(rest);
+
     if (head === "wait") {
         if (rest.length !== 1 || !/^\d+$/.test(rest[0])) {
             return { command: "help", error: "Uso: idupi-phone wait <ms> (0..10000)" };
@@ -258,6 +279,84 @@ export function parseArgs(argv = []) {
 const SETTINGS_USAGE =
     "Uso: idupi-phone settings <device-care|storage|battery|apps> | " +
     "idupi-phone settings app <paquete>";
+
+const SHELL_USAGE =
+    "Uso: idupi-phone shell info <storage|memory|battery|packages> | " +
+    "idupi-phone shell scan | " +
+    "idupi-phone shell trim-caches | " +
+    "idupi-phone shell force-stop <paquete> | " +
+    "idupi-phone shell background <paquete> <allow|ignore> | " +
+    "idupi-phone shell disable <paquete> | idupi-phone shell enable <paquete> | " +
+    "idupi-phone shell uninstall <paquete> | " +
+    "idupi-phone shell batch '<json>' | @archivo.json";
+
+const SHELL_BATCH_USAGE =
+    "Uso: idupi-phone shell batch '<json array>' | idupi-phone shell batch @archivo.json";
+
+/**
+ * Parses the typed shell surface (phone-shell T4). Only the contract's actions
+ * are accepted; a package is validated here so an obvious typo fails before the
+ * request leaves the PC, while the server and the helper re-validate anyway.
+ */
+function parseShellArgs(rest) {
+    const args = Array.isArray(rest) ? rest : [];
+    const [action, ...tail] = args;
+    const fail = () => ({ command: "help", error: SHELL_USAGE });
+    const shellPackage = (value, { allowProtected = false } = {}) => {
+        if (!isValidPackageName(value)) return null;
+        if (!allowProtected && isProtectedShellPackage(action, value)) return null;
+        return value;
+    };
+
+    if (action === "info") {
+        if (tail.length !== 1 || !SHELL_INFO_TOPICS.includes(tail[0])) return fail();
+        return { command: "shell", action: "info", topic: tail[0] };
+    }
+    if (action === "scan") {
+        if (tail.length !== 0) return fail();
+        return { command: "shell", action: "scan" };
+    }
+    if (action === "trim-caches") {
+        if (tail.length !== 0) return fail();
+        return { command: "shell", action: "trim-caches" };
+    }
+    if (
+        action === "force-stop" || action === "disable" ||
+        action === "enable" || action === "uninstall"
+    ) {
+        if (tail.length !== 1) return fail();
+        const packageName = shellPackage(tail[0], { allowProtected: action === "enable" });
+        if (packageName === null) return fail();
+        return { command: "shell", action, package: packageName };
+    }
+    if (action === "background") {
+        if (tail.length !== 2 || !SHELL_BACKGROUND_MODES.includes(tail[1])) return fail();
+        const packageName = shellPackage(tail[0]);
+        if (packageName === null) return fail();
+        return { command: "shell", action, package: packageName, mode: tail[1] };
+    }
+    if (action === "batch") {
+        // One plan: a JSON array argument, or `@path` to read it from a file.
+        if (tail.length !== 1) {
+            return { command: "help", error: SHELL_BATCH_USAGE };
+        }
+        const source = tail[0];
+        let steps;
+        try {
+            const text = source.startsWith("@")
+                ? readFileSync(resolvePath(process.cwd(), source.slice(1)), "utf8")
+                : source;
+            steps = JSON.parse(text);
+        } catch {
+            return { command: "help", error: SHELL_BATCH_USAGE };
+        }
+        if (!Array.isArray(steps)) {
+            return { command: "help", error: SHELL_BATCH_USAGE };
+        }
+        return { command: "shell", action: "batch", steps };
+    }
+    return fail();
+}
 
 const CALENDAR_USAGE =
     "Uso: idupi-phone calendar [agenda] [--days N] [--json] | " +
@@ -764,6 +863,11 @@ const APPROVAL_REASON_LABELS = {
     sensitive_app: "acción en una app sensible",
     risky_text: "texto riesgoso",
     phone_detected_risky_target: "texto riesgoso detectado en el teléfono",
+    // phone-shell T4/T4b: shell commands get their own labels instead of the
+    // generic "texto riesgoso" a tap-based delete used to produce.
+    shell_optimization: "optimización del teléfono",
+    shell_destructive: "acción destructiva de la shell",
+    shell_plan: "plan de optimización",
 };
 
 const DEFAULT_APPROVAL_MINUTES = 10;
@@ -1737,6 +1841,14 @@ export function actionFor(parsed) {
             const args = { screen: parsed.screen };
             if (parsed.package) args.package = parsed.package;
             return { type: "settings", args };
+        }
+        case "shell": {
+            const args = { action: parsed.action };
+            if (parsed.topic) args.topic = parsed.topic;
+            if (parsed.package) args.package = parsed.package;
+            if (parsed.mode) args.mode = parsed.mode;
+            if (Array.isArray(parsed.steps)) args.steps = parsed.steps;
+            return { type: "shell", args };
         }
         case "wait":
             return { type: "wait", args: { ms: parsed.ms } };

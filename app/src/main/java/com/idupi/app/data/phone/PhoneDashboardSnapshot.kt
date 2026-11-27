@@ -17,6 +17,8 @@ data class PhoneAppStorage(
     val appBytes: Long,
     val dataBytes: Long,
     val cacheBytes: Long,
+    /** Preinstalled by the system image; `shell scan` keeps only third-party apps. */
+    val systemApp: Boolean = false,
 ) {
     /** Whole footprint the "Apps que más ocupan" row shows. */
     val totalBytes: Long get() = appBytes + dataBytes + cacheBytes

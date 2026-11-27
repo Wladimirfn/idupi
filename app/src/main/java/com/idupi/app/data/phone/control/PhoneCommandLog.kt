@@ -1,5 +1,6 @@
 package com.idupi.app.data.phone.control
 
+import com.idupi.app.data.phone.shell.summary
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -63,6 +64,7 @@ object PhoneCommandSummaries {
         is PhoneCommand.Global -> "global"
         is PhoneCommand.OpenApp -> "open"
         is PhoneCommand.Settings -> "settings"
+        is PhoneCommand.Shell -> "shell"
         is PhoneCommand.Wait -> "wait"
         is PhoneCommand.ReportStatus -> "status"
     }
@@ -78,6 +80,7 @@ object PhoneCommandSummaries {
         is PhoneCommand.OpenApp -> command.app.take(MAX_TEXT_CHARS)
         is PhoneCommand.Settings -> command.packageName?.take(MAX_TEXT_CHARS)
             ?: command.screen.wire
+        is PhoneCommand.Shell -> command.operation.summary().take(MAX_TEXT_CHARS)
         is PhoneCommand.Wait -> "${command.millis} ms"
         is PhoneCommand.ReportStatus -> "estado"
     }

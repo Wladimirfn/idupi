@@ -46,6 +46,7 @@ import com.idupi.app.MainActivity
 import com.idupi.app.R
 import com.idupi.app.data.IduPiClientProvider
 import com.idupi.app.data.inbox.InboxNotifier
+import com.idupi.app.data.phone.approval.AppLabels
 import com.idupi.app.data.phone.approval.ApprovalNotifier
 import com.idupi.app.data.phone.approval.ApprovalVoiceFallback
 import com.idupi.app.data.phone.approval.ApprovalVoiceHost
@@ -55,6 +56,7 @@ import com.idupi.app.data.phone.approval.ApprovalVoiceRouting
 import com.idupi.app.data.phone.approval.OwnerTurnRegistry
 import com.idupi.app.data.phone.approval.PendingApprovalsStore
 import com.idupi.app.data.phone.approval.PhoneApprovals
+import com.idupi.app.data.phone.approval.ShellPlanText
 import com.idupi.app.data.settings.SettingsProvider
 import com.idupi.app.data.settings.SettingsRepository
 import com.idupi.app.domain.model.PhoneApproval
@@ -232,6 +234,8 @@ class PhoneBubbleOverlay(
 
     /** Which sentence the loop speaks: message (T23), cache or uninstall (T4). */
     private var voiceApprovalKind: ApprovalVoiceKind = ApprovalVoiceKind.MESSAGE
+
+    private val appLabels by lazy { AppLabels.resolver(service) }
 
     /**
      * The routed approval was seen in a pending poll. From then on, a poll
@@ -1631,18 +1635,35 @@ class PhoneBubbleOverlay(
         releaseFocusForVoiceApproval()
         // T23 names the messaging app from the command/window; T4/T6 name the
         // Settings app or the selected screen item from the title the owner is
-        // looking at (one read for both the app and the generic subject).
-        val screenTitle = if (kind == ApprovalVoiceKind.MESSAGE) null else resolveSettingsTitle()
+        // looking at (one read for both the app and the generic subject). A
+        // T4b plan names its own steps instead of the Settings screen.
+        val planText = if (kind == ApprovalVoiceKind.PLAN) {
+            ShellPlanText.actionLine(approval.command.args, appLabels)
+        } else {
+            null
+        }
+        val planDestructive = kind == ApprovalVoiceKind.PLAN &&
+            ApprovalVoiceRouting.planContainsDestructive(approval)
+        val screenTitle = if (kind == ApprovalVoiceKind.MESSAGE || kind == ApprovalVoiceKind.PLAN) {
+            null
+        } else {
+            resolveSettingsTitle()
+        }
         val appLabel = if (kind == ApprovalVoiceKind.MESSAGE) {
             resolveAppLabel(approval)
         } else {
             screenTitle
         }
-        val subject = if (kind == ApprovalVoiceKind.DESTRUCTIVE) screenTitle else null
-        val action = if (kind == ApprovalVoiceKind.DESTRUCTIVE) {
-            ApprovalVoiceRouting.destructiveAction(approval)
-        } else {
-            null
+        val subject = when (kind) {
+            ApprovalVoiceKind.DESTRUCTIVE -> screenTitle
+            ApprovalVoiceKind.PLAN -> planText
+            else -> null
+        }
+        val action = when (kind) {
+            ApprovalVoiceKind.DESTRUCTIVE -> ApprovalVoiceRouting.destructiveAction(approval)
+            ApprovalVoiceKind.PLAN ->
+                if (planDestructive) ApprovalVoiceCopy.PLAN_DESTRUCTIVE_FLAG else null
+            else -> null
         }
         dispatchConfirm(
             BubbleConfirmEvent.StartApproval(

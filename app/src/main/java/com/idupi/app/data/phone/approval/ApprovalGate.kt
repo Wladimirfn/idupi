@@ -1,6 +1,10 @@
 package com.idupi.app.data.phone.approval
 
 import com.idupi.app.data.phone.control.CommandApproval
+import com.idupi.app.data.phone.shell.SHELL_DESTRUCTIVE_CATEGORY
+import com.idupi.app.data.phone.shell.SHELL_OPTIMIZATION_CATEGORY
+import com.idupi.app.data.phone.shell.SHELL_PLAN_CATEGORY
+import com.idupi.app.data.phone.shell.ShellRisk
 import com.idupi.app.domain.model.PhoneApprovalReason
 import java.time.Instant
 
@@ -102,6 +106,73 @@ object ApprovalGate {
             )
         }
         return ApprovalGateResult.Allowed
+    }
+
+    /**
+     * Checks a typed `shell` command (phone-shell T4/T4b/T4c).
+     *
+     * The phone classifies the risk itself: info/scan/enable are free,
+     * trim-caches/force-stop/background are optimization, disable/uninstall are
+     * destructive, and a batch is a plan. Free runs.
+     *
+     * An optimization, destructive or plan approval auto-grants in an active
+     * owner turn when it carries the category the server attached to that
+     * auto-approval (T4c: the owner's own shell request is the consent). The
+     * grant is one use and needs a live turn and a future expiry. Outside an
+     * owner turn, a plan and a destructive step only accept the one-use local
+     * grant the owner gave on this phone; a plan is never auto-approved there.
+     */
+    suspend fun checkShell(
+        approval: CommandApproval?,
+        risk: ShellRisk,
+        ledger: ApprovalLedger,
+        nowMillis: Long,
+    ): ApprovalGateResult {
+        if (risk == ShellRisk.FREE) return ApprovalGateResult.Allowed
+        if (approval == null) return ApprovalGateResult.Refused(APPROVAL_REQUIRED)
+
+        acceptOwnerShellRequest(approval, risk, ledger, nowMillis)
+        ledger.consume(approval.approvalId, nowMillis)
+            ?: return ApprovalGateResult.Refused(NOT_GRANTED_ON_PHONE)
+        return ApprovalGateResult.Allowed
+    }
+
+    /**
+     * Materializes the grant an owner-turn shell approval carries. Fail closed
+     * on anything the server would not send for such a step: no turn id, a
+     * category that does not match the command's risk, an inactive turn, a
+     * missing or expired deadline, or a replayed approval id.
+     */
+    private suspend fun acceptOwnerShellRequest(
+        approval: CommandApproval,
+        risk: ShellRisk,
+        ledger: ApprovalLedger,
+        nowMillis: Long,
+    ) {
+        val category = when (risk) {
+            ShellRisk.OPTIMIZATION -> SHELL_OPTIMIZATION_CATEGORY
+            ShellRisk.DESTRUCTIVE -> SHELL_DESTRUCTIVE_CATEGORY
+            ShellRisk.PLAN -> SHELL_PLAN_CATEGORY
+            ShellRisk.FREE -> return
+        }
+        if (approval.category != category) return
+        val turnId = approval.ownerTurnId?.trim().orEmpty()
+        if (turnId.isEmpty()) return
+        if (!OwnerTurnRegistry.isActive(turnId)) return
+        val expiresAt = runCatching { Instant.parse(approval.expiresAt.orEmpty()) }
+            .getOrNull() ?: return
+        val expiresAtMillis = expiresAt.toEpochMilli()
+        if (expiresAtMillis <= nowMillis) return
+        if (!OwnerTurnRegistry.claimOwnerApproval(approval.approvalId)) return
+        ledger.record(
+            ApprovalGrant(
+                approvalId = approval.approvalId,
+                reason = approval.reason,
+                target = null,
+                expiresAtMillis = expiresAtMillis,
+                grantedAtMillis = nowMillis,
+            )
+        )
     }
 
     /**

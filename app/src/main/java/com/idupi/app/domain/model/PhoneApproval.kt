@@ -71,6 +71,11 @@ object PhoneApprovalReason {
     const val TYPE_SUBMIT = "type_submit"
     const val SENSITIVE_APP = "sensitive_app"
     const val PHONE_DETECTED = "phone_detected_risky_target"
+
+    /** Shell approval reasons emitted by the server (phone-shell T4b). */
+    const val SHELL_OPTIMIZATION = "shell_optimization"
+    const val SHELL_DESTRUCTIVE = "shell_destructive"
+    const val SHELL_PLAN = "shell_plan"
 }
 
 /**

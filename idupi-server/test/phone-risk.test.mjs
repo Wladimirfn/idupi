@@ -11,6 +11,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+    RISK_KINDS,
+    RISK_REASONS,
     classifyCommand,
     isDataWipeText,
     isMessagingPackage,
@@ -361,4 +363,102 @@ test("a sensitive messaging app is a message step, a bank app is money", () => {
         { foregroundPackage: "cl.bancoestado.app" },
     );
     assert.equal(banking.category, "money");
+});
+
+// --- typed shell command (phone-shell, T4) --------------------------------
+
+test("shell info, scan and enable are free: reading and undoing change nothing", () => {
+    for (const topic of ["storage", "memory", "battery", "packages"]) {
+        const verdict = classifyCommand({ type: "shell", args: { action: "info", topic } });
+        assert.equal(verdict.gated, false, topic);
+        assert.equal(verdict.reason, "free");
+    }
+    const scan = classifyCommand({ type: "shell", args: { action: "scan" } });
+    assert.equal(scan.gated, false);
+    assert.equal(scan.reason, "free");
+    const enable = classifyCommand({
+        type: "shell",
+        args: { action: "enable", package: "com.facebook.katana" },
+    });
+    assert.equal(enable.gated, false);
+    assert.equal(enable.reason, "free");
+});
+
+test("shell optimization steps are gated as an optimization, not as a message", () => {
+    const trims = classifyCommand({ type: "shell", args: { action: "trim-caches" } });
+    assert.equal(trims.gated, true);
+    assert.equal(trims.category, "optimization");
+    assert.equal(trims.reason, RISK_REASONS.shellOptimization);
+
+    const forceStop = classifyCommand({
+        type: "shell",
+        args: { action: "force-stop", package: "com.whatsapp" },
+    });
+    assert.equal(forceStop.gated, true);
+    assert.equal(forceStop.category, "optimization");
+    assert.equal(forceStop.reason, "shell_optimization");
+    assert.equal(forceStop.target, "com.whatsapp");
+
+    const background = classifyCommand({
+        type: "shell",
+        args: { action: "background", package: "com.whatsapp", mode: "ignore" },
+    });
+    assert.equal(background.gated, true);
+    assert.equal(background.category, "optimization");
+    assert.equal(background.reason, "shell_optimization");
+    assert.equal(background.target, "com.whatsapp");
+});
+
+test("shell disable and uninstall are destructive with their own reason", () => {
+    for (const action of ["disable", "uninstall"]) {
+        const verdict = classifyCommand({
+            type: "shell",
+            args: { action, package: "com.facebook.katana" },
+        });
+        assert.equal(verdict.gated, true, action);
+        assert.equal(verdict.category, "destructive", action);
+        assert.equal(verdict.reason, "shell_destructive", action);
+        assert.equal(verdict.target, "com.facebook.katana", action);
+    }
+});
+
+test("shell batch is always one gated plan and never a message/optimization", () => {
+    const verdict = classifyCommand({
+        type: "shell",
+        args: {
+            action: "batch",
+            steps: [{ action: "trim-caches" }, { action: "background", package: "com.x", mode: "ignore" }],
+        },
+    });
+    assert.equal(verdict.gated, true);
+    assert.equal(verdict.category, "plan");
+    assert.equal(verdict.reason, "shell_plan");
+    assert.equal(verdict.riskKind, undefined, "no destructive step, no voice kind");
+    // Only `message` and `optimization` are auto-approved in an owner turn.
+    assert.notEqual(verdict.category, "optimization");
+    assert.notEqual(verdict.category, "message");
+});
+
+test("a batch with uninstall or disable carries the destructive risk kind", () => {
+    for (const action of ["uninstall", "disable"]) {
+        const verdict = classifyCommand({
+            type: "shell",
+            args: {
+                action: "batch",
+                steps: [
+                    { action: "trim-caches" },
+                    { action, package: "com.facebook.katana" },
+                ],
+            },
+        });
+        assert.equal(verdict.category, "plan");
+        assert.equal(verdict.reason, "shell_plan");
+        assert.equal(verdict.riskKind, RISK_KINDS.batchDestructive, action);
+    }
+});
+
+test("an unknown shell action never invents a gate", () => {
+    const verdict = classifyCommand({ type: "shell", args: { action: "exec" } });
+    assert.equal(verdict.gated, false);
+    assert.equal(verdict.reason, "free");
 });

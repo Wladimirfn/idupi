@@ -1,6 +1,12 @@
 package com.idupi.app.data.phone.control
 
+import com.idupi.app.data.phone.shell.PackageNames
+import com.idupi.app.data.phone.shell.ShellCommandRules
+import com.idupi.app.data.phone.shell.ShellMode
+import com.idupi.app.data.phone.shell.ShellOperation
+import com.idupi.app.data.phone.shell.ShellTopic
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
@@ -139,6 +145,7 @@ object CommandParser {
                     PhoneCommand.Settings(id, expiresAt, screen, packageName)
                 )
             }
+            "shell" -> shellCommand(id, expiresAt, args, approval)
             "wait" -> {
                 unknownArg(args, setOf("ms"))?.let { return invalid(id, type, it) }
                 val millis = args.int("ms")?.takeIf { it in 0..MAX_WAIT_MS }
@@ -149,6 +156,186 @@ object CommandParser {
             else -> invalid(id, type, "tipo desconocido")
         }
     }
+
+    /**
+     * Typed `shell` command (phone-shell T4/T4b contract).
+     *
+     * Single actions take exactly their arguments. `scan` runs in the app and
+     * takes none. `batch` takes 1-30 steps, each one a single non-free action
+     * with its normal arguments; info/scan/batch inside a plan and duplicate
+     * steps are refused. Unknown keys/actions and irrelevant arguments are
+     * rejected, never guessed.
+     */
+    private fun shellCommand(
+        id: String,
+        expiresAt: String?,
+        args: JsonObject,
+        approval: CommandApproval?,
+    ): CommandParseResult {
+        val action = args.string("action")?.takeIf { it.isNotBlank() }
+            ?: return invalid(id, "shell", "falta la acción")
+        if (action == "batch") return batchCommand(id, expiresAt, args, approval)
+        if (action == "scan") {
+            unknownArg(args, setOf("action") + APPROVAL_ARG_KEYS)
+                ?.let { return invalid(id, "shell", it) }
+            return CommandParseResult.Valid(
+                PhoneCommand.Shell(id, expiresAt, ShellOperation.Scan, approval)
+            )
+        }
+
+        unknownArg(args, SHELL_ARG_KEYS)?.let { return invalid(id, "shell", it) }
+        val packageName = args.string("package")?.takeIf { it.isNotBlank() }
+        val mode = args.string("mode")?.takeIf { it.isNotBlank() }
+        val topic = args.string("topic")?.takeIf { it.isNotBlank() }
+        return when (val parsed = parseShellStep(action, packageName, mode, topic)) {
+            is ShellStepParse.Ok -> CommandParseResult.Valid(
+                PhoneCommand.Shell(id, expiresAt, parsed.operation, approval)
+            )
+            is ShellStepParse.Error -> invalid(id, "shell", parsed.message)
+        }
+    }
+
+    private fun batchCommand(
+        id: String,
+        expiresAt: String?,
+        args: JsonObject,
+        approval: CommandApproval?,
+    ): CommandParseResult {
+        unknownArg(args, setOf("action", "steps") + APPROVAL_ARG_KEYS)
+            ?.let { return invalid(id, "shell", it) }
+        val rawSteps = args["steps"] as? JsonArray
+            ?: return invalid(id, "shell", "steps inválidos")
+        if (rawSteps.size !in 1..MAX_BATCH_STEPS) {
+            return invalid(
+                id,
+                "shell",
+                "el plan debe tener entre 1 y $MAX_BATCH_STEPS pasos",
+            )
+        }
+        val steps = mutableListOf<ShellOperation>()
+        val seen = mutableSetOf<String>()
+        rawSteps.forEachIndexed { index, element ->
+            val step = element as? JsonObject
+                ?: return invalid(id, "shell", "paso ${index + 1} inválido")
+            val stepAction = step.string("action")?.takeIf { it.isNotBlank() }
+                ?: return invalid(id, "shell", "paso ${index + 1}: falta la acción")
+            if (stepAction in NON_BATCH_ACTIONS) {
+                return invalid(
+                    id,
+                    "shell",
+                    "paso ${index + 1}: acción no permitida en un plan",
+                )
+            }
+            val allowed = when (stepAction) {
+                "trim-caches" -> setOf("action")
+                "force-stop", "disable", "enable", "uninstall" ->
+                    setOf("action", "package")
+                "background" -> setOf("action", "package", "mode")
+                else -> return invalid(id, "shell", "paso ${index + 1}: acción inválida")
+            }
+            unknownArg(step, allowed)
+                ?.let { return invalid(id, "shell", "paso ${index + 1}: $it") }
+            when (
+                val parsed = parseShellStep(
+                    action = stepAction,
+                    packageName = step.string("package")?.takeIf { it.isNotBlank() },
+                    mode = step.string("mode")?.takeIf { it.isNotBlank() },
+                    topic = null,
+                )
+            ) {
+                is ShellStepParse.Error -> return invalid(
+                    id,
+                    "shell",
+                    "paso ${index + 1}: ${parsed.message}",
+                )
+                is ShellStepParse.Ok -> {
+                    if (!seen.add(parsed.operation.duplicateKey())) {
+                        return invalid(id, "shell", "paso ${index + 1}: paso repetido")
+                    }
+                    steps += parsed.operation
+                }
+            }
+        }
+        return CommandParseResult.Valid(
+            PhoneCommand.Shell(id, expiresAt, ShellOperation.Batch(steps), approval)
+        )
+    }
+
+    private fun parseShellStep(
+        action: String,
+        packageName: String?,
+        mode: String?,
+        topic: String?,
+    ): ShellStepParse {
+        return when (action) {
+            "info" -> {
+                if (packageName != null || mode != null) {
+                    return ShellStepParse.Error("argumento no permitido")
+                }
+                val requestedTopic = ShellTopic.fromWire(topic)
+                    ?: return ShellStepParse.Error("tema inválido")
+                ShellStepParse.Ok(ShellOperation.Info(requestedTopic))
+            }
+            "trim-caches" -> {
+                if (packageName != null || mode != null || topic != null) {
+                    ShellStepParse.Error("argumento no permitido")
+                } else {
+                    ShellStepParse.Ok(ShellOperation.TrimCaches)
+                }
+            }
+            "force-stop", "disable", "enable", "uninstall" -> {
+                if (mode != null || topic != null) {
+                    return ShellStepParse.Error("argumento no permitido")
+                }
+                val pkg = packageName ?: return ShellStepParse.Error("falta el paquete")
+                if (action != "enable" && ShellCommandRules.isProtected(pkg)) {
+                    return ShellStepParse.Error("paquete protegido")
+                }
+                if (!isShellPackage(pkg)) return ShellStepParse.Error("paquete inválido")
+                ShellStepParse.Ok(
+                    when (action) {
+                        "force-stop" -> ShellOperation.ForceStop(pkg)
+                        "disable" -> ShellOperation.Disable(pkg)
+                        "uninstall" -> ShellOperation.Uninstall(pkg)
+                        else -> ShellOperation.Enable(pkg)
+                    }
+                )
+            }
+            "background" -> {
+                if (topic != null) return ShellStepParse.Error("argumento no permitido")
+                val pkg = packageName ?: return ShellStepParse.Error("falta el paquete")
+                if (ShellCommandRules.isProtected(pkg)) {
+                    return ShellStepParse.Error("paquete protegido")
+                }
+                if (!isShellPackage(pkg)) return ShellStepParse.Error("paquete inválido")
+                val requestedMode = ShellMode.fromWire(mode)
+                    ?: return ShellStepParse.Error("modo inválido")
+                ShellStepParse.Ok(ShellOperation.Background(pkg, requestedMode))
+            }
+            else -> ShellStepParse.Error("acción inválida")
+        }
+    }
+
+    /** Identity used to refuse a duplicated step inside one plan. */
+    private fun ShellOperation.duplicateKey(): String = when (this) {
+        is ShellOperation.TrimCaches -> "trim-caches"
+        is ShellOperation.ForceStop -> "force-stop|$packageName"
+        is ShellOperation.Background -> "background|$packageName|${mode.wire}"
+        is ShellOperation.Disable -> "disable|$packageName"
+        is ShellOperation.Enable -> "enable|$packageName"
+        is ShellOperation.Uninstall -> "uninstall|$packageName"
+        is ShellOperation.Info -> "info|${topic.wire}"
+        is ShellOperation.Scan -> "scan"
+        is ShellOperation.Batch -> "batch"
+    }
+
+    private sealed interface ShellStepParse {
+        data class Ok(val operation: ShellOperation) : ShellStepParse
+        data class Error(val message: String) : ShellStepParse
+    }
+
+    private fun isShellPackage(value: String): Boolean =
+        value.length <= ShellCommandRules.MAX_PACKAGE_CHARS && PackageNames.isValid(value)
 
     private fun target(
         type: String,
@@ -258,4 +445,10 @@ object CommandParser {
         "approvalCategory",
         "approvalExpiresAt",
     )
+
+    /** `shell` keys plus the common approval hints; each action rejects the rest. */
+    private val SHELL_ARG_KEYS = setOf("action", "package", "mode", "topic") + APPROVAL_ARG_KEYS
+
+    private const val MAX_BATCH_STEPS = 30
+    private val NON_BATCH_ACTIONS = setOf("info", "scan", "batch")
 }

@@ -17,6 +17,18 @@ import com.idupi.app.data.phone.PhoneStatusReporting
 import com.idupi.app.data.phone.approval.ApprovalGate
 import com.idupi.app.data.phone.approval.ApprovalGateResult
 import com.idupi.app.data.phone.approval.ApprovalLedger
+import com.idupi.app.data.phone.shell.BatchStepOutcome
+import com.idupi.app.data.phone.shell.BridgeResult
+import com.idupi.app.data.phone.shell.BridgeUnavailableException
+import com.idupi.app.data.phone.shell.PhoneBatchSummary
+import com.idupi.app.data.phone.shell.PhoneScanCollector
+import com.idupi.app.data.phone.shell.ShellBridgeAvailability
+import com.idupi.app.data.phone.shell.ShellBridgeClient
+import com.idupi.app.data.phone.shell.ShellBridgeRecovery
+import com.idupi.app.data.phone.shell.ShellBridgeRecoveryPolicy
+import com.idupi.app.data.phone.shell.ShellCommandRules
+import com.idupi.app.data.phone.shell.ShellOperation
+import com.idupi.app.data.phone.shell.ShellRisk
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -38,6 +50,8 @@ class PhoneCommandExecutor(
     private val ledger: ApprovalLedger,
     private val nowMillis: () -> Long = System::currentTimeMillis,
     private val reportStatusNow: suspend () -> Boolean = { PhoneStatusReporting.reportNow() },
+    private val shellBridge: ShellBridgeClient = ShellBridgeClient.get(service),
+    private val scanCollector: PhoneScanCollector = PhoneScanCollector(service),
 ) {
 
     suspend fun execute(command: PhoneCommand): CommandOutcome = try {
@@ -51,6 +65,7 @@ class PhoneCommandExecutor(
             is PhoneCommand.Global -> global(command.action)
             is PhoneCommand.OpenApp -> open(command.app)
             is PhoneCommand.Settings -> settings(command.screen, command.packageName)
+            is PhoneCommand.Shell -> shell(command)
             is PhoneCommand.Wait -> {
                 delay(command.millis.toLong())
                 CommandOutcome.success()
@@ -427,6 +442,122 @@ class PhoneCommandExecutor(
         }
     }
 
+    // --- shell (phone-shell, T4) --------------------------------------------
+
+    /**
+     * Runs one typed shell operation through the helper (phone-shell T4).
+     *
+     * The phone classifies the risk and applies its own gate before the helper
+     * sees the request; the helper re-validates the allowlist at the execution
+     * boundary. The helper's text is the command result the PC displays.
+     */
+    private suspend fun shell(command: PhoneCommand.Shell): CommandOutcome {
+        val risk = ShellCommandRules.riskOf(command.operation)
+        if (risk != ShellRisk.FREE) {
+            when (val gate = ApprovalGate.checkShell(command.approval, risk, ledger, nowMillis())) {
+                is ApprovalGateResult.Refused -> return CommandOutcome.failure(gate.error)
+                ApprovalGateResult.Allowed -> Unit
+            }
+        }
+
+        return when (val operation = command.operation) {
+            is ShellOperation.Scan -> scan()
+            is ShellOperation.Batch -> batch(operation)
+            else -> executeShellOperation(operation)
+        }
+    }
+
+    /**
+     * `shell scan` runs entirely in the app (phone-shell T4b): sizes, usage and
+     * candidates; the text carries the JSON block the agent reads.
+     */
+    private suspend fun scan(): CommandOutcome = scanCollector.scan().fold(
+        onSuccess = { text ->
+            CommandOutcome.success(buildJsonObject { put("text", text) })
+        },
+        onFailure = { error ->
+            CommandOutcome.failure(error.message ?: "no se pudo analizar el teléfono")
+        },
+    )
+
+    /**
+     * Runs a plan in order through the helper, continuing past a failed step.
+     * Each step is a normal `shell` call, so the helper re-validates it at the
+     * execution boundary. The command result carries one Spanish summary plus
+     * the per-step JSON.
+     */
+    private suspend fun batch(operation: ShellOperation.Batch): CommandOutcome {
+        val outcomes = operation.steps.map { step ->
+            val result = bridgeExecute(step)
+            val bridge = result.getOrNull()
+            BatchStepOutcome(
+                step = step,
+                ok = bridge?.ok == true,
+                text = bridge?.text
+                    ?: result.exceptionOrNull()?.message?.takeIf { it.isNotBlank() }
+                    ?: SHELL_UNAVAILABLE,
+            )
+        }
+        return CommandOutcome.success(buildJsonObject {
+            put("text", PhoneBatchSummary.render(outcomes))
+            put("steps", PhoneBatchSummary.json(outcomes))
+        })
+    }
+
+    /**
+     * Runs one helper call and, when the bridge is unavailable, ONE recovery
+     * and ONE retry (phone-shell T7).
+     *
+     * The retry is deliberately bounded: a command never starts a second
+     * recovery, even when the retried call also finds the bridge down. An
+     * off-Wi-Fi skip surfaces the owner-facing "vuelve a tu Wi-Fi de casa"
+     * message instead of a bare "puente no disponible".
+     */
+    private suspend fun bridgeExecute(operation: ShellOperation): Result<BridgeResult> {
+        val first = shellBridge.execute(operation)
+        if (!ShellBridgeAvailability.isUnavailable(first)) return first
+        val recovery = ShellBridgeRecovery.recover(service, trigger = "command")
+        return when (
+            val decision = ShellBridgeRecoveryPolicy.retryDecision(recovery, alreadyRetried = false)
+        ) {
+            ShellBridgeRecoveryPolicy.RetryDecision.RetryOnce -> {
+                val retried = shellBridge.execute(operation)
+                if (ShellBridgeAvailability.isUnavailable(retried)) {
+                    Result.failure(
+                        BridgeUnavailableException(ShellBridgeRecoveryPolicy.RETRY_FAILED_MESSAGE)
+                    )
+                } else {
+                    retried
+                }
+            }
+            is ShellBridgeRecoveryPolicy.RetryDecision.Fail ->
+                Result.failure(BridgeUnavailableException(decision.message))
+        }
+    }
+
+    private suspend fun executeShellOperation(operation: ShellOperation): CommandOutcome {
+        val result = bridgeExecute(operation)
+        return result.fold(
+            onSuccess = { bridge ->
+                if (!bridge.ok) {
+                    CommandOutcome.failure(bridge.text.ifBlank { SHELL_FAILED })
+                } else {
+                    CommandOutcome.success(buildJsonObject {
+                        put("text", bridge.text)
+                        bridge.path?.let { put("path", it) }
+                        bridge.freeBefore?.let { put("freeBefore", it) }
+                        bridge.freeAfter?.let { put("freeAfter", it) }
+                    })
+                }
+            },
+            onFailure = { error ->
+                CommandOutcome.failure(
+                    error.message?.takeIf { it.isNotBlank() } ?: SHELL_UNAVAILABLE
+                )
+            },
+        )
+    }
+
     // --- settings (phone-dashboard, T7) -------------------------------------
 
     /**
@@ -559,6 +690,8 @@ class PhoneCommandExecutor(
         private const val INTERNAL_ERROR = "error interno"
         private const val PACKAGE_INVALID = "paquete inválido"
         private const val SETTINGS_UNAVAILABLE = "no se pudo abrir el ajuste"
+        private const val SHELL_UNAVAILABLE = "puente no disponible"
+        private const val SHELL_FAILED = "no se pudo ejecutar"
 
         /** Samsung Device Care dashboard (phone-dashboard T7, verified on the owner's phone). */
         private const val SAMSUNG_DEVICE_CARE_ACTION = "com.samsung.android.sm.ACTION_DASHBOARD"

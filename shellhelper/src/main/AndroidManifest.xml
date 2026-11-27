@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Only IDUPI (same signing key) may call the bridge provider. The
+         provider repeats the check in code; this is the platform-enforced
+         first gate. -->
+    <permission
+        android:name="com.idupi.shell.permission.BRIDGE"
+        android:protectionLevel="signature" />
+
+    <!-- Package visibility (Android 11+): the adopted shell identity covers
+         permission checks, but the system still filters packages by this
+         app's uid, so `pm enable`/`am force-stop`/`pm list` from the helper
+         saw only itself ("Unknown package"). A shell helper must see every
+         package. -->
+    <uses-permission
+        android:name="android.permission.QUERY_ALL_PACKAGES"
+        xmlns:tools="http://schemas.android.com/tools"
+        tools:ignore="QueryAllPackagesPermission" />
+
+    <!-- In-process uninstall (phone-shell T4c): PackageInstaller requires the
+         caller to hold the normal request-delete permission; the adopted shell
+         identity supplies DELETE_PACKAGES for the actual removal. -->
+    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+
+    <!-- IDUPI shell helper (phone-shell). No launcher activity: the owner never
+         opens it. It exists so the shell bridge runs in its own package:
+         `am instrument` force-stops the whole target package, and targeting
+         com.idupi.app killed IDUPI's accessibility service. -->
+    <application
+        android:allowBackup="false"
+        android:label="IDUPI ayudante">
+
+        <!-- Typed command surface (phone-shell T4). Only com.idupi.app with the
+             same signature reaches it; the provider re-validates every request
+             before running a fixed argv. A process started this way without
+             the instrumentation reports inactive and runs nothing. -->
+        <provider
+            android:name=".BridgeProvider"
+            android:authorities="com.idupi.shell.bridge"
+            android:exported="true"
+            android:permission="com.idupi.shell.permission.BRIDGE" />
+
+    </application>
+
+    <!-- Only adb (uid 2000) can start an instrumentation; it runs in this
+         package's own process and adopts the shell permission identity. -->
+    <instrumentation
+        android:name=".ShellBridgeInstrumentation"
+        android:label="IDUPI shell bridge"
+        android:targetPackage="com.idupi.shell" />
+
+</manifest>

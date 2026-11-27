@@ -6,6 +6,9 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
     actionFor,
@@ -151,6 +154,176 @@ test("parseArgs handles the settings screens (T7)", () => {
     assert.equal(parseArgs(["settings", "app", "com.whatsapp", "extra"]).command, "help");
     assert.equal(parseArgs(["settings", "app", "whatsapp"]).command, "help");
     assert.equal(parseArgs(["settings", "app", "com..whatsapp"]).command, "help");
+});
+
+test("parseArgs handles the typed shell surface (T4)", () => {
+    for (const topic of ["storage", "memory", "battery", "packages"]) {
+        assert.deepEqual(parseArgs(["shell", "info", topic]), {
+            command: "shell",
+            action: "info",
+            topic,
+        });
+    }
+    assert.deepEqual(parseArgs(["shell", "trim-caches"]), {
+        command: "shell",
+        action: "trim-caches",
+    });
+    assert.deepEqual(parseArgs(["shell", "force-stop", "com.whatsapp"]), {
+        command: "shell",
+        action: "force-stop",
+        package: "com.whatsapp",
+    });
+    assert.deepEqual(parseArgs(["shell", "background", "com.whatsapp", "ignore"]), {
+        command: "shell",
+        action: "background",
+        package: "com.whatsapp",
+        mode: "ignore",
+    });
+    assert.deepEqual(parseArgs(["shell", "background", "com.whatsapp", "allow"]), {
+        command: "shell",
+        action: "background",
+        package: "com.whatsapp",
+        mode: "allow",
+    });
+    assert.deepEqual(parseArgs(["shell", "disable", "com.facebook.katana"]), {
+        command: "shell",
+        action: "disable",
+        package: "com.facebook.katana",
+    });
+    assert.deepEqual(parseArgs(["shell", "enable", "com.facebook.katana"]), {
+        command: "shell",
+        action: "enable",
+        package: "com.facebook.katana",
+    });
+
+    // The wire shape the agent sends for each parsed action.
+    assert.deepEqual(actionFor(parseArgs(["shell", "info", "memory"])), {
+        type: "shell",
+        args: { action: "info", topic: "memory" },
+    });
+    assert.deepEqual(actionFor(parseArgs(["shell", "trim-caches"])), {
+        type: "shell",
+        args: { action: "trim-caches" },
+    });
+    assert.deepEqual(actionFor(parseArgs(["shell", "force-stop", "com.whatsapp"])), {
+        type: "shell",
+        args: { action: "force-stop", package: "com.whatsapp" },
+    });
+    assert.deepEqual(actionFor(parseArgs(["shell", "background", "com.whatsapp", "ignore"])), {
+        type: "shell",
+        args: { action: "background", package: "com.whatsapp", mode: "ignore" },
+    });
+    assert.deepEqual(actionFor(parseArgs(["shell", "disable", "com.facebook.katana"])), {
+        type: "shell",
+        args: { action: "disable", package: "com.facebook.katana" },
+    });
+    assert.deepEqual(actionFor(parseArgs(["shell", "enable", "com.facebook.katana"])), {
+        type: "shell",
+        args: { action: "enable", package: "com.facebook.katana" },
+    });
+
+    // Closed surface: no action outside the contract, no missing or extra arg.
+    for (const argv of [
+        ["shell"],
+        ["shell", "exec"],
+        ["shell", "exec", "rm -rf /"],
+        ["shell", "info"],
+        ["shell", "info", "wifi"],
+        ["shell", "info", "storage", "extra"],
+        ["shell", "trim-caches", "now"],
+        ["shell", "force-stop"],
+        ["shell", "force-stop", "whatsapp"],
+        ["shell", "force-stop", "com..whatsapp"],
+        ["shell", "force-stop", "com.whatsapp", "extra"],
+        ["shell", "background"],
+        ["shell", "background", "com.whatsapp"],
+        ["shell", "background", "com.whatsapp", "stop"],
+        ["shell", "disable"],
+        ["shell", "enable", "com.whatsapp", "extra"],
+    ]) {
+        assert.equal(parseArgs(argv).command, "help", JSON.stringify(argv));
+    }
+
+    // The protected packages are refused here too, except for the undo. The
+    // bare `android` id never passes the package regex, so only dotted ids are
+    // reachable.
+    for (const packageName of ["com.idupi.app", "com.android.systemui"]) {
+        assert.equal(parseArgs(["shell", "force-stop", packageName]).command, "help");
+        assert.equal(parseArgs(["shell", "disable", packageName]).command, "help");
+        assert.equal(
+            parseArgs(["shell", "background", packageName, "ignore"]).command,
+            "help",
+        );
+        assert.equal(parseArgs(["shell", "enable", packageName]).command, "shell");
+    }
+    assert.equal(parseArgs(["shell", "force-stop", "android"]).command, "help");
+});
+
+test("parseArgs handles shell scan, uninstall and the batch plan (T4b)", () => {
+    assert.deepEqual(parseArgs(["shell", "scan"]), {
+        command: "shell",
+        action: "scan",
+    });
+    assert.deepEqual(parseArgs(["shell", "uninstall", "com.facebook.katana"]), {
+        command: "shell",
+        action: "uninstall",
+        package: "com.facebook.katana",
+    });
+
+    const steps = [
+        { action: "trim-caches" },
+        { action: "disable", package: "com.facebook.katana" },
+    ];
+    assert.deepEqual(parseArgs(["shell", "batch", JSON.stringify(steps)]), {
+        command: "shell",
+        action: "batch",
+        steps,
+    });
+    assert.deepEqual(actionFor(parseArgs(["shell", "batch", JSON.stringify(steps)])), {
+        type: "shell",
+        args: { action: "batch", steps },
+    });
+    assert.deepEqual(actionFor(parseArgs(["shell", "scan"])), {
+        type: "shell",
+        args: { action: "scan" },
+    });
+    assert.deepEqual(actionFor(parseArgs(["shell", "uninstall", "com.facebook.katana"])), {
+        type: "shell",
+        args: { action: "uninstall", package: "com.facebook.katana" },
+    });
+
+    // The protected list also covers uninstall, and the batch is one argument.
+    for (const argv of [
+        ["shell", "scan", "extra"],
+        ["shell", "uninstall"],
+        ["shell", "uninstall", "com.idupi.app"],
+        ["shell", "uninstall", "com.android.systemui"],
+        ["shell", "uninstall", "whatsapp"],
+        ["shell", "batch"],
+        ["shell", "batch", "not json"],
+        ["shell", "batch", "{}"],
+        ["shell", "batch", JSON.stringify(steps), "extra"],
+    ]) {
+        assert.equal(parseArgs(argv).command, "help", JSON.stringify(argv));
+        assert.ok(parseArgs(argv).error, JSON.stringify(argv));
+    }
+});
+
+test("shell batch reads the JSON plan from a file with @path", async (t) => {
+    const dir = await mkdtemp(join(tmpdir(), "idupi-phone-batch-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const file = join(dir, "plan.json");
+    const steps = [
+        { action: "trim-caches" },
+        { action: "uninstall", package: "com.facebook.katana" },
+    ];
+    await writeFile(file, JSON.stringify(steps), "utf8");
+
+    assert.deepEqual(parseArgs(["shell", "batch", `@${file}`]), {
+        command: "shell",
+        action: "batch",
+        steps,
+    });
 });
 
 test("parseArgs covers log, help and unknown input", () => {
@@ -846,6 +1019,41 @@ test("formatApprovalWait explains the reason and the remaining minutes", () => {
         ),
         /vence en 1 min/,
     );
+});
+
+test("shell approvals print their own Spanish reason labels", () => {
+    const nowMs = Date.parse("2026-11-24T12:00:00.000Z");
+    assert.match(
+        formatApprovalWait({ approvalReason: "shell_optimization" }, nowMs),
+        /optimización del teléfono/,
+    );
+    assert.match(
+        formatApprovalWait({ approvalReason: "shell_destructive" }, nowMs),
+        /acción destructiva de la shell/,
+    );
+    assert.match(
+        formatApprovalWait({ approvalReason: "shell_plan" }, nowMs),
+        /plan de optimización/,
+    );
+
+    const list = formatApprovals(
+        {
+            approvals: [{
+                id: "apr-shellplan123",
+                state: "pending",
+                command: {
+                    type: "shell",
+                    args: { action: "batch", steps: [{ action: "trim-caches" }] },
+                },
+                reason: "shell_plan",
+                target: null,
+                expiresAt: "2026-11-24T12:10:00.000Z",
+            }],
+        },
+        nowMs,
+    );
+    assert.ok(list.includes("plan de optimización"));
+    assert.ok(list.includes("vence en 10 min"));
 });
 
 test("formatApprovals lists pending approvals with their target and reason", () => {
