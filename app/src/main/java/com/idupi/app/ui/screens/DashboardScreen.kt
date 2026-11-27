@@ -1,5 +1,6 @@
 package com.idupi.app.ui.screens
 
+import android.content.Intent
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -15,6 +16,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -24,24 +27,33 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import com.idupi.app.data.phone.usageAccessSettingsIntent
 import com.idupi.app.domain.model.CpuMetrics
 import com.idupi.app.domain.model.DiskMetrics
 import com.idupi.app.domain.model.DiskUsageLevel
 import com.idupi.app.domain.model.GpuMetrics
 import com.idupi.app.domain.model.MemoryMetrics
 import com.idupi.app.domain.model.PowerSummary
+import com.idupi.app.domain.model.ServerStatus
 import com.idupi.app.domain.model.SystemMetrics
 import com.idupi.app.domain.model.diskUsageLevel
 import com.idupi.app.domain.model.formatMemoryUsageBytes
@@ -64,6 +76,8 @@ import com.idupi.app.ui.theme.TextPrimary
 import com.idupi.app.ui.theme.TextSecondary
 import com.idupi.app.viewmodel.DashboardViewModel
 import com.idupi.app.viewmodel.MainViewModel
+import com.idupi.app.viewmodel.PhoneDashboardViewModel
+import kotlinx.coroutines.launch
 
 private const val USAGE_WARN_PERCENT = 60.0
 private const val USAGE_HOT_PERCENT = 80.0
@@ -71,29 +85,48 @@ private const val TEMPERATURE_WARN_C = 60.0
 private const val TEMPERATURE_HOT_C = 80.0
 
 /**
- * Dashboard: how the PC is doing right now.
+ * Dashboard: the PC and the phone side by side.
  *
- * Polling follows the screen lifecycle (started on composition/ON_START,
- * stopped on dispose/ON_STOP) so a backgrounded app does not keep the server
- * sampling nvidia-smi every two seconds. Missing sensors render "— no
- * disponible"; the server's hints explain how to enable them.
+ * Two chips at the top and a sideways pager (owner's choice). Page 0 keeps the
+ * live PC metrics exactly as before; page 1 reads this phone locally, never
+ * from the PC. Each page polls only while it is the visible one and the screen
+ * is started, so looking at the phone never keeps nvidia-smi sampling on the
+ * PC, and a backgrounded app stops both loops.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun DashboardScreen(
     mainViewModel: MainViewModel,
     viewModel: DashboardViewModel,
+    phoneViewModel: PhoneDashboardViewModel,
     onMenuClick: () -> Unit
 ) {
     val status by mainViewModel.status.collectAsState()
     val uiState by viewModel.state.collectAsState()
-    val scrollState = rememberScrollState()
+    val phoneState by phoneViewModel.state.collectAsState()
     val lifecycleOwner = LocalLifecycleOwner.current
+    val context = LocalContext.current
 
-    // Poll only while this screen is visible. The screen is composed while the
-    // activity is already RESUMED, so ON_START will not fire again: start here
-    // and stop both on ON_STOP (app backgrounded) and on dispose (navigated).
-    DisposableEffect(lifecycleOwner) {
+    // The selected page survives rotation and process recreation; the pager
+    // keeps its own state too, and this one is what the chips and the polling
+    // effects read.
+    var selectedIndex by rememberSaveable { mutableIntStateOf(DashboardPage.PC.ordinal) }
+    val pagerState = rememberPagerState(
+        initialPage = selectedIndex,
+        pageCount = { DashboardPage.entries.size }
+    )
+    val selectedPage = DashboardPage.fromIndex(pagerState.currentPage)
+    val scope = rememberCoroutineScope()
+
+    // A swipe updates the chip; a chip tap animates the pager below.
+    LaunchedEffect(pagerState) {
+        snapshotFlow { pagerState.currentPage }.collect { selectedIndex = it }
+    }
+
+    // PC polling: unchanged rule (composed while RESUMED, so start here) plus
+    // the page rule — the PC is never polled from the phone page.
+    DisposableEffect(lifecycleOwner, selectedPage) {
+        if (selectedPage != DashboardPage.PC) return@DisposableEffect onDispose { }
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_START -> viewModel.startPolling()
@@ -109,6 +142,24 @@ fun DashboardScreen(
         }
     }
 
+    // Phone polling: same lifecycle, only while the phone page is visible.
+    DisposableEffect(lifecycleOwner, selectedPage) {
+        if (selectedPage != DashboardPage.PHONE) return@DisposableEffect onDispose { }
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> phoneViewModel.startPolling()
+                Lifecycle.Event.ON_STOP -> phoneViewModel.stopPolling()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        phoneViewModel.startPolling()
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            phoneViewModel.stopPolling()
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -120,7 +171,7 @@ fun DashboardScreen(
                             color = TextPrimary
                         )
                         Text(
-                            "Estado de la PC en vivo",
+                            selectedPage.subtitle,
                             style = AppTypography.labelSmall,
                             color = TextSecondary
                         )
@@ -136,7 +187,15 @@ fun DashboardScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = { viewModel.refreshNow() }) {
+                    IconButton(
+                        onClick = {
+                            if (selectedPage == DashboardPage.PHONE) {
+                                phoneViewModel.refreshNow()
+                            } else {
+                                viewModel.refreshNow()
+                            }
+                        }
+                    ) {
                         Icon(
                             imageVector = Icons.Default.Refresh,
                             contentDescription = "Actualizar",
@@ -153,33 +212,103 @@ fun DashboardScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .verticalScroll(scrollState)
-                .padding(AppSpacing.screenPadding),
-            verticalArrangement = Arrangement.spacedBy(AppSpacing.sectionGap)
         ) {
-            ConnectionHeader(
-                connected = status?.connected,
-                pcName = status?.pcName,
-                project = status?.project,
-                agent = status?.agent,
-                busy = status?.busy ?: false,
-                queueSize = status?.queueSize ?: 0
+            DashboardPageChips(
+                selected = selectedPage,
+                onSelect = { page -> scope.launch { pagerState.animateScrollToPage(page.ordinal) } }
+            )
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                key = { index -> DashboardPage.fromIndex(index).name }
+            ) { index ->
+                when (DashboardPage.fromIndex(index)) {
+                    DashboardPage.PC -> PcPage(
+                        status = status,
+                        uiState = uiState,
+                        onRetry = { viewModel.refreshNow() }
+                    )
+
+                    DashboardPage.PHONE -> PhoneDashboardPage(
+                        state = phoneState,
+                        onRetry = { phoneViewModel.refreshNow() },
+                        onOpenUsageAccess = {
+                            val intent = usageAccessSettingsIntent()
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            runCatching { context.startActivity(intent) }
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** "PC · Teléfono" selector above the pager; the selected page animates in. */
+@Composable
+private fun DashboardPageChips(
+    selected: DashboardPage,
+    onSelect: (DashboardPage) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AppSpacing.screenPadding, vertical = AppSpacing.sm),
+        horizontalArrangement = Arrangement.spacedBy(AppSpacing.sm)
+    ) {
+        DashboardPage.entries.forEach { page ->
+            FilterChip(
+                selected = page == selected,
+                onClick = { onSelect(page) },
+                label = { Text(page.label, style = AppTypography.labelSmall, maxLines = 1) },
+                colors = FilterChipDefaults.filterChipColors(
+                    selectedContainerColor = PrimaryIndigo.copy(alpha = 0.15f),
+                    selectedLabelColor = PrimaryIndigo,
+                    labelColor = TextSecondary
+                )
+            )
+        }
+    }
+}
+
+/** Page 0: today's PC metrics, unchanged. */
+@Composable
+private fun PcPage(
+    status: ServerStatus?,
+    uiState: DashboardViewModel.UiState,
+    onRetry: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(AppSpacing.screenPadding),
+        verticalArrangement = Arrangement.spacedBy(AppSpacing.sectionGap)
+    ) {
+        ConnectionHeader(
+            connected = status?.connected,
+            pcName = status?.pcName,
+            project = status?.project,
+            agent = status?.agent,
+            busy = status?.busy ?: false,
+            queueSize = status?.queueSize ?: 0
+        )
+
+        val metrics = uiState.metrics
+        when {
+            metrics != null -> MetricsContent(
+                metrics = metrics,
+                refreshFailed = uiState.refreshFailed
             )
 
-            val metrics = uiState.metrics
-            when {
-                metrics != null -> MetricsContent(
-                    metrics = metrics,
-                    refreshFailed = uiState.refreshFailed
-                )
+            uiState.isLoading -> LoadingCard()
 
-                uiState.isLoading -> LoadingCard()
-
-                else -> MetricsErrorCard(
-                    message = uiState.errorMessage,
-                    onRetry = { viewModel.refreshNow() }
-                )
-            }
+            else -> MetricsErrorCard(
+                message = uiState.errorMessage,
+                onRetry = onRetry
+            )
         }
     }
 }
@@ -563,7 +692,7 @@ private fun HintsCard(hints: List<String>) {
 }
 
 @Composable
-private fun LoadingCard() {
+internal fun LoadingCard() {
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -609,7 +738,7 @@ private fun MetricsErrorCard(message: String?, onRetry: () -> Unit) {
 }
 
 @Composable
-private fun MetricCard(
+internal fun MetricCard(
     title: String,
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit
@@ -633,7 +762,7 @@ private fun MetricCard(
 }
 
 @Composable
-private fun UsageHeadline(percent: Double?) {
+internal fun UsageHeadline(percent: Double?) {
     val text = formatMetricPercent(percent)
     if (text == null || percent == null) {
         Text(
@@ -670,7 +799,7 @@ private fun UsageHeadline(percent: Double?) {
  * card. Both ends ellipsize instead of spilling over each other.
  */
 @Composable
-private fun MetricRow(
+internal fun MetricRow(
     label: String,
     value: String?,
     valueColor: Color = TextPrimary
@@ -709,14 +838,14 @@ private fun MetricRow(
 }
 
 @Composable
-private fun usageColor(percent: Double): Color = when {
+internal fun usageColor(percent: Double): Color = when {
     percent < USAGE_WARN_PERCENT -> StatusConnected
     percent < USAGE_HOT_PERCENT -> StatusWorking
     else -> StatusError
 }
 
 @Composable
-private fun temperatureColor(celsius: Double?): Color = when {
+internal fun temperatureColor(celsius: Double?): Color = when {
     celsius == null -> TextSecondary
     celsius < TEMPERATURE_WARN_C -> StatusConnected
     celsius < TEMPERATURE_HOT_C -> StatusWorking

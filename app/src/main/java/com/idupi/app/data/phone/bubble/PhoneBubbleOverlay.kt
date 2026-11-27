@@ -272,6 +272,22 @@ class PhoneBubbleOverlay(
     private var idleAnimator: ValueAnimator? = null
     private var dockAnimator: ValueAnimator? = null
 
+    /**
+     * True when this panel was opened for a Dashboard request while the
+     * visibility gate had it hidden (phone-dashboard T2). Minimizing then
+     * removes the window again instead of leaving a bubble the owner's setting
+     * keeps off.
+     */
+    private var ownerRequestSessionOnly = false
+
+    init {
+        // The Dashboard's "Optimizar teléfono" sends through the bubble, so the
+        // turn is registered as owner-initiated. The overlay only exists while
+        // the accessibility service is bound, which is the grant this host
+        // checks; when it is off, the host refuses and the screen explains.
+        BubbleRequestHost.attach(::openForOwnerRequest)
+    }
+
     /** Adds the window when the gate turns on, removes it when it turns off. */
     fun setVisible(show: Boolean) {
         if (show == visible) return
@@ -306,6 +322,41 @@ class PhoneBubbleOverlay(
         }
         if (mode == BubbleMode.COLLAPSED) expand()
         onMicTapped()
+        return true
+    }
+
+    /**
+     * Opens the panel and sends a request started outside the bubble
+     * (phone-dashboard T2: the Dashboard's "Optimizar teléfono" button).
+     *
+     * The request uses [BubbleChatController.send] — the same path as a typed
+     * draft — so `OwnerTurnRegistry` registers the turn as owner-initiated,
+     * which is what approvals rely on. A request started while the gate has the
+     * bubble hidden brings up a session-only panel: collapsing removes it again
+     * so the owner's bubble setting stays respected.
+     *
+     * @return true when the panel is up and the request was accepted.
+     */
+    fun openForOwnerRequest(text: String): Boolean {
+        val request = text.trim()
+        if (request.isEmpty()) return false
+        if (!visible) {
+            setVisible(true)
+            if (!visible) return false
+            ownerRequestSessionOnly = true
+        }
+        if (mode == BubbleMode.COLLAPSED) expand()
+        // Same preparation as a typed send: a spoken loop from a previous
+        // request must not keep the microphone open, and a late transcript may
+        // not land in the new request.
+        cancelConfirmLoop()
+        stopTts()
+        abandonVoice(render = true)
+        input?.setText("")
+        dictatedDraft = false
+        requestOrigin = BubbleRequestOrigin.TYPED
+        IduPiClientProvider.configureFromStorage(service)
+        controller.send(request)
         return true
     }
 
@@ -356,6 +407,7 @@ class PhoneBubbleOverlay(
     }
 
     fun destroy() {
+        BubbleRequestHost.detach()
         visible = false
         detach()
         shutdownTts()
@@ -428,6 +480,7 @@ class PhoneBubbleOverlay(
         // A session-only show dies with its window; the service clears the
         // temporary gate separately (assistant-key T1).
         assistantSessionEnded = null
+        ownerRequestSessionOnly = false
         stateJob?.cancel()
         stateJob = null
         voiceJob?.cancel()
@@ -2028,6 +2081,12 @@ class PhoneBubbleOverlay(
         assistantSessionEnded?.let { ended ->
             assistantSessionEnded = null
             ended()
+        }
+        // phone-dashboard T2: a panel opened from the Dashboard while the gate
+        // had it hidden lasts for this request only.
+        if (ownerRequestSessionOnly) {
+            ownerRequestSessionOnly = false
+            setVisible(false)
         }
     }
 
