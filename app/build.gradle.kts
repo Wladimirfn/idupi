@@ -32,8 +32,8 @@ android {
         // "which APK am I running" is answerable from the system settings.
         // Same-versionCode installs get silently skipped by some phone
         // installers -- that is how a stale build masqueraded as the new one.
-        versionCode = 63
-        versionName = "1.62-dashboard-telefono"
+        versionCode = 64
+        versionName = "1.63-dashboard-telefono"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
