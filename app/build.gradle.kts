@@ -106,6 +106,15 @@ dependencies {
     // release; alpha/beta builds are not a base for a health data reader.
     implementation(libs.androidx.health.connect.client)
 
+    // In-app adb client (phone-shell T2): pairing + `shell:` over the phone's
+    // own Wireless debugging. Dual licensed GPL-3.0-or-later OR Apache-2.0;
+    // used here under Apache-2.0. Conscrypt provides the TLS 1.3 stack the
+    // pairing protocol needs; bcpkix builds our self-signed adb client cert.
+    implementation(libs.libadb.android)
+    implementation(libs.conscrypt.android)
+    implementation(libs.bouncycastle.bcpkix)
+    implementation(libs.bouncycastle.bcprov)
+
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(libs.androidx.espresso.core)

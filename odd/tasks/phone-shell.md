@@ -89,7 +89,7 @@ of navigating Settings by taps.
 - [x] T1b Helper spike: `:shellhelper` module (`com.idupi.shell`) with the
       bridge; verified on device (evidence 8). In-app bridge removed from
       com.idupi.app.
-- [ ] T2 App adb core: add libadb-android (Apache-2.0, JitPack
+- [x] T2 App adb core: add libadb-android (Apache-2.0, JitPack
       `com.github.MuntashirAkon:libadb-android:3.1.1`), key store, mDNS
       discovery, pairing client, connect, `shell:` exec with timeout and exit
       status; pure parts unit-tested (command builder, package validation,
@@ -141,6 +141,8 @@ of navigating Settings by taps.
 
 | Task | Commit | Checks |
 |------|--------|--------|
+| T2 | (this commit) | worker work-1 (opencode, deepseek-v4.1-flash). `:app:testDebugUnitTest --tests com.idupi.app.data.phone.shell.*` 36 tests ok; `:app:assembleDebug` ok. Deps: libadb-android 3.1.1 (JitPack, filtered), conscrypt-android 2.5.3, bcpkix/bcprov 1.81. Not device-verified yet (pairing, mDNS, loopback connect, exec): checked live in T3. Note for T3b: `am instrument -w` never returns, so launch it detached (`setsid sh -c '...' &`) instead of through a blocking `exec`. |
+| T1b | bfe580d | Helper 0.1-spike `assembleRelease` ok, installed by adb; device evidence 8. App `compileReleaseKotlin` ok after removing the in-app bridge. |
 | T1 | 6dbb709, a846217, 91c161c | Device evidence 2026-11-27 below. `assembleRelease` ok; 1.64-puente-shell (versionCode 65) installed by adb. |
 
 T1 evidence (S24 Ultra, One UI / Android 16):
