@@ -47,6 +47,7 @@ Uso:
   idupi-phone settings app <paquete>    Abre los Ajustes de esa app (almacenamiento)
   idupi-phone shell info <storage|memory|battery|packages>
                                         Lee el estado del dispositivo con la shell del teléfono
+  idupi-phone shell scan                Analiza apps, caché, uso y candidatas a limpiar
   idupi-phone shell trim-caches         Borra la caché de todas las apps (dice el espacio liberado)
   idupi-phone shell force-stop <paquete>
                                         Detiene una app
@@ -54,6 +55,9 @@ Uso:
                                         Permite o limita la ejecución en segundo plano
   idupi-phone shell disable <paquete>   Deshabilita una app (pide tu aprobación)
   idupi-phone shell enable <paquete>    Vuelve a habilitar una app
+  idupi-phone shell uninstall <paquete> Desinstala una app (pide tu aprobación)
+  idupi-phone shell batch '<json>' | @archivo.json
+                                        Ejecuta varios pasos con UNA sola aprobación
   idupi-phone wait <ms>                 Espera en el teléfono (0..10000)
   idupi-phone calendar [agenda] [--days N] [--json]
                                         Agenda de los calendarios del teléfono (7 días por defecto)
@@ -278,10 +282,16 @@ const SETTINGS_USAGE =
 
 const SHELL_USAGE =
     "Uso: idupi-phone shell info <storage|memory|battery|packages> | " +
+    "idupi-phone shell scan | " +
     "idupi-phone shell trim-caches | " +
     "idupi-phone shell force-stop <paquete> | " +
     "idupi-phone shell background <paquete> <allow|ignore> | " +
-    "idupi-phone shell disable <paquete> | idupi-phone shell enable <paquete>";
+    "idupi-phone shell disable <paquete> | idupi-phone shell enable <paquete> | " +
+    "idupi-phone shell uninstall <paquete> | " +
+    "idupi-phone shell batch '<json>' | @archivo.json";
+
+const SHELL_BATCH_USAGE =
+    "Uso: idupi-phone shell batch '<json array>' | idupi-phone shell batch @archivo.json";
 
 /**
  * Parses the typed shell surface (phone-shell T4). Only the contract's actions
@@ -302,11 +312,18 @@ function parseShellArgs(rest) {
         if (tail.length !== 1 || !SHELL_INFO_TOPICS.includes(tail[0])) return fail();
         return { command: "shell", action: "info", topic: tail[0] };
     }
+    if (action === "scan") {
+        if (tail.length !== 0) return fail();
+        return { command: "shell", action: "scan" };
+    }
     if (action === "trim-caches") {
         if (tail.length !== 0) return fail();
         return { command: "shell", action: "trim-caches" };
     }
-    if (action === "force-stop" || action === "disable" || action === "enable") {
+    if (
+        action === "force-stop" || action === "disable" ||
+        action === "enable" || action === "uninstall"
+    ) {
         if (tail.length !== 1) return fail();
         const packageName = shellPackage(tail[0], { allowProtected: action === "enable" });
         if (packageName === null) return fail();
@@ -317,6 +334,26 @@ function parseShellArgs(rest) {
         const packageName = shellPackage(tail[0]);
         if (packageName === null) return fail();
         return { command: "shell", action, package: packageName, mode: tail[1] };
+    }
+    if (action === "batch") {
+        // One plan: a JSON array argument, or `@path` to read it from a file.
+        if (tail.length !== 1) {
+            return { command: "help", error: SHELL_BATCH_USAGE };
+        }
+        const source = tail[0];
+        let steps;
+        try {
+            const text = source.startsWith("@")
+                ? readFileSync(resolvePath(process.cwd(), source.slice(1)), "utf8")
+                : source;
+            steps = JSON.parse(text);
+        } catch {
+            return { command: "help", error: SHELL_BATCH_USAGE };
+        }
+        if (!Array.isArray(steps)) {
+            return { command: "help", error: SHELL_BATCH_USAGE };
+        }
+        return { command: "shell", action: "batch", steps };
     }
     return fail();
 }
@@ -826,6 +863,11 @@ const APPROVAL_REASON_LABELS = {
     sensitive_app: "acción en una app sensible",
     risky_text: "texto riesgoso",
     phone_detected_risky_target: "texto riesgoso detectado en el teléfono",
+    // phone-shell T4/T4b: shell commands get their own labels instead of the
+    // generic "texto riesgoso" a tap-based delete used to produce.
+    shell_optimization: "optimización del teléfono",
+    shell_destructive: "acción destructiva de la shell",
+    shell_plan: "plan de optimización",
 };
 
 const DEFAULT_APPROVAL_MINUTES = 10;
@@ -1805,6 +1847,7 @@ export function actionFor(parsed) {
             if (parsed.topic) args.topic = parsed.topic;
             if (parsed.package) args.package = parsed.package;
             if (parsed.mode) args.mode = parsed.mode;
+            if (Array.isArray(parsed.steps)) args.steps = parsed.steps;
             return { type: "shell", args };
         }
         case "wait":

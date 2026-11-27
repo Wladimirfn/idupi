@@ -221,7 +221,7 @@ test("the prompt separates the trusted request from untrusted tool output", () =
     assert.ok(prompt.includes(`node ${CLI}`));
     // The usage list comes from bin/idupi-phone.mjs.
     for (const subcommand of ["status", "screen", "tap", "long-press", "type", "scroll",
-        "open", "settings", "wait", "calendar", "health", "approvals", "log"]) {
+        "open", "settings", "shell", "wait", "calendar", "health", "approvals", "log"]) {
         assert.ok(prompt.includes(subcommand), `prompt lists ${subcommand}`);
     }
 });
@@ -230,7 +230,7 @@ test("the prompt sends the agent to settings instead of wandering Settings (T7)"
     const prompt = buildPhonePrompt({ text: "optimiza mi teléfono", cliPath: CLI });
 
     // The allowlisted settings command replaces hunting through Settings.
-    assert.match(prompt, /settings device-care/);
+    assert.match(prompt, /settings <device-care\|storage\|battery\|apps>/);
     assert.match(prompt, /settings app <package>/);
     assert.match(prompt, /never search Settings by hand/i);
     // The bubble panel is the agent's own window; it must never touch it.
@@ -240,38 +240,41 @@ test("the prompt sends the agent to settings instead of wandering Settings (T7)"
     assert.doesNotMatch(prompt, /`open` "Cuidado del dispositivo"/);
 });
 
-test("the prompt carries the optimization playbook", () => {
+test("the prompt teaches scan -> propose -> one batch (T5)", () => {
     const prompt = buildPhonePrompt({ text: "optimiza mi teléfono", cliPath: CLI });
 
-    // (a) status first, with storage and the largest apps.
+    // (a) the read half of T4b is `shell scan`.
     assert.match(prompt, /optimiz/i);
-    assert.match(prompt, /run `?status`? first/i);
-    assert.match(prompt, /largestApps/);
-    // (b) Samsung Device Care first, another cleaner elsewhere.
-    assert.match(prompt, /Cuidado del dispositivo/i);
-    assert.match(prompt, /Optimizar ahora/i);
-    assert.match(prompt, /Almacenamiento/);
-    // (c) cache per app, always through an approval.
-    assert.match(prompt, /Aplicaciones/);
-    assert.match(prompt, /Borrar caché/i);
-    assert.match(prompt, /3-5 apps/);
-    // (c2) destructive steps are reasoned, not forbidden (owner correction):
-    // only when the owner asked for that deletion, saying what is lost, and
-    // never a data wipe on the agent's own initiative.
+    assert.match(prompt, /run `shell scan`/);
+    assert.match(prompt, /cache\/app\/data sizes|unused apps|heavy caches/i);
+    // The owner's own words that must reach this playbook.
+    assert.match(prompt, /which apps they do not use|unused apps/i);
+    // (b) propose before acting, in Spanish, as one plan.
+    assert.match(prompt, /short proposal/i);
+    assert.match(prompt, /neutral Spanish/i);
+    assert.match(prompt, /plan as a whole/i);
+    assert.match(prompt, /never app by app/i);
+    // (c) exactly one batch, and never one command per app.
+    assert.match(prompt, /ONE `shell batch/);
+    assert.match(prompt, /1-30 steps|steps the owner's request covers/i);
+    assert.match(prompt, /ONE approval|one approval/i);
+    assert.match(prompt, /Esperando tu aprobación/);
+    assert.match(prompt, /asked by voice/);
+    assert.match(prompt, /never send a second batch/i);
+    // (d) report the per-step summary and the freed space.
+    assert.match(prompt, /one summary per step/i);
+    assert.match(prompt, /how much space was freed/i);
+    // The bridge fallback is allowed only on the exact failure, and names the
+    // setting the owner must open.
+    assert.match(prompt, /puente no disponible/);
+    assert.match(prompt, /Ajustes > Acceso avanzado del teléfono/);
+    assert.match(prompt, /fallback/i);
+    // Destructive steps stay gated inside the plan.
     assert.match(prompt, /Destructive steps/i);
     assert.match(prompt, /only when the owner explicitly asked/i);
-    assert.match(prompt, /Before tapping, say/i);
-    assert.match(prompt, /what will be lost/i);
     assert.match(prompt, /never wipe data on your own initiative/i);
-    assert.match(prompt, /clear the cache only/i);
     assert.doesNotMatch(prompt, /NEVER "Borrar datos"/);
     assert.doesNotMatch(prompt, /DATA_WIPE_BLOCKED/);
-    // (d) uninstall only with explicit agreement.
-    assert.match(prompt, /not used recently/i);
-    assert.match(prompt, /explicitly agrees/i);
-    // (e) status again and report the space freed.
-    assert.match(prompt, /running `status` again/i);
-    assert.match(prompt, /how much space (?:was )?freed/i);
 });
 
 test("the prompt allows a data wipe only when the owner asked for it", () => {
@@ -282,7 +285,7 @@ test("the prompt allows a data wipe only when the owner asked for it", () => {
     assert.match(prompt, /clear data or storage/i);
     assert.match(prompt, /only when the owner explicitly asked/i);
     assert.match(prompt, /never wipe data on your own initiative/i);
-    assert.match(prompt, /clear the cache only/i);
+    assert.match(prompt, /never part of an optimization/i);
     assert.doesNotMatch(prompt, /never allowed/i);
     assert.doesNotMatch(prompt, /refuses them/i);
 });

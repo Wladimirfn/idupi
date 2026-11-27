@@ -6,6 +6,9 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
     actionFor,
@@ -254,6 +257,73 @@ test("parseArgs handles the typed shell surface (T4)", () => {
         assert.equal(parseArgs(["shell", "enable", packageName]).command, "shell");
     }
     assert.equal(parseArgs(["shell", "force-stop", "android"]).command, "help");
+});
+
+test("parseArgs handles shell scan, uninstall and the batch plan (T4b)", () => {
+    assert.deepEqual(parseArgs(["shell", "scan"]), {
+        command: "shell",
+        action: "scan",
+    });
+    assert.deepEqual(parseArgs(["shell", "uninstall", "com.facebook.katana"]), {
+        command: "shell",
+        action: "uninstall",
+        package: "com.facebook.katana",
+    });
+
+    const steps = [
+        { action: "trim-caches" },
+        { action: "disable", package: "com.facebook.katana" },
+    ];
+    assert.deepEqual(parseArgs(["shell", "batch", JSON.stringify(steps)]), {
+        command: "shell",
+        action: "batch",
+        steps,
+    });
+    assert.deepEqual(actionFor(parseArgs(["shell", "batch", JSON.stringify(steps)])), {
+        type: "shell",
+        args: { action: "batch", steps },
+    });
+    assert.deepEqual(actionFor(parseArgs(["shell", "scan"])), {
+        type: "shell",
+        args: { action: "scan" },
+    });
+    assert.deepEqual(actionFor(parseArgs(["shell", "uninstall", "com.facebook.katana"])), {
+        type: "shell",
+        args: { action: "uninstall", package: "com.facebook.katana" },
+    });
+
+    // The protected list also covers uninstall, and the batch is one argument.
+    for (const argv of [
+        ["shell", "scan", "extra"],
+        ["shell", "uninstall"],
+        ["shell", "uninstall", "com.idupi.app"],
+        ["shell", "uninstall", "com.android.systemui"],
+        ["shell", "uninstall", "whatsapp"],
+        ["shell", "batch"],
+        ["shell", "batch", "not json"],
+        ["shell", "batch", "{}"],
+        ["shell", "batch", JSON.stringify(steps), "extra"],
+    ]) {
+        assert.equal(parseArgs(argv).command, "help", JSON.stringify(argv));
+        assert.ok(parseArgs(argv).error, JSON.stringify(argv));
+    }
+});
+
+test("shell batch reads the JSON plan from a file with @path", async (t) => {
+    const dir = await mkdtemp(join(tmpdir(), "idupi-phone-batch-"));
+    t.after(() => rm(dir, { recursive: true, force: true }));
+    const file = join(dir, "plan.json");
+    const steps = [
+        { action: "trim-caches" },
+        { action: "uninstall", package: "com.facebook.katana" },
+    ];
+    await writeFile(file, JSON.stringify(steps), "utf8");
+
+    assert.deepEqual(parseArgs(["shell", "batch", `@${file}`]), {
+        command: "shell",
+        action: "batch",
+        steps,
+    });
 });
 
 test("parseArgs covers log, help and unknown input", () => {
@@ -949,6 +1019,41 @@ test("formatApprovalWait explains the reason and the remaining minutes", () => {
         ),
         /vence en 1 min/,
     );
+});
+
+test("shell approvals print their own Spanish reason labels", () => {
+    const nowMs = Date.parse("2026-11-24T12:00:00.000Z");
+    assert.match(
+        formatApprovalWait({ approvalReason: "shell_optimization" }, nowMs),
+        /optimización del teléfono/,
+    );
+    assert.match(
+        formatApprovalWait({ approvalReason: "shell_destructive" }, nowMs),
+        /acción destructiva de la shell/,
+    );
+    assert.match(
+        formatApprovalWait({ approvalReason: "shell_plan" }, nowMs),
+        /plan de optimización/,
+    );
+
+    const list = formatApprovals(
+        {
+            approvals: [{
+                id: "apr-shellplan123",
+                state: "pending",
+                command: {
+                    type: "shell",
+                    args: { action: "batch", steps: [{ action: "trim-caches" }] },
+                },
+                reason: "shell_plan",
+                target: null,
+                expiresAt: "2026-11-24T12:10:00.000Z",
+            }],
+        },
+        nowMs,
+    );
+    assert.ok(list.includes("plan de optimización"));
+    assert.ok(list.includes("vence en 10 min"));
 });
 
 test("formatApprovals lists pending approvals with their target and reason", () => {

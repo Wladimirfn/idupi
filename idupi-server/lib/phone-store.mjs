@@ -83,12 +83,26 @@ export const SETTINGS_APP_SCREEN = "app";
 // command that slips past one is still refused by the other.
 export const SHELL_ACTIONS = [
     "info",
+    "scan",
     "trim-caches",
     "force-stop",
     "background",
     "disable",
     "enable",
+    "uninstall",
+    "batch",
 ];
+// T4b: a batch is one plan with 1..30 steps. `info`, `scan` and `batch` are
+// refused inside a batch: they are reads or another plan, never one step.
+export const SHELL_BATCH_STEP_ACTIONS = [
+    "trim-caches",
+    "force-stop",
+    "background",
+    "disable",
+    "enable",
+    "uninstall",
+];
+export const SHELL_BATCH_MAX_STEPS = 30;
 // `info` takes exactly a topic; every other action takes exactly its own keys.
 export const SHELL_INFO_TOPICS = ["storage", "memory", "battery", "packages"];
 // `background <pkg> allow|ignore` maps to appops RUN_IN_BACKGROUND (ignore) and
@@ -111,7 +125,7 @@ export const SHELL_PROTECTED_PACKAGES = [
 ];
 
 /** Actions that name a package, and therefore honour the protected list. */
-export const SHELL_PACKAGE_ACTIONS = ["force-stop", "background", "disable"];
+export const SHELL_PACKAGE_ACTIONS = ["force-stop", "background", "disable", "uninstall"];
 
 /** True when a shell action would refuse this package as protected. */
 export function isProtectedShellPackage(action, packageName) {
@@ -260,16 +274,28 @@ function normalizeShellPackage(action, value, { allowProtected = false } = {}) {
 }
 
 /**
- * Validates the typed `shell` command (phone-shell T4). Each action accepts
- * exactly the keys of the contract: no action is free-form, and an extra key is
- * refused even when it looks harmless.
+ * Validates one batch step exactly like the single action of the same name
+ * (T4b). `info`, `scan` and `batch` are not reachable inside a batch.
  */
-function normalizeShellArgs(args) {
-    rejectUnknownArgs(args, ["action", "topic", "package", "mode"]);
-    if (!SHELL_ACTIONS.includes(args.action)) {
-        throw typedError("INVALID_COMMAND", "action must be one of: " + SHELL_ACTIONS.join(", "));
+function normalizeShellStep(rawStep) {
+    if (!isPlainObject(rawStep)) {
+        throw typedError("INVALID_COMMAND", "batch steps must be objects");
     }
+    if (!SHELL_BATCH_STEP_ACTIONS.includes(rawStep.action)) {
+        throw typedError(
+            "INVALID_COMMAND",
+            "batch step action must be one of: " + SHELL_BATCH_STEP_ACTIONS.join(", "),
+        );
+    }
+    return normalizeShellAction(rawStep);
+}
 
+/**
+ * Validates the typed `shell` command (phone-shell T4 + T4b). Each action
+ * accepts exactly the keys of the contract: no action is free-form, and an
+ * extra key is refused even when it looks harmless.
+ */
+function normalizeShellAction(args) {
     switch (args.action) {
         case "info":
             rejectUnknownArgs(args, ["action", "topic"]);
@@ -280,6 +306,10 @@ function normalizeShellArgs(args) {
                 );
             }
             return { action: "info", topic: args.topic };
+        case "scan":
+            // Runs in the app, no helper: this is the read half of T4b.
+            rejectUnknownArgs(args, ["action"]);
+            return { action: "scan" };
         case "trim-caches":
             rejectUnknownArgs(args, ["action"]);
             return { action: "trim-caches" };
@@ -316,9 +346,50 @@ function normalizeShellArgs(args) {
                 action: "enable",
                 package: normalizeShellPackage("enable", args.package, { allowProtected: true }),
             };
+        case "uninstall":
+            // T4b: `pm uninstall --user 0 <pkg>`. The protected list applies
+            // for the same reason it does to disable: uninstalling IDUPI, the
+            // shell helper or a system package must never be reachable.
+            rejectUnknownArgs(args, ["action", "package"]);
+            return {
+                action: "uninstall",
+                package: normalizeShellPackage("uninstall", args.package),
+            };
+        case "batch": {
+            // One plan, 1..30 steps, no duplicates. The server is the queue
+            // boundary; the phone re-validates every step before running it.
+            rejectUnknownArgs(args, ["action", "steps"]);
+            if (!Array.isArray(args.steps)) {
+                throw typedError("INVALID_COMMAND", "steps must be an array");
+            }
+            if (args.steps.length < 1 || args.steps.length > SHELL_BATCH_MAX_STEPS) {
+                throw typedError(
+                    "INVALID_COMMAND",
+                    `steps must contain 1 to ${SHELL_BATCH_MAX_STEPS} items`,
+                );
+            }
+            const steps = args.steps.map(normalizeShellStep);
+            const seen = new Set();
+            for (const step of steps) {
+                const key = JSON.stringify(step);
+                if (seen.has(key)) {
+                    throw typedError("INVALID_COMMAND", "duplicate batch step");
+                }
+                seen.add(key);
+            }
+            return { action: "batch", steps };
+        }
         default:
             throw typedError("INVALID_COMMAND", "unknown shell action");
     }
+}
+
+function normalizeShellArgs(args) {
+    rejectUnknownArgs(args, ["action", "topic", "package", "mode", "steps"]);
+    if (!SHELL_ACTIONS.includes(args.action)) {
+        throw typedError("INVALID_COMMAND", "action must be one of: " + SHELL_ACTIONS.join(", "));
+    }
+    return normalizeShellAction(args);
 }
 
 /** Validates one command type and returns the normalized args. */
@@ -840,6 +911,9 @@ export function createPhoneStore({
             // before anyone can poll it, so no card or notification is shown
             // and the command is delivered on the next poll carrying the same
             // approvalId/approvedTarget a manual approval produces.
+            // T4b: a shell `batch` is category `plan` and is NEVER in this
+            // list. One approval for the whole plan always reaches the owner,
+            // even when the batch comes from an owner bubble turn.
             const autoCategories = ["message", "optimization"];
             if (turnId !== null && autoCategories.includes(verdict.category)) {
                 const decided = approvalStore.decideApproval(approval.id, "approve", {

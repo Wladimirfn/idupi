@@ -1002,10 +1002,51 @@ test("shell is a command type and validates every action of the contract", () =>
         normalizeCommandArgs("shell", { action: "enable", package: "com.facebook.katana" }),
         { action: "enable", package: "com.facebook.katana" },
     );
+    // T4b: scan, uninstall and the one-approval batch.
+    assert.deepEqual(normalizeCommandArgs("shell", { action: "scan" }), { action: "scan" });
+    assert.deepEqual(
+        normalizeCommandArgs("shell", { action: "uninstall", package: "com.facebook.katana" }),
+        { action: "uninstall", package: "com.facebook.katana" },
+    );
+    const steps = [
+        { action: "trim-caches" },
+        { action: "uninstall", package: "com.facebook.katana" },
+        { action: "background", package: "com.whatsapp", mode: "ignore" },
+    ];
+    assert.deepEqual(
+        normalizeCommandArgs("shell", { action: "batch", steps }),
+        { action: "batch", steps },
+    );
 
     const invalid = [
         ["shell", {}],
         ["shell", { action: "exec" }],
+        ["shell", { action: "scan", topic: "storage" }],
+        ["shell", { action: "scan", package: "com.whatsapp" }],
+        ["shell", { action: "uninstall" }],
+        ["shell", { action: "uninstall", package: "whatsapp" }],
+        ["shell", { action: "uninstall", package: "com..x" }],
+        ["shell", { action: "uninstall", package: "com.whatsapp", mode: "ignore" }],
+        ["shell", { action: "batch" }],
+        ["shell", { action: "batch", steps: {} }],
+        ["shell", { action: "batch", steps: [] }],
+        ["shell", { action: "batch", steps: [{ action: "info", topic: "storage" }] }],
+        ["shell", { action: "batch", steps: [{ action: "scan" }] }],
+        ["shell", { action: "batch", steps: [{ action: "batch", steps: [{ action: "trim-caches" }] }] }],
+        ["shell", { action: "batch", steps: [{ action: "trim-caches" }, { action: "trim-caches" }] }],
+        ["shell", { action: "batch", steps: [{ action: "trim-caches", extra: true }] }],
+        ["shell", { action: "batch", steps: [{ action: "force-stop" }] }],
+        ["shell", { action: "batch", steps: [{ action: "force-stop", package: "whatsapp" }] }],
+        ["shell", { action: "batch", steps: [{ action: "background", package: "com.whatsapp", mode: "stop" }] }],
+        ["shell", { action: "batch", steps: ["trim-caches"] }],
+        ["shell", { action: "batch", steps: [{ action: "trim-caches" }], extra: true }],
+        ["shell", {
+            action: "batch",
+            steps: Array.from({ length: 31 }, (_, index) => ({
+                action: "enable",
+                package: `com.app${index}`,
+            })),
+        }],
         ["shell", { action: "info" }],
         ["shell", { action: "info", topic: "wifi" }],
         ["shell", { action: "info", topic: "storage", package: "com.whatsapp" }],
@@ -1035,7 +1076,20 @@ test("shell is a command type and validates every action of the contract", () =>
     }
 });
 
-test("shell refuses the protected packages for stop, background and disable", () => {
+test("shell batch accepts exactly 1..30 distinct steps", () => {
+    for (const count of [1, 30]) {
+        const steps = Array.from({ length: count }, (_, index) => ({
+            action: "enable",
+            package: `com.app${index}`,
+        }));
+        assert.deepEqual(
+            normalizeCommandArgs("shell", { action: "batch", steps }),
+            { action: "batch", steps },
+        );
+    }
+});
+
+test("shell refuses the protected packages for stop, background, disable and uninstall", () => {
     const protectedPackages = [
         "com.idupi.app",
         "com.idupi.shell",
@@ -1049,7 +1103,7 @@ test("shell refuses the protected packages for stop, background and disable", ()
         "com.samsung.android.honeyboard",
     ];
     for (const packageName of protectedPackages) {
-        for (const action of ["force-stop", "disable"]) {
+        for (const action of ["force-stop", "disable", "uninstall"]) {
             assert.throws(
                 () => normalizeCommandArgs("shell", { action, package: packageName }),
                 (err) => err.code === "INVALID_COMMAND" && /protected/.test(err.message),
@@ -1086,7 +1140,7 @@ test("shell info, trim-caches, force-stop and background park for the owner", as
     for (const args of gated) {
         const command = store.createCommand({ type: "shell", args });
         assert.equal(command.state, "awaiting_approval", JSON.stringify(args));
-        assert.equal(command.approvalReason, "risky_text");
+        assert.equal(command.approvalReason, "shell_optimization");
         assert.equal(approvals.getApproval(command.approvalId).state, "pending");
     }
     assert.equal(store.takeNext(), null, "nothing optimization-level runs unasked");
@@ -1126,6 +1180,77 @@ test("shell disable is a destructive gate that waits even in an owner turn", asy
     });
 });
 
+test("shell scan is free: it reads what the batch will propose", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store } = approvalHarness(dir, clock);
+
+    const scan = store.createCommand({ type: "shell", args: { action: "scan" } });
+
+    assert.equal(scan.state, "pending");
+    assert.equal(scan.approvalId, undefined);
+    assert.equal(store.takeNext()?.id, scan.id);
+});
+
+test("shell uninstall is destructive and waits even in an owner turn", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+
+    const command = store.createCommand({
+        type: "shell",
+        args: { action: "uninstall", package: "com.facebook.katana" },
+        ownerTurnId: OWNER_TURN,
+    });
+
+    assert.equal(command.state, "awaiting_approval");
+    assert.equal(command.approvalReason, "shell_destructive");
+    const approval = approvals.getApproval(command.approvalId);
+    assert.equal(approval.state, "pending");
+    assert.equal(approval.ownerTurnId, OWNER_TURN);
+    assert.equal(store.takeNext(), null, "an uninstall never runs unasked");
+});
+
+test("shell batch is ONE plan approval that is never auto-approved", async (t) => {
+    const dir = await makeDir(t);
+    const clock = makeClock();
+    const { store, approvals } = approvalHarness(dir, clock);
+
+    const steps = [
+        { action: "trim-caches" },
+        { action: "uninstall", package: "com.facebook.katana" },
+    ];
+    const command = store.createCommand({
+        type: "shell",
+        args: { action: "batch", steps },
+        ownerTurnId: OWNER_TURN,
+    });
+
+    // An owner turn does not auto-approve a plan: the owner gets exactly one
+    // approval for the whole batch.
+    assert.equal(command.state, "awaiting_approval");
+    assert.equal(command.approvalReason, "shell_plan");
+    assert.equal(command.args.approvalId, undefined);
+    const approval = approvals.getApproval(command.approvalId);
+    assert.equal(approval.state, "pending");
+    assert.equal(approval.ownerTurnId, OWNER_TURN);
+    assert.equal(approval.riskKind, "batch_destructive");
+    assert.equal(store.takeNext(), null);
+
+    // A batch without uninstall/disable is still one plan approval, with no
+    // destructive kind (the phone uses a card instead of voice).
+    const safe = store.createCommand({
+        type: "shell",
+        args: { action: "batch", steps: [{ action: "trim-caches" }] },
+        ownerTurnId: OWNER_TURN,
+    });
+    assert.equal(safe.state, "awaiting_approval");
+    assert.equal(safe.approvalReason, "shell_plan");
+    const safeApproval = approvals.getApproval(safe.approvalId);
+    assert.equal(safeApproval.state, "pending");
+    assert.equal(safeApproval.riskKind ?? null, null);
+});
+
 test("an owner turn auto-approves an optimization shell step like a message", async (t) => {
     const dir = await makeDir(t);
     const clock = makeClock();
@@ -1138,7 +1263,7 @@ test("an owner turn auto-approves an optimization shell step like a message", as
     });
     assert.equal(trims.state, "pending", "clearing caches needs no pending card");
     assert.equal(trims.args.approvalId, trims.approvalId);
-    assert.equal(trims.approvalReason, "risky_text");
+    assert.equal(trims.approvalReason, "shell_optimization");
     const trimApproval = approvals.getApproval(trims.approvalId);
     assert.equal(trimApproval.state, "approved");
     assert.equal(trimApproval.decidedBy, `owner-request:${OWNER_TURN}`);
