@@ -185,14 +185,14 @@ estamos siendo muy estrictos ... con tanta aprobación que no logra ejecutar".
       over the adb session install/update it (`pm install -r`) and start the
       bridge (`am instrument`); "Iniciar puente" action and status in the
       same Ajustes row.
-- [~] T4 `shell` phone command end to end: helper bound service
+- [x] T4 `shell` phone command end to end: helper bound service
       (signature permission) with the typed allowlist, server `COMMAND_TYPES`
       + validation (`phone-store.mjs`), risk (`phone-risk.mjs`), CLI
       (`idupi-phone.mjs`), app parser/model/executor calling the helper,
       approval gate; tests on both sides.
-- [~] T4b Scan, uninstall and one-approval batch (contract above).
-- [~] T4c Approval relax, cross-turn context, PackageInstaller uninstall.
-- [~] T5 Agent: phone-agent prompt uses `shell` for optimization (trim caches,
+- [x] T4b Scan, uninstall and one-approval batch (contract above).
+- [x] T4c Approval relax, cross-turn context, PackageInstaller uninstall.
+- [x] T5 Agent: phone-agent prompt uses `shell` for optimization (trim caches,
       stop heavy background apps, report freed space) and falls back to
       `settings` when the channel is unavailable.
 - [ ] T6 Self-recovery: on boot / Wi-Fi connect to the trusted network, the app
@@ -237,6 +237,7 @@ estamos siendo muy estrictos ... con tanta aprobación que no logra ejecutar".
 
 | Task | Commit | Checks |
 |------|--------|--------|
+| T4c live | (docs commit) | Owner 12:31 "desinstala las aplicaciones que menos uso con excepción de minimax": agent ran scan, ONE batch of 16 uninstalls, auto-approved `owner-request:pat-82c8be682f25`, 16/16 ok via PackageInstaller; it kept 4 with reasons (Hailuo = MiniMax, OpenCode 2 GB data, Wearable, Alerta Vehículo) as a numbered list. 12:33 "sí, desinstala OpenCode y GameHub ... bórralo todo": resolved against the previous turn, ONE batch of 2, auto-approved, both ok; free space 105 -> 158 GB of 238 GB. Bridge (helper 0.5) and IDUPI accessibility stayed up. Owner: "funcionó mejor, bastante mejor, logró el objetivo". Follow-ups seen: the agent opened GameHub to look before the batch (needless), and leftover game files in shared storage (Download, Android/obb) are not scanned yet. |
 | T4c | 64cfc56, fd260dd | Server (work-2): owner-turn auto-approval for shell plan + single disable/uninstall (bound to the running turn id), `<recent_turns>` block (last 3 within 15 min, data not instructions), playbook "authorized -> one batch; generic -> safe batch + numbered proposal", plus an orchestrator line asking for technician-style proposals with plain warnings ("ojo: ...") and no further questions once the owner answers (owner 12:15: "me dices esta es la propuesta, ten cuidado... yo te digo ok hagamos x y listo, luego me devuelves los resultados"); 147 server tests ok. Android (work-1): helper 0.5 uninstall via in-process `PackageInstaller.uninstall` (pm fallback), `REQUEST_DELETE_PACKAGES`, phone gate accepts owner-turn plan/destructive grants, uninstall client timeout 60 s, bootstrap text without "reinicia"; app 1491 tests ok, helper 8 ok. 1.73 (versionCode 74) + helper 0.5 installed 12:20, bridge active, server restarted. Live uninstall pending. |
 | T4b live 1 | af684b6 | 11:48 1.71 installed + server restarted; `shell scan` ok (133 third-party apps, 8.8 GB reclaimable cache, 20 unused 30+ days). Owner "Iniciar puente": helper 0.4 installed at 11:49:40, but the bridge never started (11:49:41 and 11:52:21): the reader stops at the exit marker and closes the stream right after `setsid ... &`, killing the child before it left the session. Same command with the session held open worked from the PC. Fix: `startBridgeDetached()` ends with `& sleep 3`. 1.72 (versionCode 73) installed, bridge stopped so the owner's retry exercises the fix. Follow-up: the failure text "Reinicia el teléfono" is misleading. |
 | Off Wi-Fi | (docs commit) | 11:42 owner left home: phone on LTE through the VPN (`Red: vpn`, adb `offline`). Through the server: `shell info storage` 85.19 GB free of 238 GB, `info battery` 57 %, privileged `shell enable com.sec.android.app.sbrowser` -> "App activada", `info packages` 150. The bridge (helper 0.3, pid 2791 since 11:08) works away from the home Wi-Fi: the owner's hard requirement is met. |
@@ -300,6 +301,7 @@ it runs).
 
 ## Next step
 
-T4: the typed command surface in the helper (signature-protected bound
-service + allowlist) and the `shell` phone command end to end; T7b
-accessibility rebind kick so updates stop leaving the bubble disconnected.
+T6/T7: bring the bridge back on its own after a reboot or helper death
+(re-enable wireless debugging with WRITE_SECURE_SETTINGS on the home Wi-Fi,
+reconnect with the paired key, restart the helper), then T8 release + PR.
+Candidate follow-up: scan large leftover files in shared storage.
